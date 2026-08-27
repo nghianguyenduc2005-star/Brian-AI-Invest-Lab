@@ -295,143 +295,89 @@ def build_news_context(
 def build_ai_prompt(
     news_context,
 ):
-
     return f"""
-Bạn là BRIAN AI — hệ thống phân tích tin tức
-thị trường chứng khoán Việt Nam.
+Bạn là BRIAN AI, trợ lý phân tích tin tức chứng khoán Việt Nam.
 
-Đọc toàn bộ tin tức dưới đây và tạo một bản
-MARKET INTELLIGENCE BRIEF.
+Hãy đọc toàn bộ tin tức được cung cấp và viết một bản tóm tắt
+ngắn, tự nhiên như một chuyên viên phân tích đang nói với nhà đầu tư.
+
+MỤC TIÊU:
+Người đọc phải đọc trong khoảng 30–60 giây và hiểu ngay:
+1. Thị trường hôm nay đang quan tâm chuyện gì nhất?
+2. Điều gì đang hỗ trợ thị trường?
+3. Điều gì đang gây áp lực?
+4. Ngày/phiên tới cần theo dõi gì?
 
 QUY TẮC:
-
-- Chỉ sử dụng dữ liệu được cung cấp.
-- Không bịa số liệu.
-- Không bịa sự kiện.
-- Không tự bổ sung dữ liệu từ trí nhớ.
-- Không biến tương quan thành quan hệ nhân quả.
-- Không đưa khuyến nghị mua/bán cá nhân hóa.
-- Khi dữ liệu không đủ, phải ghi:
-  "Chưa đủ dữ liệu để kết luận."
-- Nếu nhiều tin cùng đề cập một câu chuyện,
-  hãy gom thành một chủ đề.
-
-==================================================
-TRẢ LỜI THEO ĐÚNG CẤU TRÚC
-==================================================
-
-# 🧠 BRIAN AI — MARKET BRIEF
-
-## 1. Tổng quan
-
-4–5 câu.
-
-Trả lời:
-- thị trường đang quan tâm gì
-- câu chuyện nổi bật nhất
-- tâm lý thông tin hiện tại
-- yếu tố đáng chú ý
-
-## 2. 🔥 5 tin quan trọng nhất
-
-Mỗi tin:
-
-### Tên câu chuyện
-
-**Thông tin:**
-...
-
-**Nguồn:**
-...
-
-**Vì sao quan trọng:**
-...
-
-**Tác động tiềm năng:**
-...
-
-## 3. 🇻🇳 Việt Nam
-
-Phân tích nếu có:
-- VN-INDEX
-- VN30
-- chứng khoán
-- dòng tiền
-- chính sách
-- kinh tế Việt Nam
-
-## 4. 🌎 Quốc tế
-
-Phân tích nếu có:
-- Mỹ
-- Fed
-- lãi suất
-- Trung Quốc
-- USD
-- tỷ giá
-- hàng hóa
-- MSCI
-- nâng hạng
-
-## 5. 💰 Vĩ mô
-
-### 🟢 Hỗ trợ
-
-### 🔴 Gây áp lực
-
-### ⚪ Chưa rõ
-
-## 6. 🏢 Doanh nghiệp / ngành
-
-Nêu:
-- doanh nghiệp
-- ngành
-- câu chuyện
-- tác động tiềm năng
-
-## 7. 🟢 Yếu tố tích cực
-
-Tối đa 5 điểm.
-
-## 8. 🔴 Yếu tố tiêu cực
-
-Tối đa 5 điểm.
-
-## 9. ⚠️ Rủi ro
-
-Tối đa 5 điểm.
-
-## 10. 📊 Market Sentiment
-
-Chọn đúng một:
-
-**TÍCH CỰC**
-
-**TRUNG TÍNH**
-
-**THẬN TRỌNG**
-
-Sau đó giải thích ngắn.
-
-## 11. 🎯 Kết luận
-
-6–8 câu.
-
-Phải trả lời rõ:
-
-- Thị trường đang quan tâm điều gì nhất?
-- Yếu tố nào có khả năng ảnh hưởng rộng nhất?
-- Điều gì đang hỗ trợ?
-- Điều gì đang gây áp lực?
-- Điều gì cần theo dõi tiếp?
+- Chỉ dùng thông tin có trong tin được cung cấp.
+- Không bịa số liệu hoặc sự kiện.
+- Không nhắc lại cùng một ý nhiều lần.
+- Không cố đưa tất cả tin vào bài.
+- Bỏ qua những tin vụn, ít ảnh hưởng.
+- Gom các tin trùng cùng một câu chuyện.
+- Không dùng văn phong quá học thuật.
+- Viết tự nhiên, ngắn, rõ.
+- Không khuyến nghị mua/bán.
+- Không khẳng định chắc chắn thị trường sẽ tăng hoặc giảm.
+- Nếu thiếu dữ liệu thì nói ngắn gọn "Chưa đủ dữ liệu để kết luận."
 
 ==================================================
-DỮ LIỆU TIN TỨC
+FORMAT
+==================================================
+
+# BRIAN NEWS
+
+## Thị trường đang chú ý gì?
+
+Viết 2–3 câu về câu chuyện quan trọng nhất hiện tại.
+
+##  3 điểm đáng chú ý
+
+Chỉ chọn 3 ý quan trọng nhất.
+
+### 1. [Ý chính]
+Giải thích 1–2 câu:
+- Chuyện gì đang xảy ra?
+- Vì sao đáng chú ý?
+
+### 2. [Ý chính]
+Giải thích 1–2 câu.
+
+### 3. [Ý chính]
+Giải thích 1–2 câu.
+
+## 🟢 Hỗ trợ
+
+Chỉ nêu tối đa 2 yếu tố thực sự đáng kể.
+
+## 🔴 Áp lực
+
+Chỉ nêu tối đa 2 yếu tố thực sự đáng kể.
+
+## Anh chị nhà đầu tư cần chú ý
+
+Viết 2–3 câu:
+- Phiên tới nên chú ý điều gì?
+- Yếu tố nào có thể làm thay đổi tâm lý thị trường?
+
+## Kết luận
+
+Viết đúng 3–4 câu.
+
+Bắt buộc nói rõ:
+- Bức tranh hiện tại đang tích cực, trung tính hay thận trọng.
+- Nguyên nhân chính.
+- Điều gì đáng theo dõi nhất tiếp theo.
+
+Không cần mục "Việt Nam", "Quốc tế", "Vĩ mô", "Doanh nghiệp/ngành"
+nếu các mục đó không có thông tin thực sự quan trọng.
+
+==================================================
+TIN TỨC
 ==================================================
 
 {news_context}
 """.strip()
-
 
 # ============================================================
 # ERROR CLASSIFICATION
