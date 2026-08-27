@@ -1,9 +1,13 @@
+```python
+# brian-stock/components/charts.py
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
 from plotly.subplots import make_subplots
 
 
@@ -120,8 +124,13 @@ def _them_gap(du_lieu, bieu_do):
         * 100
     )
 
-    gap_tang = du_lieu[du_lieu["GapTang"]]
-    gap_giam = du_lieu[du_lieu["GapGiam"]]
+    gap_tang = du_lieu[
+        du_lieu["GapTang"]
+    ]
+
+    gap_giam = du_lieu[
+        du_lieu["GapGiam"]
+    ]
 
     if not gap_tang.empty:
         bieu_do.add_trace(
@@ -137,7 +146,9 @@ def _them_gap(du_lieu, bieu_do):
                 ),
                 customdata=np.column_stack(
                     [
-                        gap_tang["GapPhanTram"].fillna(0)
+                        gap_tang[
+                            "GapPhanTram"
+                        ].fillna(0)
                     ]
                 ),
                 hovertemplate=(
@@ -165,7 +176,9 @@ def _them_gap(du_lieu, bieu_do):
                 ),
                 customdata=np.column_stack(
                     [
-                        gap_giam["GapPhanTram"].fillna(0)
+                        gap_giam[
+                            "GapPhanTram"
+                        ].fillna(0)
                     ]
                 ),
                 hovertemplate=(
@@ -180,11 +193,91 @@ def _them_gap(du_lieu, bieu_do):
         )
 
 
-def price_volume_chart(du_lieu):
+def _tao_ngay_khong_giao_dich(chi_so):
+    """
+    Tự tìm các ngày nằm giữa phiên đầu và cuối
+    nhưng không xuất hiện trong dữ liệu.
+
+    Mục đích:
+    - bỏ thứ bảy
+    - bỏ chủ nhật
+    - bỏ ngày nghỉ lễ
+    - bỏ ngày không có phiên giao dịch
+
+    Không xóa dữ liệu thật.
+    Chỉ xóa khoảng thời gian trống khỏi cách hiển thị.
+    """
+
+    if len(chi_so) < 2:
+        return []
+
+    ngay = pd.to_datetime(
+        chi_so,
+        errors="coerce",
+    )
+
+    ngay = pd.DatetimeIndex(
+        ngay
+    ).dropna()
+
+    if len(ngay) < 2:
+        return []
+
+    # Bỏ múi giờ để so sánh ngày an toàn
+    try:
+        ngay = ngay.tz_localize(None)
+    except Exception:
+        pass
+
+    ngay_da_co = set(
+        ngay.normalize()
+    )
+
+    ngay_dau = (
+        ngay.min()
+        .normalize()
+    )
+
+    ngay_cuoi = (
+        ngay.max()
+        .normalize()
+    )
+
+    tat_ca_ngay = pd.date_range(
+        start=ngay_dau,
+        end=ngay_cuoi,
+        freq="D",
+    )
+
+    ngay_thieu = []
+
+    for mot_ngay in tat_ca_ngay:
+
+        # Chỉ thêm những ngày trong tuần.
+        # Cuối tuần sẽ xử lý bằng pattern riêng.
+        if mot_ngay.weekday() >= 5:
+            continue
+
+        if mot_ngay.normalize() not in ngay_da_co:
+            ngay_thieu.append(
+                mot_ngay.strftime(
+                    "%Y-%m-%d"
+                )
+            )
+
+    return ngay_thieu
+
+
+def price_volume_chart(
+    du_lieu: pd.DataFrame,
+):
     if du_lieu is None:
         return None
 
-    if not isinstance(du_lieu, pd.DataFrame):
+    if not isinstance(
+        du_lieu,
+        pd.DataFrame,
+    ):
         return None
 
     if du_lieu.empty:
@@ -192,7 +285,7 @@ def price_volume_chart(du_lieu):
 
     du_lieu = du_lieu.copy()
 
-    cot_bat_buoc = [
+    cac_cot_bat_buoc = [
         "Open",
         "High",
         "Low",
@@ -200,7 +293,8 @@ def price_volume_chart(du_lieu):
         "Volume",
     ]
 
-    for cot in cot_bat_buoc:
+    for cot in cac_cot_bat_buoc:
+
         if cot not in du_lieu.columns:
             return None
 
@@ -220,6 +314,10 @@ def price_volume_chart(du_lieu):
 
     if du_lieu.empty:
         return None
+
+    # ========================================================
+    # CHỌN CHỈ BÁO
+    # ========================================================
 
     lua_chon = st.multiselect(
         "Chỉ báo hiển thị",
@@ -255,19 +353,22 @@ def price_volume_chart(du_lieu):
     if co_macd:
         so_hang += 1
 
-    chieu_cao = [0.60, 0.16]
+    ty_le = [
+        0.60,
+        0.16,
+    ]
 
     if co_rsi:
-        chieu_cao.append(0.12)
+        ty_le.append(0.12)
 
     if co_macd:
-        chieu_cao.append(0.12)
+        ty_le.append(0.12)
 
-    tong = sum(chieu_cao)
+    tong = sum(ty_le)
 
-    chieu_cao = [
-        x / tong
-        for x in chieu_cao
+    ty_le = [
+        gia_tri / tong
+        for gia_tri in ty_le
     ]
 
     bieu_do = make_subplots(
@@ -275,7 +376,7 @@ def price_volume_chart(du_lieu):
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.006,
-        row_heights=chieu_cao,
+        row_heights=ty_le,
     )
 
     # ========================================================
@@ -304,6 +405,7 @@ def price_volume_chart(du_lieu):
                 ),
                 fillcolor="#ff4d5a",
             ),
+            whiskerwidth=0.5,
             hovertemplate=(
                 "%{x|%d/%m/%Y}"
                 "<br>Mở: %{open:,.0f}"
@@ -318,7 +420,7 @@ def price_volume_chart(du_lieu):
     )
 
     # ========================================================
-    # ĐƯỜNG TRUNG BÌNH
+    # SMA / EMA
     # ========================================================
 
     if "SMA20" in lua_chon:
@@ -380,6 +482,7 @@ def price_volume_chart(du_lieu):
             "Bollinger_Lower",
         )
     ):
+
         bieu_do.add_trace(
             go.Scatter(
                 x=du_lieu.index,
@@ -416,7 +519,9 @@ def price_volume_chart(du_lieu):
                     dash="dot",
                 ),
                 fill="tonexty",
-                fillcolor="rgba(148,163,184,0.06)",
+                fillcolor=(
+                    "rgba(148,163,184,0.06)"
+                ),
                 hovertemplate=(
                     "Dải dưới: %{y:,.0f}"
                     "<extra></extra>"
@@ -427,7 +532,7 @@ def price_volume_chart(du_lieu):
         )
 
     # ========================================================
-    # GAP
+    # KHOẢNG TRỐNG GIÁ
     # ========================================================
 
     if "Khoảng trống giá" in lua_chon:
@@ -464,10 +569,15 @@ def price_volume_chart(du_lieu):
         col=1,
     )
 
+    # ========================================================
+    # TRUNG BÌNH KHỐI LƯỢNG
+    # ========================================================
+
     if _co(
         du_lieu,
         "Volume_SMA20",
     ):
+
         _them_duong(
             bieu_do,
             du_lieu,
@@ -648,7 +758,7 @@ def price_volume_chart(du_lieu):
             )
 
     # ========================================================
-    # TRỤC
+    # NHÃN TRỤC
     # ========================================================
 
     bieu_do.update_yaxes(
@@ -685,6 +795,55 @@ def price_volume_chart(du_lieu):
         )
 
     # ========================================================
+    # LOẠI BỎ KHOẢNG THỜI GIAN KHÔNG GIAO DỊCH
+    #
+    # Đây là phần quan trọng:
+    #
+    # - Thứ bảy
+    # - Chủ nhật
+    # - Ngày trong tuần nhưng không có phiên
+    #   => thường là ngày nghỉ lễ
+    #
+    # Chỉ thay đổi cách hiển thị trục thời gian.
+    # Không xóa cây nến nào.
+    # ========================================================
+
+    ngay_khong_giao_dich = (
+        _tao_ngay_khong_giao_dich(
+            du_lieu.index
+        )
+    )
+
+    if ngay_khong_giao_dich:
+
+        bieu_do.update_xaxes(
+            rangebreaks=[
+                dict(
+                    bounds=[
+                        6,
+                        1,
+                    ],
+                ),
+                dict(
+                    values=ngay_khong_giao_dich,
+                ),
+            ],
+        )
+
+    else:
+
+        bieu_do.update_xaxes(
+            rangebreaks=[
+                dict(
+                    bounds=[
+                        6,
+                        1,
+                    ],
+                ),
+            ],
+        )
+
+    # ========================================================
     # GIAO DIỆN
     # ========================================================
 
@@ -718,10 +877,15 @@ def price_volume_chart(du_lieu):
         plot_bgcolor="#07131d",
     )
 
+    # ========================================================
+    # LƯỚI
+    # ========================================================
+
     for hang_grid in range(
         1,
         so_hang + 1,
     ):
+
         bieu_do.update_xaxes(
             showgrid=False,
             zeroline=False,
@@ -731,7 +895,9 @@ def price_volume_chart(du_lieu):
 
         bieu_do.update_yaxes(
             showgrid=True,
-            gridcolor="rgba(120,140,160,0.16)",
+            gridcolor=(
+                "rgba(120,140,160,0.16)"
+            ),
             zeroline=False,
             row=hang_grid,
             col=1,
@@ -752,3 +918,4 @@ def vnindex_chart(
     return price_volume_chart(
         dataframe
     )
+```
