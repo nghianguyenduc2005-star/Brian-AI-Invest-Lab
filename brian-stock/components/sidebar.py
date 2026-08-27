@@ -1,4 +1,3 @@
-```python
 import os
 
 import streamlit as st
@@ -439,4 +438,3 @@ def render_sidebar():
             """,
             unsafe_allow_html=True,
         )
-```
