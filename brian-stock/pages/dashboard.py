@@ -5,13 +5,17 @@ import streamlit as st
 
 from components.cards import metric_card
 from components.charts import price_volume_chart
+
 from data.market import (
     display_symbol,
+    load_latest_price,
     load_market_data,
     load_vnindex_data,
+    load_vnindex_market_summary,
     market_snapshot,
     normalize_symbol,
 )
+
 from data.news import fetch_market_news
 
 
@@ -231,7 +235,6 @@ def _dinh_dang_phan_tram(
 def _lay_vn_index():
 
     try:
-
         du_lieu = load_vnindex_data()
 
     except Exception as loi:
@@ -382,9 +385,12 @@ def _lay_vn_index():
     # ========================================================
     # GIÁ TRỊ GIAO DỊCH
     #
-    # Chỉ lấy nếu nguồn thực sự trả về cột value.
-    # Không tự nhân điểm VN-INDEX × volume vì đó không phải
-    # giá trị giao dịch thị trường.
+    # Ưu tiên:
+    #   1. cột Value trong OHLCV nếu có
+    #   2. index.summary()
+    #   3. index.trade_history()
+    #
+    # Không dùng điểm VN-INDEX × khối lượng.
     # ========================================================
 
     cot_gia_tri = _tim_cot(
@@ -424,6 +430,47 @@ def _lay_vn_index():
             ].iloc[-1],
             None,
         )
+
+    # --------------------------------------------------------
+    # Nếu OHLCV không có Value thì gọi summary riêng.
+    # --------------------------------------------------------
+
+    if gia_tri is None:
+
+        try:
+
+            summary = (
+                load_vnindex_market_summary()
+            )
+
+        except Exception:
+
+            summary = {}
+
+        gia_tri_summary = summary.get(
+            "gia_tri"
+        )
+
+        if gia_tri_summary is not None:
+
+            gia_tri = _so(
+                gia_tri_summary,
+                None,
+            )
+
+        khoi_luong_summary = summary.get(
+            "khoi_luong"
+        )
+
+        if (
+            khoi_luong_summary is not None
+            and khoi_luong is None
+        ):
+
+            khoi_luong = _so(
+                khoi_luong_summary,
+                None,
+            )
 
     return {
         "diem": diem,
@@ -899,7 +946,7 @@ def render_dashboard():
 
             st.metric(
                 "ATR 14 phiên",
-                _dinh_dạng_gia(
+                _dinh_dang_gia(
                     atr14
                 ),
             )
