@@ -23,21 +23,12 @@ THU_MUC_ASSETS = os.path.join(
 
 
 # ============================================================
-# TÌM LOGO
+# TÌM FILE ẢNH
 # ============================================================
 
-def _tim_logo():
-
-    danh_sach = [
-        "logo.png",
-        "logo.jpg",
-        "logo.jpeg",
-        "logo.webp",
-        "brian-stock.png",
-        "brian_stock.png",
-        "brian.png",
-    ]
-
+def _tim_tep(
+    danh_sach,
+):
     for ten in danh_sach:
 
         duong_dan = os.path.join(
@@ -45,48 +36,55 @@ def _tim_logo():
             ten,
         )
 
-        if os.path.isfile(duong_dan):
+        if os.path.isfile(
+            duong_dan
+        ):
             return duong_dan
 
     return None
 
 
-# ============================================================
-# TÌM ẢNH NỀN
-# ============================================================
+def _tim_logo():
+
+    return _tim_tep(
+        [
+            "logo.png",
+            "logo.jpg",
+            "logo.jpeg",
+            "logo.webp",
+            "brian-stock.png",
+            "brian_stock.png",
+            "brian.png",
+        ]
+    )
+
 
 def _tim_anh_nen():
 
-    danh_sach = [
-        "background.jpg",
-        "background.jpeg",
-        "background.png",
-        "background.webp",
-        "bg.jpg",
-        "bg.jpeg",
-        "bg.png",
-        "bg.webp",
-        "hero.jpg",
-        "hero.jpeg",
-        "hero.png",
-        "hero.webp",
-        "nen.jpg",
-        "nen.jpeg",
-        "nen.png",
-        "nen.webp",
-    ]
+    tep_anh = _tim_tep(
+        [
+            "background.jpg",
+            "background.jpeg",
+            "background.png",
+            "background.webp",
+            "bg.jpg",
+            "bg.jpeg",
+            "bg.png",
+            "bg.webp",
+            "hero.jpg",
+            "hero.jpeg",
+            "hero.png",
+            "hero.webp",
+            "nen.jpg",
+            "nen.jpeg",
+            "nen.png",
+            "nen.webp",
+        ]
+    )
 
-    for ten in danh_sach:
+    if tep_anh:
+        return tep_anh
 
-        duong_dan = os.path.join(
-            THU_MUC_ASSETS,
-            ten,
-        )
-
-        if os.path.isfile(duong_dan):
-            return duong_dan
-
-    # Nếu tên ảnh khác thì tự quét assets
     if os.path.isdir(
         THU_MUC_ASSETS
     ):
@@ -94,6 +92,9 @@ def _tim_anh_nen():
         for ten in os.listdir(
             THU_MUC_ASSETS
         ):
+
+            if "logo" in ten.lower():
+                continue
 
             duong_dan = os.path.join(
                 THU_MUC_ASSETS,
@@ -105,27 +106,21 @@ def _tim_anh_nen():
             ):
                 continue
 
-            duoi = os.path.splitext(
+            if os.path.splitext(
                 ten
-            )[1].lower()
-
-            if duoi in {
+            )[1].lower() in {
                 ".jpg",
                 ".jpeg",
                 ".png",
                 ".webp",
             }:
-
-                # Không dùng logo làm ảnh nền
-                if "logo" not in ten.lower():
-
-                    return duong_dan
+                return duong_dan
 
     return None
 
 
 # ============================================================
-# NHÚNG ẢNH
+# CHUYỂN ẢNH SANG BASE64
 # ============================================================
 
 def _anh_base64(
@@ -133,11 +128,6 @@ def _anh_base64(
 ):
 
     if not duong_dan:
-        return None
-
-    if not os.path.isfile(
-        duong_dan
-    ):
         return None
 
     try:
@@ -157,7 +147,7 @@ def _anh_base64(
             duong_dan
         )[1].lower()
 
-        loai = {
+        loai_anh = {
             ".png": "image/png",
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
@@ -168,7 +158,7 @@ def _anh_base64(
         )
 
         return (
-            f"data:{loai};base64,"
+            f"data:{loai_anh};base64,"
             f"{du_lieu}"
         )
 
@@ -177,10 +167,10 @@ def _anh_base64(
 
 
 # ============================================================
-# CSS
+# NẠP GIAO DIỆN
 # ============================================================
 
-def _nap_css():
+def _nap_giao_dien():
 
     anh_nen = _tim_anh_nen()
 
@@ -190,231 +180,183 @@ def _nap_css():
 
     if du_lieu_anh:
 
-        nen = f"""
-        background-image:
-            linear-gradient(
-                rgba(3, 9, 16, 0.78),
-                rgba(3, 9, 16, 0.84)
-            ),
-            url("{du_lieu_anh}");
+        nen = (
+            "background-image:"
+            "linear-gradient("
+            "rgba(3,9,16,0.78),"
+            "rgba(3,9,16,0.84)"
+            "),"
+            f"url('{du_lieu_anh}');"
+        )
 
+        css_nen = f"""
+        {nen}
         background-size: cover;
-        background-position: center;
+        background-position: center center;
         background-repeat: no-repeat;
         background-attachment: fixed;
         """
 
     else:
 
-        nen = """
+        css_nen = """
         background:
             linear-gradient(
                 135deg,
-                #050b12,
-                #07131d,
-                #090d15
+                #050b12 0%,
+                #07131d 50%,
+                #090d15 100%
             );
         """
 
     st.markdown(
         f"""
-        <style>
+<style>
+.stApp {{
+    {css_nen}
+    min-height: 100vh;
+}}
 
-        /* ==================================================
-           NỀN TOÀN APP
-           ================================================== */
+[data-testid="stAppViewContainer"] {{
+    background: transparent !important;
+}}
 
-        .stApp {{
-            {nen}
-            min-height: 100vh;
-        }}
+[data-testid="stHeader"] {{
+    background: transparent !important;
+}}
 
-        [data-testid="stAppViewContainer"] {{
-            background: transparent !important;
-        }}
+.main {{
+    background: transparent !important;
+}}
 
-        [data-testid="stHeader"] {{
-            background: transparent !important;
-        }}
+.block-container {{
+    background: transparent !important;
+    max-width: 1400px;
+}}
 
-        [data-testid="stToolbar"] {{
-            background: transparent !important;
-        }}
+[data-testid="stSidebar"] {{
+    background:
+        rgba(4, 10, 17, 0.96) !important;
+    border-right:
+        1px solid
+        rgba(90, 120, 145, 0.18);
+}}
 
-        .main {{
-            background: transparent !important;
-        }}
+[data-testid="stSidebarContent"] {{
+    background: transparent !important;
+}}
 
-        .block-container {{
-            background: transparent !important;
-        }}
+/* Ẩn menu đa trang tự động của Streamlit */
+[data-testid="stSidebarNav"] {{
+    display: none !important;
+}}
 
-        /* ==================================================
-           SIDEBAR
-           ================================================== */
+.hero {{
+    background:
+        rgba(5, 15, 24, 0.58);
+    border:
+        1px solid
+        rgba(100, 135, 160, 0.30);
+    border-radius: 18px;
+    padding: 32px;
+    margin-bottom: 26px;
+    backdrop-filter: blur(7px);
+}}
 
-        [data-testid="stSidebar"] {{
-            background:
-                rgba(4, 10, 17, 0.96) !important;
+.eyebrow {{
+    color: #ff4d4d;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    margin-bottom: 10px;
+}}
 
-            border-right:
-                1px solid
-                rgba(90, 120, 145, 0.18);
-        }}
+.hero h1 {{
+    color: #ffffff;
+    margin: 0;
+    font-size: 42px;
+    font-weight: 800;
+    line-height: 1.1;
+}}
 
-        [data-testid="stSidebarContent"] {{
-            background: transparent !important;
-        }}
+.hero p {{
+    color: #a9bdcc;
+    font-size: 15px;
+    line-height: 1.6;
+    margin-top: 14px;
+}}
 
-        /* ==================================================
-           HERO
-           ================================================== */
+.section-title {{
+    color: #ffffff;
+    font-size: 21px;
+    font-weight: 800;
+    margin-top: 24px;
+    margin-bottom: 14px;
+}}
 
-        .hero {{
-            background:
-                rgba(5, 15, 24, 0.64);
+[data-testid="stMetric"] {{
+    background:
+        rgba(7,22,32,0.80) !important;
+    border:
+        1px solid
+        rgba(75,110,135,0.38);
+    border-radius: 14px;
+    padding: 14px 16px;
+}}
 
-            border:
-                1px solid
-                rgba(100, 135, 160, 0.30);
+[data-testid="stMetricLabel"] {{
+    color: #91a8b9 !important;
+}}
 
-            border-radius: 18px;
+[data-testid="stMetricValue"] {{
+    color: #ffffff !important;
+}}
 
-            padding: 32px;
+div[data-baseweb="input"] {{
+    background:
+        rgba(39,39,49,0.96) !important;
+    border-radius: 9px;
+}}
 
-            margin-bottom: 26px;
+div[data-baseweb="select"] {{
+    background:
+        rgba(39,39,49,0.96) !important;
+    border-radius: 9px;
+}}
 
-            backdrop-filter: blur(8px);
-        }}
+input {{
+    color: #ffffff !important;
+}}
 
-        .eyebrow {{
-            color: #ff4d4d;
-            font-size: 11px;
-            font-weight: 800;
-            letter-spacing: 2px;
-            margin-bottom: 10px;
-        }}
+.stButton > button {{
+    border-radius: 9px;
+    font-weight: 700;
+}}
 
-        .hero h1 {{
-            color: #ffffff;
-            margin: 0;
-            font-size: 42px;
-            font-weight: 800;
-            line-height: 1.1;
-        }}
+.news-card {{
+    background:
+        rgba(5,19,30,0.82);
+    border:
+        1px solid
+        rgba(75,110,135,0.34);
+    border-radius: 14px;
+    padding: 17px;
+    margin-bottom: 12px;
+}}
 
-        .hero p {{
-            color: #a9bdcc;
-            font-size: 15px;
-            line-height: 1.6;
-            margin-top: 14px;
-        }}
+.news-title {{
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.5;
+}}
 
-        /* ==================================================
-           SECTION
-           ================================================== */
-
-        .section-title {{
-            color: #ffffff;
-            font-size: 21px;
-            font-weight: 800;
-            margin-top: 24px;
-            margin-bottom: 14px;
-        }}
-
-        /* ==================================================
-           METRIC
-           ================================================== */
-
-        [data-testid="stMetric"] {{
-            background:
-                rgba(7, 22, 32, 0.80) !important;
-
-            border:
-                1px solid
-                rgba(75, 110, 135, 0.38);
-
-            border-radius: 14px;
-
-            padding: 14px 16px;
-        }}
-
-        [data-testid="stMetricLabel"] {{
-            color: #91a8b9 !important;
-        }}
-
-        [data-testid="stMetricValue"] {{
-            color: #ffffff !important;
-        }}
-
-        /* ==================================================
-           INPUT
-           ================================================== */
-
-        div[data-baseweb="input"] {{
-            background:
-                rgba(39, 39, 49, 0.96) !important;
-
-            border-radius: 9px;
-        }}
-
-        input {{
-            color: #ffffff !important;
-        }}
-
-        /* ==================================================
-           SELECT
-           ================================================== */
-
-        div[data-baseweb="select"] {{
-            background:
-                rgba(39, 39, 49, 0.96) !important;
-
-            border-radius: 9px;
-        }}
-
-        /* ==================================================
-           NÚT
-           ================================================== */
-
-        .stButton > button {{
-            border-radius: 9px;
-            font-weight: 700;
-        }}
-
-        /* ==================================================
-           TIN
-           ================================================== */
-
-        .news-card {{
-            background:
-                rgba(5, 19, 30, 0.82);
-
-            border:
-                1px solid
-                rgba(75, 110, 135, 0.34);
-
-            border-radius: 14px;
-
-            padding: 17px;
-
-            margin-bottom: 12px;
-        }}
-
-        .news-title {{
-            color: #ffffff;
-            font-size: 15px;
-            font-weight: 700;
-            line-height: 1.5;
-        }}
-
-        .news-meta {{
-            color: #8fa7b8;
-            font-size: 12px;
-            margin-top: 7px;
-        }}
-
-        </style>
+.news-meta {{
+    color: #8fa7b8;
+    font-size: 12px;
+    margin-top: 7px;
+}}
+</style>
         """,
         unsafe_allow_html=True,
     )
@@ -426,13 +368,10 @@ def _nap_css():
 
 def render_sidebar():
 
-    _nap_css()
+    _nap_giao_dien()
 
     if "page" not in st.session_state:
-
-        st.session_state[
-            "page"
-        ] = "Dashboard"
+        st.session_state["page"] = "Dashboard"
 
     with st.sidebar:
 
@@ -446,33 +385,31 @@ def render_sidebar():
 
             st.image(
                 logo,
-                width=105,
+                width=110,
             )
 
         st.markdown(
             """
-            <div style="
-                padding: 4px 2px 15px 2px;
-            ">
+<div style="
+    padding: 3px 2px 15px 2px;
+">
+    <div style="
+        color: #ffffff;
+        font-size: 17px;
+        font-weight: 800;
+    ">
+        BRIAN STOCK
+    </div>
 
-                <div style="
-                    color:#ffffff;
-                    font-size:17px;
-                    font-weight:800;
-                ">
-                    BRIAN STOCK
-                </div>
-
-                <div style="
-                    color:#8499aa;
-                    font-size:10px;
-                    letter-spacing:1px;
-                    margin-top:4px;
-                ">
-                    INVESTMENT INTELLIGENCE
-                </div>
-
-            </div>
+    <div style="
+        color: #8499aa;
+        font-size: 10px;
+        letter-spacing: 1px;
+        margin-top: 4px;
+    ">
+        INVESTMENT INTELLIGENCE
+    </div>
+</div>
             """,
             unsafe_allow_html=True,
         )
@@ -509,16 +446,14 @@ def render_sidebar():
         for ten_trang, ten_hien_thi in cac_trang:
 
             dang_chon = (
-                st.session_state[
-                    "page"
-                ]
+                st.session_state["page"]
                 == ten_trang
             )
 
             if st.button(
                 ten_hien_thi,
                 key=(
-                    "nut_sidebar_"
+                    "nut_trang_"
                     + ten_trang
                 ),
                 width="stretch",
@@ -535,33 +470,36 @@ def render_sidebar():
 
                 st.rerun()
 
+        st.markdown("---")
+
         # ====================================================
         # CHÂN SIDEBAR
         # ====================================================
 
-        st.markdown("---")
-
         st.markdown(
             """
-            <div style="
-                color:#718798;
-                font-size:10px;
-                line-height:1.8;
-            ">
-                <b style="color:#b9c9d4;">
-                    BRIAN STOCK
-                </b>
-                <br>
-                Investment Research Platform
-                <br><br>
-                Dữ liệu thị trường thật
-                <br>
-                Phân tích kỹ thuật
-                <br>
-                Phân tích định lượng
-                <br>
-                Trợ lý AI
-            </div>
+<div style="
+    color: #718798;
+    font-size: 10px;
+    line-height: 1.8;
+    padding: 3px;
+">
+    <b style="
+        color: #b9c9d4;
+    ">
+        BRIAN STOCK
+    </b>
+    <br>
+    Investment Research Platform
+    <br><br>
+    Dữ liệu thị trường thật
+    <br>
+    Phân tích kỹ thuật
+    <br>
+    Phân tích định lượng
+    <br>
+    Trợ lý AI
+</div>
             """,
             unsafe_allow_html=True,
         )
