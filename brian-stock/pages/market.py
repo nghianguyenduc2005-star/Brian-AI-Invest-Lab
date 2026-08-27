@@ -13,204 +13,162 @@ from data.market_overview import (
 # TIỆN ÍCH
 # ============================================================
 
-def _so(
-    gia_tri,
-    mac_dinh=None,
-):
+def _so(value, mac_dinh=None):
     try:
-        gia_tri = float(gia_tri)
+        value = float(value)
 
-        if pd.isna(gia_tri):
+        if pd.isna(value):
             return mac_dinh
 
-        return gia_tri
+        return value
 
     except Exception:
         return mac_dinh
 
 
-def _dinh_dang_gia(
-    gia_tri,
-):
-    gia_tri = _so(
-        gia_tri,
-        None,
+def _cot(df, ten, mac_dinh=None):
+    if ten in df.columns:
+        return df[ten]
+
+    return pd.Series(
+        mac_dinh,
+        index=df.index,
     )
 
-    if gia_tri is None:
+
+def _gia(value):
+    value = _so(value)
+
+    if value is None:
         return "—"
 
-    return f"{gia_tri:,.2f}"
+    return f"{value:,.2f}"
 
 
-def _dinh_dang_phan_tram(
-    gia_tri,
-):
-    gia_tri = _so(
-        gia_tri,
-        None,
-    )
+def _phan_tram(value):
+    value = _so(value)
 
-    if gia_tri is None:
+    if value is None:
         return "—"
 
-    return f"{gia_tri:+.2f}%"
+    return f"{value:+.2f}%"
 
 
-def _dinh_dang_khoi_luong(
-    gia_tri,
-):
-    gia_tri = _so(
-        gia_tri,
-        None,
-    )
+def _khoi_luong(value):
+    value = _so(value)
 
-    if gia_tri is None:
+    if value is None:
         return "—"
 
-    if gia_tri >= 1_000_000_000:
-        return (
-            f"{gia_tri / 1_000_000_000:.2f} "
-            "tỷ cổ phiếu"
-        )
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.2f} tỷ cổ phiếu"
 
-    if gia_tri >= 1_000_000:
-        return (
-            f"{gia_tri / 1_000_000:.2f} "
-            "triệu cổ phiếu"
-        )
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.2f} triệu cổ phiếu"
 
-    if gia_tri >= 1_000:
-        return (
-            f"{gia_tri / 1_000:.2f} "
-            "nghìn cổ phiếu"
-        )
+    if value >= 1_000:
+        return f"{value / 1_000:.2f} nghìn cổ phiếu"
 
-    return f"{gia_tri:,.0f} cổ phiếu"
+    return f"{value:,.0f} cổ phiếu"
 
 
-def _dinh_dang_gia_tri(
-    gia_tri,
-):
-    gia_tri = _so(
-        gia_tri,
-        None,
-    )
+def _gia_tri(value):
+    value = _so(value)
 
-    if gia_tri is None:
+    if value is None:
         return "—"
 
-    if gia_tri >= 1_000_000_000_000:
+    if value >= 1_000_000_000_000:
         return (
-            f"{gia_tri / 1_000_000_000_000:.2f} "
+            f"{value / 1_000_000_000_000:.2f} "
             "nghìn tỷ đồng"
         )
 
-    if gia_tri >= 1_000_000_000:
+    if value >= 1_000_000_000:
         return (
-            f"{gia_tri / 1_000_000_000:.2f} "
+            f"{value / 1_000_000_000:.2f} "
             "tỷ đồng"
         )
 
-    if gia_tri >= 1_000_000:
+    if value >= 1_000_000:
         return (
-            f"{gia_tri / 1_000_000:.2f} "
+            f"{value / 1_000_000:.2f} "
             "triệu đồng"
         )
 
-    if gia_tri >= 1_000:
+    if value >= 1_000:
         return (
-            f"{gia_tri / 1_000:.2f} "
+            f"{value / 1_000:.2f} "
             "nghìn đồng"
         )
 
-    return f"{gia_tri:,.0f} đồng"
+    return f"{value:,.0f} đồng"
 
 
-def _ky_hieu_trang_thai(
-    gia_tri,
-):
-    gia_tri = _so(
-        gia_tri,
-        None,
-    )
+def _ky_hieu(value):
+    value = _so(value)
 
-    if gia_tri is None:
+    if value is None:
         return "⚪"
 
-    if gia_tri > 0.05:
+    if value > 0.05:
         return "🟢"
 
-    if gia_tri < -0.05:
+    if value < -0.05:
         return "🔴"
 
     return "🟡"
 
 
+def _metric(cot, nhan, value):
+    with cot:
+        st.metric(
+            nhan,
+            value,
+        )
+
+
 # ============================================================
-# BẢNG HIỂN THỊ CHÍNH
+# BẢNG GIÁ CHÍNH
 # ============================================================
 
-def _tao_bang_hien_thi(
-    bang_gia,
-):
+def _tao_bang_gia(df):
     if (
-        bang_gia is None
-        or not isinstance(
-            bang_gia,
-            pd.DataFrame,
-        )
-        or bang_gia.empty
+        df is None
+        or df.empty
     ):
         return pd.DataFrame()
 
-    bang = bang_gia.copy()
+    df = df.copy()
 
-    # --------------------------------------------------------
-    # Bảo đảm các cột cần thiết tồn tại
-    # --------------------------------------------------------
+    bang = pd.DataFrame(
+        index=df.index
+    )
 
-    cac_cot_mac_dinh = {
-        "ma": "",
-        "ten_doanh_nghiep": "",
-        "san": "",
-        "ten_nganh": "",
-        "gia": None,
-        "gia_tham_chieu": None,
-        "gia_mo_cua": None,
-        "gia_cao_nhat": None,
-        "gia_thap_nhat": None,
-        "thay_doi_pct": None,
-        "khoi_luong": None,
-        "gia_tri_giao_dich": None,
-    }
-
-    for ten_cot, gia_tri_mac_dinh in (
-        cac_cot_mac_dinh.items()
-    ):
-        if ten_cot not in bang.columns:
-            bang[ten_cot] = gia_tri_mac_dinh
-
-    # --------------------------------------------------------
-    # Cột hiển thị
-    # --------------------------------------------------------
-
-    bang["TT"] = (
-        bang["thay_doi_pct"]
-        .apply(
-            _ky_hieu_trang_thai
-        )
+    bang["TT"] = _cot(
+        df,
+        "thay_doi_pct",
+    ).apply(
+        _ky_hieu
     )
 
     bang["Mã"] = (
-        bang["ma"]
+        _cot(
+            df,
+            "ma",
+            "",
+        )
         .fillna("")
         .astype(str)
         .str.upper()
     )
 
     bang["Doanh nghiệp"] = (
-        bang["ten_doanh_nghiep"]
+        _cot(
+            df,
+            "ten_doanh_nghiep",
+            "",
+        )
         .fillna("")
         .astype(str)
         .replace(
@@ -220,7 +178,11 @@ def _tao_bang_hien_thi(
     )
 
     bang["Sàn"] = (
-        bang["san"]
+        _cot(
+            df,
+            "san",
+            "",
+        )
         .fillna("")
         .astype(str)
         .replace(
@@ -230,7 +192,11 @@ def _tao_bang_hien_thi(
     )
 
     bang["Ngành"] = (
-        bang["ten_nganh"]
+        _cot(
+            df,
+            "ten_nganh",
+            "",
+        )
         .fillna("")
         .astype(str)
         .replace(
@@ -239,79 +205,63 @@ def _tao_bang_hien_thi(
         )
     )
 
-    bang["Giá"] = (
-        bang["gia"]
-        .apply(
-            _dinh_dang_gia
-        )
+    bang["Giá"] = _cot(
+        df,
+        "gia",
+    ).apply(
+        _gia
     )
 
-    bang["Tham chiếu"] = (
-        bang["gia_tham_chieu"]
-        .apply(
-            _dinh_dang_gia
-        )
+    bang["Tham chiếu"] = _cot(
+        df,
+        "gia_tham_chieu",
+    ).apply(
+        _gia
     )
 
-    bang["Mở cửa"] = (
-        bang["gia_mo_cua"]
-        .apply(
-            _dinh_dang_gia
-        )
+    bang["Mở cửa"] = _cot(
+        df,
+        "gia_mo_cua",
+    ).apply(
+        _gia
     )
 
-    bang["Cao nhất"] = (
-        bang["gia_cao_nhat"]
-        .apply(
-            _dinh_dang_gia
-        )
+    bang["Cao nhất"] = _cot(
+        df,
+        "gia_cao_nhat",
+    ).apply(
+        _gia
     )
 
-    bang["Thấp nhất"] = (
-        bang["gia_thap_nhat"]
-        .apply(
-            _dinh_dang_gia
-        )
+    bang["Thấp nhất"] = _cot(
+        df,
+        "gia_thap_nhat",
+    ).apply(
+        _gia
     )
 
-    bang["Thay đổi"] = (
-        bang["thay_doi_pct"]
-        .apply(
-            _dinh_dang_phan_tram
-        )
+    bang["Thay đổi"] = _cot(
+        df,
+        "thay_doi_pct",
+    ).apply(
+        _phan_tram
     )
 
-    bang["Khối lượng"] = (
-        bang["khoi_luong"]
-        .apply(
-            _dinh_dang_khoi_luong
-        )
+    bang["Khối lượng"] = _cot(
+        df,
+        "khoi_luong",
+    ).apply(
+        _khoi_luong
     )
 
-    bang["Giá trị giao dịch"] = (
-        bang["gia_tri_giao_dich"]
-        .apply(
-            _dinh_dang_gia_tri
-        )
+    bang["Giá trị giao dịch"] = _cot(
+        df,
+        "gia_tri_giao_dich",
+    ).apply(
+        _gia_tri
     )
 
-    return bang[
-        [
-            "TT",
-            "Mã",
-            "Doanh nghiệp",
-            "Sàn",
-            "Ngành",
-            "Giá",
-            "Tham chiếu",
-            "Mở cửa",
-            "Cao nhất",
-            "Thấp nhất",
-            "Thay đổi",
-            "Khối lượng",
-            "Giá trị giao dịch",
-        ]
-    ].reset_index(
+    return bang.reset_index(
         drop=True
     )
 
@@ -320,93 +270,61 @@ def _tao_bang_hien_thi(
 # BẢNG TOP
 # ============================================================
 
-def _tao_bang_top(
-    bang_gia,
-):
+def _tao_bang_top(df):
     if (
-        bang_gia is None
-        or not isinstance(
-            bang_gia,
-            pd.DataFrame,
-        )
-        or bang_gia.empty
+        df is None
+        or df.empty
     ):
         return pd.DataFrame()
 
-    bang = bang_gia.copy()
+    df = df.copy()
 
-    for cot in [
-        "ma",
-        "gia",
-        "thay_doi_pct",
-        "khoi_luong",
-        "gia_tri_giao_dich",
-    ]:
-        if cot not in bang.columns:
-            bang[cot] = None
+    bang = pd.DataFrame(
+        index=df.index
+    )
 
     bang["Mã"] = (
-        bang["ma"]
+        _cot(
+            df,
+            "ma",
+            "",
+        )
         .fillna("")
         .astype(str)
         .str.upper()
     )
 
-    bang["Giá"] = (
-        bang["gia"]
-        .apply(
-            _dinh_dang_gia
-        )
+    bang["Giá"] = _cot(
+        df,
+        "gia",
+    ).apply(
+        _gia
     )
 
-    bang["Thay đổi"] = (
-        bang["thay_doi_pct"]
-        .apply(
-            _dinh_dang_phan_tram
-        )
+    bang["Thay đổi"] = _cot(
+        df,
+        "thay_doi_pct",
+    ).apply(
+        _phan_tram
     )
 
-    bang["Khối lượng"] = (
-        bang["khoi_luong"]
-        .apply(
-            _dinh_dang_khoi_luong
-        )
+    bang["Khối lượng"] = _cot(
+        df,
+        "khoi_luong",
+    ).apply(
+        _khoi_luong
     )
 
-    bang["Giá trị giao dịch"] = (
-        bang["gia_tri_giao_dich"]
-        .apply(
-            _dinh_dang_gia_tri
-        )
+    bang["Giá trị giao dịch"] = _cot(
+        df,
+        "gia_tri_giao_dich",
+    ).apply(
+        _gia_tri
     )
 
-    return bang[
-        [
-            "Mã",
-            "Giá",
-            "Thay đổi",
-            "Khối lượng",
-            "Giá trị giao dịch",
-        ]
-    ].reset_index(
+    return bang.reset_index(
         drop=True
     )
-
-
-# ============================================================
-# THẺ METRIC
-# ============================================================
-
-def _metric(
-    cot,
-    tieu_de,
-    gia_tri,
-):
-    with cot:
-        st.metric(
-            tieu_de,
-            gia_tri,
-        )
 
 
 # ============================================================
@@ -449,21 +367,17 @@ def _dat_lai_bo_loc():
 
 def render_market():
 
-    # ========================================================
-    # TIÊU ĐỀ
-    # ========================================================
-
     st.title(
         "📊 Thị trường"
     )
 
     st.caption(
         "Bảng giá toàn thị trường · "
-        "dữ liệu làm mới theo chu kỳ 60 giây"
+        "dữ liệu cache 60 giây"
     )
 
     # ========================================================
-    # LOAD DATA
+    # LẤY DỮ LIỆU
     # ========================================================
 
     try:
@@ -472,7 +386,7 @@ def render_market():
             "Đang tải dữ liệu thị trường..."
         ):
 
-            du_lieu_tong = (
+            du_lieu = (
                 lay_market_overview()
             )
 
@@ -483,15 +397,13 @@ def render_market():
         )
 
         st.code(
-            str(
-                loi
-            )
+            str(loi)
         )
 
         return
 
     bang_gia = (
-        du_lieu_tong.get(
+        du_lieu.get(
             "bang_gia",
             pd.DataFrame(),
         )
@@ -513,13 +425,13 @@ def render_market():
     # ========================================================
 
     thong_ke = (
-        du_lieu_tong.get(
+        du_lieu.get(
             "thong_ke",
             {},
         )
     )
 
-    so_ma = int(
+    tong_ma = int(
         thong_ke.get(
             "co_du_lieu_gia",
             len(bang_gia),
@@ -551,16 +463,64 @@ def render_market():
         or 0
     )
 
-    tong_khoi_luong = (
-        thong_ke.get(
-            "tong_khoi_luong"
-        )
+    # ========================================================
+    # TỔNG QUAN
+    # ========================================================
+
+    st.subheader(
+        "📌 Tổng quan"
     )
 
-    tong_gia_tri = (
-        thong_ke.get(
-            "tong_gia_tri"
-        )
+    a, b, c, d = st.columns(4)
+
+    _metric(
+        a,
+        "Có dữ liệu",
+        f"{tong_ma:,} mã",
+    )
+
+    _metric(
+        b,
+        "Tăng",
+        f"{tang:,} mã",
+    )
+
+    _metric(
+        c,
+        "Đứng giá",
+        f"{dung_gia:,} mã",
+    )
+
+    _metric(
+        d,
+        "Giảm",
+        f"{giam:,} mã",
+    )
+
+    # ========================================================
+    # THANH KHOẢN
+    # ========================================================
+
+    a, b = st.columns(2)
+
+    _metric(
+        a,
+        "Tổng khối lượng",
+        _khoi_luong(
+            thong_ke.get(
+                "tong_khoi_luong"
+            )
+        ),
+    )
+
+    _metric(
+        b,
+        "Tổng giá trị giao dịch",
+        _gia_tri(
+            thong_ke.get(
+                "tong_gia_tri"
+            )
+        ),
     )
 
     # ========================================================
@@ -572,7 +532,7 @@ def render_market():
     )
 
     # ========================================================
-    # CÁC GIÁ TRỊ LỌC
+    # DANH SÁCH SÀN
     # ========================================================
 
     danh_sach_san = [
@@ -581,24 +541,29 @@ def render_market():
 
     if "san" in bang_gia.columns:
 
-        cac_san = (
-            bang_gia["san"]
+        gia_tri_san = (
+            bang_gia[
+                "san"
+            ]
             .fillna("")
             .astype(str)
             .str.strip()
         )
 
-        cac_san = [
-            x
-            for x in cac_san.unique().tolist()
-            if x
-        ]
-
         danh_sach_san.extend(
             sorted(
-                cac_san
+                [
+                    x
+                    for x
+                    in gia_tri_san.unique()
+                    if x
+                ]
             )
         )
+
+    # ========================================================
+    # DANH SÁCH NGÀNH
+    # ========================================================
 
     danh_sach_nganh = [
         "Tất cả"
@@ -606,22 +571,23 @@ def render_market():
 
     if "ten_nganh" in bang_gia.columns:
 
-        cac_nganh = (
-            bang_gia["ten_nganh"]
+        gia_tri_nganh = (
+            bang_gia[
+                "ten_nganh"
+            ]
             .fillna("")
             .astype(str)
             .str.strip()
         )
 
-        cac_nganh = [
-            x
-            for x in cac_nganh.unique().tolist()
-            if x
-        ]
-
         danh_sach_nganh.extend(
             sorted(
-                cac_nganh
+                [
+                    x
+                    for x
+                    in gia_tri_nganh.unique()
+                    if x
+                ]
             )
         )
 
@@ -629,27 +595,25 @@ def render_market():
     # BỘ LỌC HÀNG 1
     # ========================================================
 
-    cot_tim, cot_san, cot_nganh = (
-        st.columns(
-            [
-                2.4,
-                1.0,
-                1.8,
-            ]
-        )
+    f1, f2, f3 = st.columns(
+        [
+            2.4,
+            1.0,
+            1.8,
+        ]
     )
 
-    with cot_tim:
+    with f1:
 
         tu_khoa = st.text_input(
             "Tìm mã / doanh nghiệp",
             placeholder=(
-                "Ví dụ: HPG, FPT, VHM..."
+                "Ví dụ: HPG, VHM, FPT..."
             ),
             key="thi_truong_tu_khoa",
         )
 
-    with cot_san:
+    with f2:
 
         san = st.selectbox(
             "Sàn",
@@ -657,7 +621,7 @@ def render_market():
             key="thi_truong_san",
         )
 
-    with cot_nganh:
+    with f3:
 
         nganh = st.selectbox(
             "Ngành",
@@ -669,20 +633,18 @@ def render_market():
     # BỘ LỌC HÀNG 2
     # ========================================================
 
-    cot_trang_thai, cot_sap_xep, cot_thu_tu, cot_reset = (
-        st.columns(
-            [
-                1.1,
-                1.8,
-                1.1,
-                1.0,
-            ]
-        )
+    f4, f5, f6, f7 = st.columns(
+        [
+            1.1,
+            1.8,
+            1.1,
+            1.0,
+        ]
     )
 
-    with cot_trang_thai:
+    with f4:
 
-        trang_thai = st.selectbox(
+        huong = st.selectbox(
             "Trạng thái",
             [
                 "Tất cả",
@@ -693,7 +655,7 @@ def render_market():
             key="thi_truong_trang_thai",
         )
 
-    with cot_sap_xep:
+    with f5:
 
         sap_xep = st.selectbox(
             "Sắp xếp theo",
@@ -707,7 +669,7 @@ def render_market():
             key="thi_truong_sap_xep",
         )
 
-    with cot_thu_tu:
+    with f6:
 
         thu_tu = st.selectbox(
             "Thứ tự",
@@ -718,7 +680,7 @@ def render_market():
             key="thi_truong_thu_tu",
         )
 
-    with cot_reset:
+    with f7:
 
         st.write("")
 
@@ -726,7 +688,7 @@ def render_market():
             "↺ Đặt lại",
             on_click=_dat_lai_bo_loc,
             width="stretch",
-            key="thi_truong_reset",
+            key="thi_truong_dat_lai",
         )
 
     # ========================================================
@@ -757,19 +719,17 @@ def render_market():
             san=san,
             tu_khoa=tu_khoa,
             nganh=nganh,
-            huong=trang_thai,
+            huong=huong,
         )
 
     except Exception as loi:
 
         st.error(
-            "Lỗi khi lọc bảng giá."
+            "Không thể lọc bảng giá."
         )
 
         st.code(
-            str(
-                loi
-            )
+            str(loi)
         )
 
         bang_loc = pd.DataFrame()
@@ -846,18 +806,21 @@ def render_market():
             )
 
     # ========================================================
-    # THÔNG TIN KẾT QUẢ
+    # HIỂN THỊ KẾT QUẢ
     # ========================================================
 
-    st.caption(
-        f"Đang có {len(bang_gia):,} mã · "
-        f"lọc còn {len(bang_loc):,} mã · "
-        f"hiển thị tối đa {so_dong:,} dòng"
+    so_dong_thuc_te = min(
+        len(bang_loc),
+        so_dong,
     )
 
-    # ========================================================
-    # HIỂN THỊ
-    # ========================================================
+    st.caption(
+        "Lọc còn "
+        f"{len(bang_loc):,}"
+        " mã · hiển thị "
+        f"{so_dong_thuc_te:,}"
+        " mã"
+    )
 
     if bang_loc.empty:
 
@@ -867,11 +830,9 @@ def render_market():
 
     else:
 
-        bang_hien_thi = (
-            _tao_bang_hien_thi(
-                bang_loc.head(
-                    so_dong
-                )
+        bang_hien_thi = _tao_bang_gia(
+            bang_loc.head(
+                so_dong
             )
         )
 
@@ -937,66 +898,6 @@ def render_market():
         )
 
     # ========================================================
-    # ĐỘ RỘNG THỊ TRƯỜNG
-    # ========================================================
-
-    st.subheader(
-        "📌 Độ rộng thị trường"
-    )
-
-    a, b, c, d = st.columns(4)
-
-    _metric(
-        a,
-        "Tăng",
-        f"{tang:,} mã",
-    )
-
-    _metric(
-        b,
-        "Đứng giá",
-        f"{dung_gia:,} mã",
-    )
-
-    _metric(
-        c,
-        "Giảm",
-        f"{giam:,} mã",
-    )
-
-    _metric(
-        d,
-        "Có dữ liệu",
-        f"{so_ma:,} mã",
-    )
-
-    # ========================================================
-    # THANH KHOẢN
-    # ========================================================
-
-    st.subheader(
-        "💰 Thanh khoản toàn thị trường"
-    )
-
-    a, b = st.columns(2)
-
-    _metric(
-        a,
-        "Tổng khối lượng",
-        _dinh_dang_khoi_luong(
-            tong_khoi_luong
-        ),
-    )
-
-    _metric(
-        b,
-        "Tổng giá trị giao dịch",
-        _dinh_dang_gia_tri(
-            tong_gia_tri
-        ),
-    )
-
-    # ========================================================
     # TÂM LÝ
     # ========================================================
 
@@ -1005,14 +906,15 @@ def render_market():
     )
 
     diem_tam_ly = _so(
-        du_lieu_tong.get(
-            "tam_ly"
+        du_lieu.get(
+            "tam_ly",
+            50,
         ),
         50,
     )
 
     nhan_tam_ly = str(
-        du_lieu_tong.get(
+        du_lieu.get(
             "nhan_tam_ly",
             "Trung tính",
         )
@@ -1020,7 +922,8 @@ def render_market():
 
     phan_tram_tang = _so(
         thong_ke.get(
-            "phan_tram_tang"
+            "phan_tram_tang",
+            0,
         ),
         0,
     )
@@ -1053,17 +956,17 @@ def render_market():
         "🏆 Cổ phiếu nổi bật"
     )
 
-    top_tang = du_lieu_tong.get(
+    top_tang = du_lieu.get(
         "top_tang",
         pd.DataFrame(),
     )
 
-    top_giam = du_lieu_tong.get(
+    top_giam = du_lieu.get(
         "top_giam",
         pd.DataFrame(),
     )
 
-    top_khoi_luong = du_lieu_tong.get(
+    top_khoi_luong = du_lieu.get(
         "top_khoi_luong",
         pd.DataFrame(),
     )
@@ -1123,7 +1026,7 @@ def render_market():
         "📚 Diễn biến nhóm ngành"
     )
 
-    theo_nganh = du_lieu_tong.get(
+    theo_nganh = du_lieu.get(
         "theo_nganh",
         pd.DataFrame(),
     )
@@ -1137,71 +1040,61 @@ def render_market():
             theo_nganh.copy()
         )
 
-        bang_nganh[
-            "Ngành"
-        ] = (
-            bang_nganh[
-                "ten_nganh"
-            ]
-            .fillna("")
-            .astype(str)
+        bang_nganh["Ngành"] = _cot(
+            bang_nganh,
+            "ten_nganh",
+            "",
+        ).fillna("").astype(str)
+
+        bang_nganh["Số mã"] = _cot(
+            bang_nganh,
+            "so_ma",
+            0,
+        )
+
+        bang_nganh["Tăng"] = _cot(
+            bang_nganh,
+            "tang",
+            0,
+        )
+
+        bang_nganh["Đứng giá"] = _cot(
+            bang_nganh,
+            "dung_gia",
+            0,
+        )
+
+        bang_nganh["Giảm"] = _cot(
+            bang_nganh,
+            "giam",
+            0,
         )
 
         bang_nganh[
-            "Số mã"
-        ] = bang_nganh[
-            "so_ma"
-        ]
-
-        bang_nganh[
-            "Tăng"
-        ] = bang_nganh[
-            "tang"
-        ]
-
-        bang_nganh[
-            "Đứng giá"
-        ] = bang_nganh[
-            "dung_gia"
-        ]
-
-        bang_nganh[
-            "Giảm"
-        ] = bang_nganh[
-            "giam"
-        ]
-
-        bang_nganh[
             "Biến động bình quân"
-        ] = (
-            bang_nganh[
-                "bien_dong_binh_quan"
-            ]
-            .apply(
-                _dinh_dang_phan_tram
-            )
+        ] = _cot(
+            bang_nganh,
+            "bien_dong_binh_quan",
+        ).apply(
+            _phan_tram
         )
 
         bang_nganh[
             "Khối lượng"
-        ] = (
-            bang_nganh[
-                "tong_khoi_luong"
-            ]
-            .apply(
-                _dinh_dang_khoi_luong
-            )
+        ] = _cot(
+            bang_nganh,
+            "tong_khoi_luong",
+        ).apply(
+            _khoi_luong
         )
 
         bang_nganh[
             "Giá trị giao dịch"
-        ] = (
-            bang_nganh[
-                "tong_gia_tri"
-            ]
-            .apply(
-                _dinh_dang_gia_tri
-            )
+        ] = _cot(
+            bang_nganh,
+            "tong_gia_tri",
+        ).apply(
+            _gia_tri
         )
 
         st.dataframe(
@@ -1231,11 +1124,9 @@ def render_market():
     # GIAO DỊCH NƯỚC NGOÀI
     # ========================================================
 
-    nuoc_ngoai = (
-        du_lieu_tong.get(
-            "nuoc_ngoai",
-            {},
-        )
+    nuoc_ngoai = du_lieu.get(
+        "nuoc_ngoai",
+        {},
     )
 
     if nuoc_ngoai.get(
@@ -1252,7 +1143,7 @@ def render_market():
         _metric(
             a,
             "Nước ngoài mua",
-            _dinh_dang_khoi_luong(
+            _khoi_luong(
                 nuoc_ngoai.get(
                     "mua"
                 )
@@ -1262,7 +1153,7 @@ def render_market():
         _metric(
             b,
             "Nước ngoài bán",
-            _dinh_dang_khoi_luong(
+            _khoi_luong(
                 nuoc_ngoai.get(
                     "ban"
                 )
@@ -1272,7 +1163,7 @@ def render_market():
         _metric(
             c,
             "Mua ròng",
-            _dinh_dang_khoi_luong(
+            _khoi_luong(
                 nuoc_ngoai.get(
                     "rong"
                 )
@@ -1283,25 +1174,30 @@ def render_market():
     # NGUỒN
     # ========================================================
 
-    thong_tin = (
-        du_lieu_tong.get(
+    nguon = du_lieu.get(
+        "nguon",
+        {},
+    )
+
+    ten_nguon = str(
+        nguon.get(
             "nguon",
-            {},
+            "Vnstock Market",
         )
     )
 
+    so_ma_nguon = int(
+        nguon.get(
+            "so_ma",
+            len(bang_gia),
+        )
+        or 0
+    )
+
     st.caption(
-        f"Nguồn: "
-        f"{thong_tin.get(
-            'nguon',
-            'Vnstock Market',
-        )}"
-        f" · "
-        f"{int(
-            thong_tin.get(
-                'so_ma',
-                len(bang_gia),
-            )
-            or 0
-        ):,} mã"
+        "Nguồn: "
+        + ten_nguon
+        + " · "
+        + f"{so_ma_nguon:,}"
+        + " mã · cập nhật tự động"
     )
