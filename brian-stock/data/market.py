@@ -11,166 +11,146 @@ import streamlit as st
 
 
 # ============================================================
-# VNSTOCK
+# VNSTOCK IMPORT
 # ============================================================
 
 try:
     from vnstock import Market
 
-    NGUON_VNSTOCK_CO_SAN = True
+    VNSTOCK_AVAILABLE = True
 
 except Exception:
-    Market = None
-    NGUON_VNSTOCK_CO_SAN = False
+
+    try:
+        from vnstock.ui import Market
+
+        VNSTOCK_AVAILABLE = True
+
+    except Exception:
+
+        Market = None
+        VNSTOCK_AVAILABLE = False
+
+
+try:
+    from vnstock import Listing
+
+    LISTING_AVAILABLE = True
+
+except Exception:
+    Listing = None
+    LISTING_AVAILABLE = False
 
 
 # ============================================================
-# CACHE
+# CONFIG
 # ============================================================
 
-THOI_GIAN_LUU_CO_PHIEU = 300
-THOI_GIAN_LUU_VNINDEX = 300
-THOI_GIAN_LUU_GIA_MOI = 30
-THOI_GIAN_LUU_TONG_QUAN_VNINDEX = 30
-THOI_GIAN_LUU_NGHIEN_CUU = 900
+CACHE_TTL_PRICE = 300
+CACHE_TTL_INDEX = 300
+CACHE_TTL_LATEST = 30
+CACHE_TTL_RESEARCH = 900
+CACHE_TTL_FLOW = 900
+CACHE_TTL_LISTING = 6 * 60 * 60
 
+# Giữ khoảng cách giữa request để tránh rate limit.
+#
+# Guest có thể bị giới hạn request/phút thấp hơn.
+# Dùng 2 giây/request để an toàn.
+REQUEST_SLEEP_SECONDS = 2.0
 
-# ============================================================
-# RATE LIMIT
-# ============================================================
-
-# Không dùng 100 ngày nữa.
-# 60 ngày lịch thường tương đương khoảng 40-45 phiên.
-SO_NGAY_MOI_CHUNK_NGHIEN_CUU = 60
-
-# 1.6 giây/request ≈ 37.5 request/phút.
-# Có khoảng đệm so với giới hạn 40 request/phút.
-THOI_GIAN_CHO_GIUA_REQUEST = 1.6
-
-# Retry tối đa khi nguồn trả lỗi tạm thời.
-SO_LAN_RETRY_RATE_LIMIT = 3
-
-# Thời gian chờ khi retry.
-THOI_GIAN_RETRY_CO_BAN = 5.0
+# Lịch sử chính có thể lấy theo chunk.
+# 120 ngày lịch ~ khoảng 80-85 phiên giao dịch.
+RESEARCH_CHUNK_DAYS = 120
 
 
 # ============================================================
-# CACHE RESOURCE - MARKET
+# CACHE RESOURCE
 # ============================================================
 
 @st.cache_resource(
     show_spinner=False,
 )
-def _tao_nguon_thi_truong():
-
-    if not NGUON_VNSTOCK_CO_SAN:
-
+def _create_market():
+    if not VNSTOCK_AVAILABLE or Market is None:
         raise RuntimeError(
-            "Chưa cài vnstock. "
-            "Hãy thêm vnstock vào requirements.txt."
+            "Không tìm thấy vnstock Market."
         )
 
     try:
-
         return Market()
 
-    except Exception as loi:
-
+    except Exception as error:
         raise RuntimeError(
-            f"Không khởi tạo được nguồn dữ liệu: {loi}"
-        ) from loi
+            f"Không khởi tạo được Market(): {error}"
+        ) from error
 
 
 # ============================================================
-# CHUẨN HÓA MÃ
+# BASIC
 # ============================================================
 
 def normalize_symbol(
     symbol,
 ):
-
     if symbol is None:
         return "HPG"
 
-    ma = (
+    value = (
         str(symbol)
         .strip()
         .upper()
     )
 
-    ma = re.sub(
+    value = re.sub(
         r"\s+",
         "",
-        ma,
+        value,
     )
 
-    if ma.endswith(".VN"):
+    if value.endswith(".VN"):
+        value = value[:-3]
 
-        ma = ma[:-3]
-
-    if not ma:
-
-        return "HPG"
-
-    return ma
+    return value or "HPG"
 
 
 def display_symbol(
     symbol,
 ):
-
     if symbol is None:
         return ""
 
-    ma = (
+    value = (
         str(symbol)
         .strip()
         .upper()
     )
 
-    if ma.endswith(".VN"):
+    if value.endswith(".VN"):
+        value = value[:-3]
 
-        ma = ma[:-3]
-
-    return ma
+    return value
 
 
-# ============================================================
-# TIỆN ÍCH SỐ
-# ============================================================
-
-def _so(
-    value: Any,
-    mac_dinh=np.nan,
+def _to_number(
+    value,
+    default=np.nan,
 ):
-
     try:
+        value = float(value)
 
-        value = float(
-            value
-        )
-
-        if not np.isfinite(
-            value
-        ):
-
-            return mac_dinh
+        if not np.isfinite(value):
+            return default
 
         return value
 
     except Exception:
+        return default
 
-        return mac_dinh
 
-
-# ============================================================
-# CHUẨN HÓA TÊN CỘT
-# ============================================================
-
-def _ten_cot_chuan(
+def _normalize_column_name(
     value,
 ):
-
     text = (
         str(value)
         .strip()
@@ -193,186 +173,297 @@ def _ten_cot_chuan(
 
 
 # ============================================================
-# CHUẨN HÓA DATAFRAME OHLCV
+# GENERIC COLUMN FINDER
 # ============================================================
 
-def _chuan_hoa_bang_gia(
-    du_lieu,
-    la_co_phieu=False,
+def _find_column(
+    df,
+    candidates,
 ):
+    if (
+        df is None
+        or not isinstance(
+            df,
+            pd.DataFrame,
+        )
+        or df.empty
+    ):
+        return None
 
-    if du_lieu is None:
+    mapping = {
+        _normalize_column_name(column): column
+        for column in df.columns
+    }
 
+    # Exact
+    for candidate in candidates:
+
+        key = _normalize_column_name(
+            candidate
+        )
+
+        if key in mapping:
+            return mapping[key]
+
+    # Fuzzy
+    for column in df.columns:
+
+        column_key = _normalize_column_name(
+            column
+        )
+
+        for candidate in candidates:
+
+            candidate_key = _normalize_column_name(
+                candidate
+            )
+
+            if (
+                candidate_key in column_key
+                or column_key in candidate_key
+            ):
+                return column
+
+    return None
+
+
+# ============================================================
+# DATETIME NORMALIZATION
+# ============================================================
+
+def _normalize_datetime_index(
+    df,
+):
+    if (
+        df is None
+        or df.empty
+    ):
+        return pd.DataFrame()
+
+    work = df.copy()
+
+    time_column = _find_column(
+        work,
+        [
+            "time",
+            "date",
+            "datetime",
+            "timestamp",
+            "trading_date",
+            "tradingdate",
+        ],
+    )
+
+    if time_column is not None:
+
+        work[
+            time_column
+        ] = pd.to_datetime(
+            work[
+                time_column
+            ],
+            errors="coerce",
+        )
+
+        work = (
+            work
+            .set_index(
+                time_column
+            )
+        )
+
+    else:
+
+        work.index = pd.to_datetime(
+            work.index,
+            errors="coerce",
+        )
+
+    work = work[
+        ~work.index.isna()
+    ].copy()
+
+    work = (
+        work
+        .sort_index()
+    )
+
+    work = work[
+        ~work.index.duplicated(
+            keep="last"
+        )
+    ].copy()
+
+    return work
+
+
+# ============================================================
+# OHLCV NORMALIZATION
+# ============================================================
+
+def _normalize_ohlcv(
+    df,
+    stock=True,
+):
+    if df is None:
         raise ValueError(
-            "Nguồn dữ liệu trả về rỗng."
+            "Nguồn dữ liệu trả về None."
         )
 
     if not isinstance(
-        du_lieu,
+        df,
         pd.DataFrame,
     ):
-
-        du_lieu = pd.DataFrame(
-            du_lieu
+        df = pd.DataFrame(
+            df
         )
 
-    if du_lieu.empty:
-
+    if df.empty:
         raise ValueError(
-            "Nguồn dữ liệu không có dữ liệu."
+            "Nguồn dữ liệu trả về DataFrame rỗng."
         )
 
-    du_lieu = du_lieu.copy()
+    work = df.copy()
 
-    # ========================================================
-    # MULTIINDEX
-    # ========================================================
-
+    # MultiIndex
     if isinstance(
-        du_lieu.columns,
+        work.columns,
         pd.MultiIndex,
     ):
 
         columns = []
 
-        for column in du_lieu.columns:
+        for column in work.columns:
 
             if isinstance(
                 column,
                 tuple,
             ):
-
                 columns.append(
                     str(
                         column[-1]
                     )
                 )
-
             else:
-
                 columns.append(
-                    str(column)
+                    str(
+                        column
+                    )
                 )
 
-        du_lieu.columns = columns
+        work.columns = columns
 
-    # ========================================================
-    # ÁNH XẠ CỘT
-    # ========================================================
+    rename_map = {}
 
-    mapping = {}
+    for column in work.columns:
 
-    for column in du_lieu.columns:
-
-        name = _ten_cot_chuan(
+        key = _normalize_column_name(
             column
         )
 
-        if name in {
+        if key in {
             "time",
             "date",
             "datetime",
             "timestamp",
-            "tradingdate",
             "trading_date",
+            "tradingdate",
         }:
 
-            mapping[
+            rename_map[
                 column
             ] = "Time"
 
-        elif name in {
+        elif key in {
             "open",
             "open_price",
             "openprice",
         }:
 
-            mapping[
+            rename_map[
                 column
             ] = "Open"
 
-        elif name in {
+        elif key in {
             "high",
             "high_price",
             "highprice",
         }:
 
-            mapping[
+            rename_map[
                 column
             ] = "High"
 
-        elif name in {
+        elif key in {
             "low",
             "low_price",
             "lowprice",
         }:
 
-            mapping[
+            rename_map[
                 column
             ] = "Low"
 
-        elif name in {
+        elif key in {
             "close",
             "close_price",
             "closeprice",
             "last",
-            "lastprice",
             "last_price",
+            "lastprice",
         }:
 
-            mapping[
+            rename_map[
                 column
             ] = "Close"
 
-        elif name in {
+        elif key in {
             "volume",
             "vol",
             "total_volume",
             "totalvolume",
-            "matchvolume",
+            "matched_volume",
             "match_volume",
+            "matchvolume",
         }:
 
-            mapping[
+            rename_map[
                 column
             ] = "Volume"
 
-        elif name in {
+        elif key in {
             "value",
             "trading_value",
+            "trade_value",
             "value_traded",
-            "matchvalue",
             "match_value",
+            "matched_value",
             "turnover",
             "total_value",
-            "totalvalue",
         }:
 
-            mapping[
+            rename_map[
                 column
             ] = "Value"
 
-    du_lieu = du_lieu.rename(
-        columns=mapping
+    work = work.rename(
+        columns=rename_map
     )
 
-    # ========================================================
-    # TIME INDEX
-    # ========================================================
+    # Datetime
+    if "Time" in work.columns:
 
-    if "Time" in du_lieu.columns:
-
-        du_lieu[
+        work[
             "Time"
         ] = pd.to_datetime(
-            du_lieu[
+            work[
                 "Time"
             ],
             errors="coerce",
         )
 
-        du_lieu = (
-            du_lieu
+        work = (
+            work
             .set_index(
                 "Time"
             )
@@ -380,32 +471,25 @@ def _chuan_hoa_bang_gia(
 
     else:
 
-        du_lieu.index = pd.to_datetime(
-            du_lieu.index,
+        work.index = pd.to_datetime(
+            work.index,
             errors="coerce",
         )
 
-    du_lieu = du_lieu[
-        ~du_lieu.index.isna()
+    work = work[
+        ~work.index.isna()
     ].copy()
 
-    du_lieu = (
-        du_lieu
+    work = (
+        work
         .sort_index()
     )
 
-    du_lieu = (
-        du_lieu[
-            ~du_lieu.index.duplicated(
-                keep="last"
-            )
-        ]
-        .copy()
-    )
-
-    # ========================================================
-    # OHLC BẮT BUỘC
-    # ========================================================
+    work = work[
+        ~work.index.duplicated(
+            keep="last"
+        )
+    ].copy()
 
     required = [
         "Open",
@@ -417,31 +501,22 @@ def _chuan_hoa_bang_gia(
     missing = [
         column
         for column in required
-        if column not in du_lieu.columns
+        if column not in work.columns
     ]
 
     if missing:
-
         raise ValueError(
-            "Thiếu cột dữ liệu: "
+            "Thiếu cột OHLC: "
             + ", ".join(
                 missing
             )
         )
 
-    # ========================================================
-    # VOLUME
-    # ========================================================
+    if "Volume" not in work.columns:
 
-    if "Volume" not in du_lieu.columns:
-
-        du_lieu[
+        work[
             "Volume"
         ] = 0.0
-
-    # ========================================================
-    # NUMERIC
-    # ========================================================
 
     for column in [
         "Open",
@@ -451,44 +526,37 @@ def _chuan_hoa_bang_gia(
         "Volume",
     ]:
 
-        du_lieu[
+        work[
             column
         ] = pd.to_numeric(
-            du_lieu[
+            work[
                 column
             ],
             errors="coerce",
         )
 
-    if "Value" in du_lieu.columns:
+    if "Value" in work.columns:
 
-        du_lieu[
+        work[
             "Value"
         ] = pd.to_numeric(
-            du_lieu[
+            work[
                 "Value"
             ],
             errors="coerce",
         )
 
-    # ========================================================
-    # CHUẨN HÓA GIÁ CỔ PHIẾU
-    # ========================================================
-
-    if la_co_phieu:
+    # Giá cổ phiếu có thể về đơn vị nghìn.
+    if stock:
 
         median_price = (
-            du_lieu[
+            work[
                 "Close"
             ]
             .dropna()
             .median()
         )
 
-        # vnstock có thể trả giá theo nghìn đồng.
-        # Ví dụ 22.2 -> 22,200.
-        #
-        # VNINDEX tuyệt đối không đi qua nhánh này.
         if (
             pd.notna(
                 median_price
@@ -504,18 +572,14 @@ def _chuan_hoa_bang_gia(
                 "Close",
             ]:
 
-                du_lieu[
+                work[
                     column
-                ] = (
-                    du_lieu[
-                        column
-                    ]
-                    * 1000
-                )
+                ] *= 1000
 
-    # ========================================================
-    # LOẠI GIÁ LỖI
-    # ========================================================
+            if "Value" in work.columns:
+                # Value thường đã là VND,
+                # không tự nhân nếu chưa chắc.
+                pass
 
     for column in [
         "Open",
@@ -524,25 +588,21 @@ def _chuan_hoa_bang_gia(
         "Close",
     ]:
 
-        du_lieu.loc[
-            du_lieu[
+        work.loc[
+            work[
                 column
             ] <= 0,
             column,
         ] = np.nan
 
-    du_lieu.loc[
-        du_lieu[
+    work.loc[
+        work[
             "Volume"
         ] < 0,
         "Volume",
     ] = np.nan
 
-    # ========================================================
-    # INF
-    # ========================================================
-
-    du_lieu = du_lieu.replace(
+    work = work.replace(
         [
             np.inf,
             -np.inf,
@@ -550,11 +610,7 @@ def _chuan_hoa_bang_gia(
         np.nan,
     )
 
-    # ========================================================
-    # OHLC HỢP LỆ
-    # ========================================================
-
-    du_lieu = du_lieu.dropna(
+    work = work.dropna(
         subset=[
             "Open",
             "High",
@@ -563,13 +619,12 @@ def _chuan_hoa_bang_gia(
         ]
     )
 
-    if du_lieu.empty:
-
+    if work.empty:
         raise ValueError(
-            "Không còn dữ liệu OHLC hợp lệ."
+            "Không còn OHLC hợp lệ."
         )
 
-    return du_lieu
+    return work
 
 
 # ============================================================
@@ -577,52 +632,48 @@ def _chuan_hoa_bang_gia(
 # ============================================================
 
 def rsi(
-    chuoi_gia,
-    chu_ky=14,
+    prices,
+    period=14,
 ):
 
-    chuoi_gia = pd.to_numeric(
-        chuoi_gia,
+    prices = pd.to_numeric(
+        prices,
         errors="coerce",
     )
 
-    thay_doi = (
-        chuoi_gia.diff()
+    delta = prices.diff()
+
+    gain = delta.clip(
+        lower=0
     )
 
-    tang = (
-        thay_doi.clip(
-            lower=0
-        )
-    )
-
-    giam = (
-        -thay_doi.clip(
+    loss = (
+        -delta.clip(
             upper=0
         )
     )
 
     avg_gain = (
-        tang
+        gain
         .ewm(
-            alpha=1 / chu_ky,
+            alpha=1 / period,
             adjust=False,
-            min_periods=chu_ky,
+            min_periods=period,
         )
         .mean()
     )
 
     avg_loss = (
-        giam
+        loss
         .ewm(
-            alpha=1 / chu_ky,
+            alpha=1 / period,
             adjust=False,
-            min_periods=chu_ky,
+            min_periods=period,
         )
         .mean()
     )
 
-    rs = (
+    relative = (
         avg_gain
         / avg_loss.replace(
             0,
@@ -636,7 +687,7 @@ def rsi(
             100
             / (
                 1
-                + rs
+                + relative
             )
         )
     )
@@ -644,12 +695,10 @@ def rsi(
     result = result.where(
         ~(
             (
-                avg_loss
-                == 0
+                avg_loss == 0
             )
             & (
-                avg_gain
-                > 0
+                avg_gain > 0
             )
         ),
         100,
@@ -658,12 +707,10 @@ def rsi(
     result = result.where(
         ~(
             (
-                avg_loss
-                == 0
+                avg_loss == 0
             )
             & (
-                avg_gain
-                == 0
+                avg_gain == 0
             )
         ),
         50,
@@ -677,47 +724,67 @@ def rsi(
 # ============================================================
 
 def add_indicators(
-    du_lieu,
+    df,
     la_co_phieu=False,
 ):
 
-    du_lieu = (
-        _chuan_hoa_bang_gia(
-            du_lieu,
-            la_co_phieu=la_co_phieu,
-        )
-        .copy()
-    )
+    work = _normalize_ohlcv(
+        df,
+        stock=la_co_phieu,
+    ).copy()
 
-    gia = du_lieu[
+    close = work[
         "Close"
     ]
 
+    high = work[
+        "High"
+    ]
+
+    low = work[
+        "Low"
+    ]
+
+    volume = work[
+        "Volume"
+    ]
+
     # ========================================================
-    # RETURN
+    # PRICE RETURN
     # ========================================================
 
-    du_lieu[
+    work[
         "Return"
-    ] = gia.pct_change()
+    ] = close.pct_change()
 
-    du_lieu[
+    work[
         "ReturnPct"
     ] = (
-        du_lieu[
+        work[
             "Return"
         ]
         * 100
     )
 
     # ========================================================
+    # LOG RETURN
+    # ========================================================
+
+    work[
+        "LogReturn"
+    ] = np.log(
+        close
+        / close.shift(1)
+    )
+
+    # ========================================================
     # RSI
     # ========================================================
 
-    du_lieu[
+    work[
         "RSI"
     ] = rsi(
-        gia,
+        close,
         14,
     )
 
@@ -735,10 +802,10 @@ def add_indicators(
         200,
     ]:
 
-        du_lieu[
+        work[
             f"EMA{period}"
         ] = (
-            gia
+            close
             .ewm(
                 span=period,
                 adjust=False,
@@ -759,10 +826,10 @@ def add_indicators(
         200,
     ]:
 
-        du_lieu[
+        work[
             f"SMA{period}"
         ] = (
-            gia
+            close
             .rolling(
                 period
             )
@@ -770,24 +837,71 @@ def add_indicators(
         )
 
     # ========================================================
+    # DISTANCE FROM MA
+    # ========================================================
+
+    for period in [
+        20,
+        50,
+        100,
+        200,
+    ]:
+
+        sma_col = (
+            f"SMA{period}"
+        )
+
+        ema_col = (
+            f"EMA{period}"
+        )
+
+        if sma_col in work.columns:
+
+            work[
+                f"Price_vs_SMA{period}"
+            ] = (
+                (
+                    close
+                    / work[
+                        sma_col
+                    ]
+                )
+                - 1
+            ) * 100
+
+        if ema_col in work.columns:
+
+            work[
+                f"Price_vs_EMA{period}"
+            ] = (
+                (
+                    close
+                    / work[
+                        ema_col
+                    ]
+                )
+                - 1
+            ) * 100
+
+    # ========================================================
     # MACD
     # ========================================================
 
-    du_lieu[
+    work[
         "MACD"
     ] = (
-        du_lieu[
+        work[
             "EMA12"
         ]
-        - du_lieu[
+        - work[
             "EMA26"
         ]
     )
 
-    du_lieu[
+    work[
         "MACD_Signal"
     ] = (
-        du_lieu[
+        work[
             "MACD"
         ]
         .ewm(
@@ -797,13 +911,13 @@ def add_indicators(
         .mean()
     )
 
-    du_lieu[
+    work[
         "MACD_Hist"
     ] = (
-        du_lieu[
+        work[
             "MACD"
         ]
-        - du_lieu[
+        - work[
             "MACD_Signal"
         ]
     )
@@ -812,55 +926,72 @@ def add_indicators(
     # BOLLINGER
     # ========================================================
 
-    std20 = (
-        gia
+    rolling_std = (
+        close
         .rolling(
             20
         )
         .std()
     )
 
-    du_lieu[
+    work[
         "Bollinger_Mid"
-    ] = (
-        du_lieu[
-            "SMA20"
-        ]
-    )
+    ] = work[
+        "SMA20"
+    ]
 
-    du_lieu[
+    work[
         "Bollinger_Upper"
     ] = (
-        du_lieu[
+        work[
             "SMA20"
         ]
-        + 2 * std20
+        + 2 * rolling_std
     )
 
-    du_lieu[
+    work[
         "Bollinger_Lower"
     ] = (
-        du_lieu[
+        work[
             "SMA20"
         ]
-        - 2 * std20
+        - 2 * rolling_std
     )
 
-    du_lieu[
+    work[
         "Bollinger_Width"
     ] = (
         (
-            du_lieu[
+            work[
                 "Bollinger_Upper"
             ]
-            - du_lieu[
+            - work[
                 "Bollinger_Lower"
             ]
         )
-        / du_lieu[
+        / work[
             "Bollinger_Mid"
         ]
         * 100
+    )
+
+    work[
+        "Bollinger_Position"
+    ] = (
+        (
+            close
+            - work[
+                "Bollinger_Lower"
+            ]
+        )
+        / (
+            work[
+                "Bollinger_Upper"
+            ]
+            - work[
+                "Bollinger_Lower"
+            ]
+        )
     )
 
     # ========================================================
@@ -873,10 +1004,10 @@ def add_indicators(
         60,
     ]:
 
-        du_lieu[
+        work[
             f"Volatility{period}"
         ] = (
-            du_lieu[
+            work[
                 "Return"
             ]
             .rolling(
@@ -889,10 +1020,10 @@ def add_indicators(
             * 100
         )
 
-    du_lieu[
+    work[
         "Volatility_20D"
     ] = (
-        du_lieu[
+        work[
             "Volatility20"
         ]
         / 100
@@ -908,61 +1039,118 @@ def add_indicators(
         50,
     ]:
 
-        du_lieu[
+        work[
             f"Volume_SMA{period}"
         ] = (
-            du_lieu[
-                "Volume"
-            ]
+            volume
             .rolling(
                 period
             )
             .mean()
         )
 
-    du_lieu[
+    work[
         "Volume_Change"
+    ] = volume.pct_change()
+
+    work[
+        "Relative_Volume"
     ] = (
-        du_lieu[
-            "Volume"
+        volume
+        / work[
+            "Volume_SMA20"
+        ]
+    )
+
+    # ========================================================
+    # VALUE
+    # ========================================================
+
+    if "Value" not in work.columns:
+
+        work[
+            "Value"
+        ] = (
+            close
+            * volume
+        )
+
+    else:
+
+        work[
+            "Value"
+        ] = pd.to_numeric(
+            work[
+                "Value"
+            ],
+            errors="coerce",
+        )
+
+    work[
+        "Trading_Value"
+    ] = work[
+        "Value"
+    ]
+
+    work[
+        "Trading_Value_Change"
+    ] = (
+        work[
+            "Trading_Value"
         ]
         .pct_change()
     )
 
-    du_lieu[
-        "Relative_Volume"
+    work[
+        "Trading_Value_SMA20"
     ] = (
-        du_lieu[
-            "Volume"
+        work[
+            "Trading_Value"
         ]
-        / du_lieu[
-            "Volume_SMA20"
-        ]
+        .rolling(
+            20
+        )
+        .mean()
     )
 
     # ========================================================
     # RANGE
     # ========================================================
 
-    du_lieu[
+    work[
         "Range"
     ] = (
-        du_lieu[
-            "High"
+        high
+        - low
+    )
+
+    work[
+        "Range_Percent"
+    ] = (
+        work[
+            "Range"
         ]
-        - du_lieu[
-            "Low"
+        / close
+        * 100
+    )
+
+    work[
+        "Body"
+    ] = (
+        close
+        - work[
+            "Open"
         ]
     )
 
-    du_lieu[
-        "Range_Percent"
+    work[
+        "Body_Percent"
     ] = (
-        du_lieu[
-            "Range"
+        work[
+            "Body"
         ]
-        / du_lieu[
-            "Close"
+        / work[
+            "Open"
         ]
         * 100
     )
@@ -971,49 +1159,37 @@ def add_indicators(
     # ATR14
     # ========================================================
 
-    tr1 = (
-        du_lieu[
-            "High"
-        ]
-        - du_lieu[
-            "Low"
-        ]
+    true_range_1 = (
+        high
+        - low
     )
 
-    tr2 = (
-        du_lieu[
-            "High"
-        ]
-        - du_lieu[
-            "Close"
-        ].shift(
-            1
-        )
+    true_range_2 = (
+        high
+        - close.shift(1)
     ).abs()
 
-    tr3 = (
-        du_lieu[
-            "Low"
-        ]
-        - du_lieu[
-            "Close"
-        ].shift(
-            1
-        )
+    true_range_3 = (
+        low
+        - close.shift(1)
     ).abs()
 
     true_range = pd.concat(
         [
-            tr1,
-            tr2,
-            tr3,
+            true_range_1,
+            true_range_2,
+            true_range_3,
         ],
         axis=1,
     ).max(
         axis=1
     )
 
-    du_lieu[
+    work[
+        "TrueRange"
+    ] = true_range
+
+    work[
         "ATR14"
     ] = (
         true_range
@@ -1023,24 +1199,45 @@ def add_indicators(
         .mean()
     )
 
+    work[
+        "ATR_Percent"
+    ] = (
+        work[
+            "ATR14"
+        ]
+        / close
+        * 100
+    )
+
     # ========================================================
     # MOMENTUM
     # ========================================================
 
     for period in [
+        1,
         5,
         10,
         20,
+        60,
     ]:
 
-        du_lieu[
+        work[
             f"Momentum{period}"
         ] = (
-            gia
-            / gia.shift(
+            close
+            / close.shift(
                 period
             )
             - 1
+        )
+
+        work[
+            f"Momentum{period}Pct"
+        ] = (
+            work[
+                f"Momentum{period}"
+            ]
+            * 100
         )
 
     # ========================================================
@@ -1053,57 +1250,139 @@ def add_indicators(
         252,
     ]:
 
-        du_lieu[
+        work[
             f"High{period}"
         ] = (
-            du_lieu[
-                "High"
-            ]
+            high
             .rolling(
                 period
             )
             .max()
         )
 
-        du_lieu[
+        work[
             f"Low{period}"
         ] = (
-            du_lieu[
-                "Low"
-            ]
+            low
             .rolling(
                 period
             )
             .min()
         )
 
-        du_lieu[
+        work[
             f"Distance_From_High{period}"
         ] = (
-            (
-                gia
-                / du_lieu[
-                    f"High{period}"
-                ]
-                - 1
-            )
-            * 100
-        )
+            close
+            / work[
+                f"High{period}"
+            ]
+            - 1
+        ) * 100
 
-        du_lieu[
+        work[
             f"Distance_From_Low{period}"
         ] = (
-            (
-                gia
-                / du_lieu[
-                    f"Low{period}"
-                ]
-                - 1
-            )
-            * 100
-        )
+            close
+            / work[
+                f"Low{period}"
+            ]
+            - 1
+        ) * 100
 
-    return du_lieu.replace(
+    # ========================================================
+    # STOCHASTIC
+    # ========================================================
+
+    low14 = (
+        low
+        .rolling(
+            14
+        )
+        .min()
+    )
+
+    high14 = (
+        high
+        .rolling(
+            14
+        )
+        .max()
+    )
+
+    work[
+        "Stochastic_K"
+    ] = (
+        (
+            close
+            - low14
+        )
+        / (
+            high14
+            - low14
+        )
+        * 100
+    )
+
+    work[
+        "Stochastic_D"
+    ] = (
+        work[
+            "Stochastic_K"
+        ]
+        .rolling(
+            3
+        )
+        .mean()
+    )
+
+    # ========================================================
+    # ROC
+    # ========================================================
+
+    for period in [
+        5,
+        10,
+        20,
+    ]:
+
+        work[
+            f"ROC{period}"
+        ] = (
+            (
+                close
+                / close.shift(
+                    period
+                )
+            )
+            - 1
+        ) * 100
+
+    # ========================================================
+    # PRICE / VOLUME TREND
+    # ========================================================
+
+    work[
+        "OBV_Proxy"
+    ] = (
+        np.sign(
+            close.diff()
+        )
+        * volume
+    ).cumsum()
+
+    work[
+        "Dollar_Volume"
+    ] = (
+        close
+        * volume
+    )
+
+    # ========================================================
+    # CLEAN
+    # ========================================================
+
+    work = work.replace(
         [
             np.inf,
             -np.inf,
@@ -1111,70 +1390,94 @@ def add_indicators(
         np.nan,
     )
 
+    return work
+
 
 # ============================================================
-# SỐ NGÀY THEO KỲ
+# PERIOD -> DAYS
 # ============================================================
 
-def _so_ngay_theo_ky(
-    ky_hieu,
+def _period_days(
+    period,
 ):
-
-    ky_hieu = str(
-        ky_hieu or "1y"
+    key = str(
+        period or "1y"
     ).strip().lower()
 
-    bang_ngay = {
-        "1d": 3,
-        "5d": 10,
+    mapping = {
+        "1d": 5,
+        "5d": 12,
         "1w": 14,
-        "1mo": 45,
-        "3mo": 120,
-        "6mo": 240,
-        "1y": 450,
-        "2y": 850,
-        "3y": 1250,
-        "5y": 1950,
-        "10y": 3900,
+        "1mo": 31,
+        "3mo": 93,
+        "6mo": 186,
+        "1y": 365,
+        "2y": 730,
+        "3y": 1095,
+        "5y": 1825,
+        "10y": 3652,
         "max": 5000,
     }
 
-    return bang_ngay.get(
-        ky_hieu,
-        450,
+    return mapping.get(
+        key,
+        365,
     )
 
 
 # ============================================================
-# REQUEST OHLCV
+# REQUEST RATE LIMIT
+# ============================================================
+
+def _sleep_between_requests(
+    previous_request_time,
+):
+    if previous_request_time is None:
+        return
+
+    elapsed = (
+        time.monotonic()
+        - previous_request_time
+    )
+
+    remaining = (
+        REQUEST_SLEEP_SECONDS
+        - elapsed
+    )
+
+    if remaining > 0:
+        time.sleep(
+            remaining
+        )
+
+
+# ============================================================
+# EQUITY OHLCV REQUEST
 # ============================================================
 
 def _request_equity_ohlcv(
-    nguon,
-    ma,
+    market,
+    symbol,
     start_date,
     end_date,
 ):
-
-    start = pd.Timestamp(
-        start_date
-    )
-
-    end = pd.Timestamp(
-        end_date
-    )
-
     return (
-        nguon
+        market
         .equity(
-            ma
+            normalize_symbol(
+                symbol
+            )
         )
         .ohlcv(
-            start=start.strftime(
+            start=pd.Timestamp(
+                start_date
+            ).strftime(
                 "%Y-%m-%d"
             ),
             end=(
-                end
+                pd.Timestamp(
+                    end_date
+                )
                 + pd.Timedelta(
                     days=1
                 )
@@ -1187,516 +1490,31 @@ def _request_equity_ohlcv(
 
 
 # ============================================================
-# REQUEST CÓ RETRY RATE LIMIT
+# INDEX OHLCV REQUEST
 # ============================================================
 
-def _request_equity_ohlcv_safe(
-    nguon,
-    ma,
+def _request_index_ohlcv(
+    market,
+    index_symbol,
     start_date,
     end_date,
 ):
-
-    last_error = None
-
-    for attempt in range(
-        SO_LAN_RETRY_RATE_LIMIT + 1
-    ):
-
-        try:
-
-            return _request_equity_ohlcv(
-                nguon,
-                ma,
-                start_date,
-                end_date,
-            )
-
-        except Exception as error:
-
-            last_error = error
-
-            error_text = str(
-                error
-            ).lower()
-
-            is_rate_limit = any(
-                phrase in error_text
-                for phrase in [
-                    "rate limit",
-                    "too many requests",
-                    "429",
-                    "request limit",
-                    "limit exceeded",
-                ]
-            )
-
-            if (
-                not is_rate_limit
-                or attempt
-                >= SO_LAN_RETRY_RATE_LIMIT
-            ):
-
-                raise
-
-            wait_seconds = (
-                THOI_GIAN_RETRY_CO_BAN
-                * (
-                    attempt
-                    + 1
-                )
-            )
-
-            time.sleep(
-                wait_seconds
-            )
-
-    if last_error is not None:
-
-        raise last_error
-
-    raise RuntimeError(
-        "Không thể gọi API."
-    )
-
-
-# ============================================================
-# DỮ LIỆU CỔ PHIẾU NGẮN
-# ============================================================
-
-def _lay_co_phieu_vnstock(
-    ma,
-    ky_hieu="1y",
-):
-
-    nguon = (
-        _tao_nguon_thi_truong()
-    )
-
-    ma = normalize_symbol(
-        ma
-    )
-
-    days = _so_ngay_theo_ky(
-        ky_hieu
-    )
-
-    ngay_cuoi = datetime.now()
-
-    ngay_dau = (
-        ngay_cuoi
-        - timedelta(
-            days=int(
-                days
-            )
-        )
-    )
-
-    du_lieu = (
-        _request_equity_ohlcv_safe(
-            nguon,
-            ma,
-            ngay_dau,
-            ngay_cuoi,
-        )
-    )
-
-    if (
-        du_lieu is None
-        or du_lieu.empty
-    ):
-
-        raise ValueError(
-            f"Không có dữ liệu OHLCV cho {ma}."
-        )
-
-    return _chuan_hoa_bang_gia(
-        du_lieu,
-        la_co_phieu=True,
-    )
-
-
-# ============================================================
-# LỊCH SỬ NGHIÊN CỨU DÀI
-# ============================================================
-
-@st.cache_data(
-    ttl=THOI_GIAN_LUU_NGHIEN_CUU,
-    show_spinner=False,
-)
-def load_research_history(
-    symbol,
-    start_date,
-    end_date,
-):
-    """
-    ĐÂY LÀ HÀM DÀNH RIÊNG CHO NGHIÊN CỨU.
-
-    Không sử dụng load_market_data().
-
-    Ví dụ 1Y:
-
-        27/08/2025
-             ↓
-        chunk 60 ngày
-             ↓
-        chunk 60 ngày
-             ↓
-        chunk 60 ngày
-             ↓
-        ...
-             ↓
-        27/08/2026
-
-    Sau đó ghép toàn bộ phiên giao dịch.
-
-    Vì mỗi chunk chỉ 60 ngày lịch nên dữ liệu
-    không bị endpoint giới hạn ở ~100 rows.
-    """
-
-    if not NGUON_VNSTOCK_CO_SAN:
-
-        raise RuntimeError(
-            "Chưa có vnstock."
-        )
-
-    ma = normalize_symbol(
-        symbol
-    )
-
-    if not ma:
-
-        raise ValueError(
-            "Mã cổ phiếu không hợp lệ."
-        )
-
-    start = pd.Timestamp(
-        start_date
-    ).normalize()
-
-    end = pd.Timestamp(
-        end_date
-    ).normalize()
-
-    if start > end:
-
-        raise ValueError(
-            "Ngày bắt đầu phải nhỏ hơn hoặc bằng ngày kết thúc."
-        )
-
-    nguon = (
-        _tao_nguon_thi_truong()
-    )
-
-    chunks = []
-
-    cursor = start
-
-    so_request = 0
-
-    tong_so_request_uoc_tinh = int(
-        np.ceil(
-            (
-                end
-                - start
-            ).days
-            / SO_NGAY_MOI_CHUNK_NGHIEN_CUU
-        )
-    )
-
-    # ========================================================
-    # LOOP CHUNK
-    # ========================================================
-
-    while cursor <= end:
-
-        chunk_end = min(
-            cursor
-            + pd.Timedelta(
-                days=(
-                    SO_NGAY_MOI_CHUNK_NGHIEN_CUU
-                    - 1
-                )
-            ),
-            end,
-        )
-
-        so_request += 1
-
-        # Progress trên Streamlit nếu đang được gọi
-        # trực tiếp từ page.
-        try:
-
-            st.session_state[
-                "research_api_progress"
-            ] = (
-                so_request,
-                tong_so_request_uoc_tinh,
-            )
-
-        except Exception:
-            pass
-
-        du_lieu_chunk = (
-            _request_equity_ohlcv_safe(
-                nguon,
-                ma,
-                cursor,
-                chunk_end,
-            )
-        )
-
-        if (
-            isinstance(
-                du_lieu_chunk,
-                pd.DataFrame,
-            )
-            and not du_lieu_chunk.empty
-        ):
-
-            chunks.append(
-                du_lieu_chunk.copy()
-            )
-
-        next_cursor = (
-            chunk_end
-            + pd.Timedelta(
-                days=1
-            )
-        )
-
-        if next_cursor <= end:
-
-            time.sleep(
-                THOI_GIAN_CHO_GIUA_REQUEST
-            )
-
-        cursor = next_cursor
-
-    # ========================================================
-    # KHÔNG CÓ DATA
-    # ========================================================
-
-    if not chunks:
-
-        raise ValueError(
-            f"Không lấy được dữ liệu lịch sử "
-            f"cho {ma} trong khoảng "
-            f"{start.strftime('%d/%m/%Y')} "
-            f"→ "
-            f"{end.strftime('%d/%m/%Y')}."
-        )
-
-    # ========================================================
-    # CONCAT
-    # ========================================================
-
-    raw = pd.concat(
-        chunks,
-        axis=0,
-    )
-
-    # ========================================================
-    # CHUẨN HÓA
-    # ========================================================
-
-    raw = _chuan_hoa_bang_gia(
-        raw,
-        la_co_phieu=True,
-    )
-
-    # ========================================================
-    # DEDUPLICATE
-    # ========================================================
-
-    raw.index = pd.to_datetime(
-        raw.index,
-        errors="coerce",
-    )
-
-    raw = raw[
-        ~raw.index.isna()
-    ].copy()
-
-    raw = (
-        raw
-        .sort_index()
-    )
-
-    raw = (
-        raw[
-            ~raw.index.duplicated(
-                keep="last"
-            )
-        ]
-        .copy()
-    )
-
-    # ========================================================
-    # CẮT CHÍNH XÁC
-    # ========================================================
-
-    raw = raw.loc[
-        (
-            raw.index
-            >= start
-        )
-        & (
-            raw.index
-            <= end
-        )
-    ].copy()
-
-    if raw.empty:
-
-        raise ValueError(
-            "Không có phiên giao dịch nào trong khoảng đã chọn."
-        )
-
-    # ========================================================
-    # QUAN TRỌNG:
-    # TÍNH INDICATOR SAU KHI GHÉP
-    # ========================================================
-
-    result = add_indicators(
-        raw,
-        la_co_phieu=True,
-    )
-
-    # ========================================================
-    # ATTRS
-    # ========================================================
-
-    result.attrs[
-        "symbol"
-    ] = ma
-
-    result.attrs[
-        "display_symbol"
-    ] = display_symbol(
-        ma
-    )
-
-    result.attrs[
-        "source"
-    ] = "Vnstock"
-
-    result.attrs[
-        "la_co_phieu"
-    ] = True
-
-    result.attrs[
-        "research_start"
-    ] = str(
-        start.date()
-    )
-
-    result.attrs[
-        "research_end"
-    ] = str(
-        end.date()
-    )
-
-    result.attrs[
-        "research_observations"
-    ] = len(
-        result
-    )
-
-    result.attrs[
-        "research_requests"
-    ] = so_request
-
-    return result
-
-
-# ============================================================
-# HELPER THEO PRESET
-# ============================================================
-
-def load_research_history_period(
-    symbol,
-    period="1y",
-    end_date=None,
-):
-    """
-    Dùng trực tiếp cho page:
-
-        load_research_history_period(
-            "HPG",
-            "1y",
-        )
-
-    Hỗ trợ:
-
-        1mo
-        3mo
-        6mo
-        1y
-        3y
-        5y
-        10y
-    """
-
-    if end_date is None:
-
-        end = pd.Timestamp.today().normalize()
-
-    else:
-
-        end = pd.Timestamp(
-            end_date
-        ).normalize()
-
-    days = _so_ngay_theo_ky(
-        period
-    )
-
-    start = (
-        end
-        - pd.Timedelta(
-            days=days
-        )
-    )
-
-    return load_research_history(
-        symbol,
-        start.date(),
-        end.date(),
-    )
-
-
-# ============================================================
-# VNINDEX
-# ============================================================
-
-def _lay_vnindex_vnstock():
-
-    nguon = (
-        _tao_nguon_thi_truong()
-    )
-
-    end = datetime.now()
-
-    start = (
-        end
-        - timedelta(
-            days=450
-        )
-    )
-
-    du_lieu = (
-        nguon
+    return (
+        market
         .index(
-            "VNINDEX"
+            index_symbol
         )
         .ohlcv(
-            start=start.strftime(
+            start=pd.Timestamp(
+                start_date
+            ).strftime(
                 "%Y-%m-%d"
             ),
             end=(
-                end
-                + timedelta(
+                pd.Timestamp(
+                    end_date
+                )
+                + pd.Timedelta(
                     days=1
                 )
             ).strftime(
@@ -1706,372 +1524,104 @@ def _lay_vnindex_vnstock():
         )
     )
 
-    if (
-        du_lieu is None
-        or du_lieu.empty
-    ):
-
-        raise ValueError(
-            "Không có dữ liệu VN-INDEX."
-        )
-
-    du_lieu = _chuan_hoa_bang_gia(
-        du_lieu,
-        la_co_phieu=False,
-    )
-
-    du_lieu = add_indicators(
-        du_lieu,
-        la_co_phieu=False,
-    )
-
-    return du_lieu
-
 
 # ============================================================
-# CỘT SUMMARY
+# LOAD STOCK DATA
 # ============================================================
 
-def _tim_cot_tong_quat(
-    df,
-    cac_ten,
+def _load_stock_raw(
+    symbol,
+    start_date,
+    end_date,
 ):
 
-    if (
-        df is None
-        or not isinstance(
-            df,
-            pd.DataFrame,
-        )
-        or df.empty
-    ):
+    market = _create_market()
 
-        return None
+    start = pd.Timestamp(
+        start_date
+    ).normalize()
 
-    mapping = {}
+    end = pd.Timestamp(
+        end_date
+    ).normalize()
 
-    for column in df.columns:
+    chunks = []
 
-        mapping[
-            _ten_cot_chuan(
-                column
-            )
-        ] = column
+    cursor = start
 
-    for name in cac_ten:
+    last_request = None
 
-        key = _ten_cot_chuan(
-            name
-        )
+    while cursor <= end:
 
-        if key in mapping:
-
-            return mapping[
-                key
-            ]
-
-    for column in df.columns:
-
-        key = _ten_cot_chuan(
-            column
-        )
-
-        for name in cac_ten:
-
-            target = _ten_cot_chuan(
-                name
-            )
-
-            if (
-                target in key
-                or key in target
-            ):
-
-                return column
-
-    return None
-
-
-def _tim_cot_khoi_luong(
-    df,
-):
-
-    return _tim_cot_tong_quat(
-        df,
-        [
-            "total_match_volume",
-            "total_volume",
-            "trading_volume",
-            "matched_volume",
-            "match_volume",
-            "volume",
-            "vol",
-            "khoi_luong",
-            "khối lượng",
-        ],
-    )
-
-
-def _tim_cot_gia_tri(
-    df,
-):
-
-    return _tim_cot_tong_quat(
-        df,
-        [
-            "total_value",
-            "total_trading_value",
-            "trading_value",
-            "trade_value",
-            "value_traded",
-            "match_value",
-            "matched_value",
-            "value",
-            "gia_tri",
-            "giá trị",
-            "turnover",
-        ],
-    )
-
-
-def _lay_dong_cuoi(
-    df,
-):
-
-    if (
-        df is None
-        or df.empty
-    ):
-
-        return None
-
-    return df.iloc[
-        -1
-    ]
-
-
-# ============================================================
-# SUMMARY VNINDEX
-# ============================================================
-
-@st.cache_data(
-    ttl=THOI_GIAN_LUU_TONG_QUAN_VNINDEX,
-    show_spinner=False,
-)
-def load_vnindex_market_summary():
-
-    nguon = (
-        _tao_nguon_thi_truong()
-    )
-
-    # ========================================================
-    # SUMMARY
-    # ========================================================
-
-    try:
-
-        summary = (
-            nguon
-            .index(
-                "VNINDEX"
-            )
-            .summary()
-        )
-
-    except Exception:
-
-        summary = None
-
-    if (
-        isinstance(
-            summary,
-            pd.DataFrame,
-        )
-        and not summary.empty
-    ):
-
-        volume_column = (
-            _tim_cot_khoi_luong(
-                summary
-            )
-        )
-
-        value_column = (
-            _tim_cot_gia_tri(
-                summary
-            )
-        )
-
-        last_row = (
-            _lay_dong_cuoi(
-                summary
-            )
-        )
-
-        if last_row is not None:
-
-            volume = None
-            value = None
-
-            if volume_column is not None:
-
-                volume = _so(
-                    last_row[
-                        volume_column
-                    ],
-                    None,
+        chunk_end = min(
+            cursor
+            + pd.Timedelta(
+                days=(
+                    RESEARCH_CHUNK_DAYS
+                    - 1
                 )
-
-            if value_column is not None:
-
-                value = _so(
-                    last_row[
-                        value_column
-                    ],
-                    None,
-                )
-
-            if (
-                volume is not None
-                or value is not None
-            ):
-
-                return {
-                    "khoi_luong": volume,
-                    "gia_tri": value,
-                    "nguon": "index.summary",
-                }
-
-    # ========================================================
-    # TRADE HISTORY
-    # ========================================================
-
-    try:
-
-        trade = (
-            nguon
-            .index(
-                "VNINDEX"
-            )
-            .trade_history()
+            ),
+            end,
         )
 
-    except Exception:
-
-        trade = None
-
-    if (
-        isinstance(
-            trade,
-            pd.DataFrame,
-        )
-        and not trade.empty
-    ):
-
-        volume_column = (
-            _tim_cot_khoi_luong(
-                trade
-            )
+        _sleep_between_requests(
+            last_request
         )
 
-        value_column = (
-            _tim_cot_gia_tri(
-                trade
-            )
+        request_start = (
+            time.monotonic()
         )
+
+        df_chunk = _request_equity_ohlcv(
+            market,
+            symbol,
+            cursor,
+            chunk_end,
+        )
+
+        last_request = request_start
 
         if (
-            volume_column is not None
-            or value_column is not None
+            df_chunk is not None
+            and not df_chunk.empty
         ):
 
-            trade = trade.copy()
-
-            date_column = (
-                _tim_cot_tong_quat(
-                    trade,
-                    [
-                        "trading_date",
-                        "date",
-                        "time",
-                        "datetime",
-                    ],
-                )
+            chunks.append(
+                df_chunk
             )
 
-            if date_column is not None:
-
-                trade[
-                    date_column
-                ] = pd.to_datetime(
-                    trade[
-                        date_column
-                    ],
-                    errors="coerce",
-                )
-
-                trade = (
-                    trade
-                    .sort_values(
-                        date_column
-                    )
-                )
-
-            last_row = (
-                _lay_dong_cuoi(
-                    trade
-                )
+        cursor = (
+            chunk_end
+            + pd.Timedelta(
+                days=1
             )
+        )
 
-            if last_row is not None:
+    if not chunks:
 
-                volume = None
-                value = None
+        raise ValueError(
+            f"Không có dữ liệu giá {symbol}."
+        )
 
-                if volume_column is not None:
+    raw = pd.concat(
+        chunks,
+        axis=0,
+    )
 
-                    volume = _so(
-                        last_row[
-                            volume_column
-                        ],
-                        None,
-                    )
+    raw = _normalize_ohlcv(
+        raw,
+        stock=True,
+    )
 
-                if value_column is not None:
-
-                    value = _so(
-                        last_row[
-                            value_column
-                        ],
-                        None,
-                    )
-
-                if (
-                    volume is not None
-                    or value is not None
-                ):
-
-                    return {
-                        "khoi_luong": volume,
-                        "gia_tri": value,
-                        "nguon": (
-                            "index.trade_history"
-                        ),
-                    }
-
-    return {
-        "khoi_luong": None,
-        "gia_tri": None,
-        "nguon": None,
-    }
+    return raw
 
 
 # ============================================================
-# LOAD MARKET DATA
+# OLD PUBLIC STOCK API
 # ============================================================
 
 @st.cache_data(
-    ttl=THOI_GIAN_LUU_CO_PHIEU,
+    ttl=CACHE_TTL_PRICE,
     show_spinner=False,
 )
 def load_market_data(
@@ -2079,27 +1629,24 @@ def load_market_data(
     period="1y",
 ):
 
-    ma = normalize_symbol(
-        symbol
+    start = (
+        pd.Timestamp.today()
+        - pd.Timedelta(
+            days=_period_days(
+                period
+            )
+        )
+    ).date()
+
+    end = (
+        pd.Timestamp.today()
+        .date()
     )
 
-    if not ma:
-
-        raise ValueError(
-            "Mã cổ phiếu không hợp lệ."
-        )
-
-    if not NGUON_VNSTOCK_CO_SAN:
-
-        raise RuntimeError(
-            "Chưa có vnstock trong môi trường."
-        )
-
-    raw = (
-        _lay_co_phieu_vnstock(
-            ma,
-            period,
-        )
+    raw = _load_stock_raw(
+        symbol,
+        start,
+        end,
     )
 
     data = add_indicators(
@@ -2107,29 +1654,15 @@ def load_market_data(
         la_co_phieu=True,
     )
 
-    if data.empty:
-
-        raise ValueError(
-            f"Không có dữ liệu hợp lệ cho {ma}."
-        )
-
     data.attrs[
         "symbol"
-    ] = ma
-
-    data.attrs[
-        "display_symbol"
-    ] = display_symbol(
-        ma
+    ] = normalize_symbol(
+        symbol
     )
 
     data.attrs[
         "source"
     ] = "Vnstock"
-
-    data.attrs[
-        "la_co_phieu"
-    ] = True
 
     return data
 
@@ -2139,42 +1672,51 @@ def load_market_data(
 # ============================================================
 
 @st.cache_data(
-    ttl=THOI_GIAN_LUU_VNINDEX,
+    ttl=CACHE_TTL_INDEX,
     show_spinner=False,
 )
 def load_vnindex_data():
 
-    if not NGUON_VNSTOCK_CO_SAN:
+    market = _create_market()
 
-        raise RuntimeError(
-            "Chưa có vnstock trong môi trường."
-        )
-
-    data = (
-        _lay_vnindex_vnstock()
+    end = (
+        pd.Timestamp.today()
+        .date()
     )
 
-    if data.empty:
-
-        raise ValueError(
-            "VN-INDEX không có dữ liệu."
+    start = (
+        pd.Timestamp(
+            end
         )
+        - pd.Timedelta(
+            days=450
+        )
+    ).date()
+
+    df = _request_index_ohlcv(
+        market,
+        "VNINDEX",
+        start,
+        end,
+    )
+
+    data = _normalize_ohlcv(
+        df,
+        stock=False,
+    )
+
+    data = add_indicators(
+        data,
+        la_co_phieu=False,
+    )
 
     data.attrs[
         "symbol"
     ] = "VNINDEX"
 
     data.attrs[
-        "display_symbol"
-    ] = "VN-INDEX"
-
-    data.attrs[
         "source"
     ] = "Vnstock"
-
-    data.attrs[
-        "la_co_phieu"
-    ] = False
 
     return data
 
@@ -2184,44 +1726,37 @@ def load_vnindex_data():
 # ============================================================
 
 @st.cache_data(
-    ttl=THOI_GIAN_LUU_GIA_MOI,
+    ttl=CACHE_TTL_LATEST,
     show_spinner=False,
 )
 def load_latest_price(
     symbol,
 ):
 
-    ma = normalize_symbol(
-        symbol
-    )
-
     data = load_market_data(
-        ma,
+        symbol,
         "5d",
     )
 
-    if (
-        data is None
-        or data.empty
-    ):
+    if data.empty:
 
         raise ValueError(
-            f"Không có dữ liệu mới nhất cho {ma}."
+            "Không có dữ liệu mới nhất."
         )
 
     last = data.iloc[
         -1
     ]
 
-    price = float(
-        last[
+    price = _to_number(
+        last.get(
             "Close"
-        ]
+        )
     )
 
     if len(data) >= 2:
 
-        previous = float(
+        previous = _to_number(
             data[
                 "Close"
             ].iloc[
@@ -2233,7 +1768,10 @@ def load_latest_price(
 
         previous = price
 
-    if previous != 0:
+    if (
+        previous is not None
+        and previous != 0
+    ):
 
         change = (
             price
@@ -2243,24 +1781,23 @@ def load_latest_price(
 
     else:
 
-        change = 0.0
+        change = np.nan
 
     return {
         "ma": display_symbol(
-            ma
+            symbol
         ),
         "gia": price,
         "thay_doi": change,
-        "khoi_luong": float(
-            last[
+        "khoi_luong": _to_number(
+            last.get(
                 "Volume"
-            ]
+            ),
+            0.0,
         ),
-        "thoi_gian": (
-            data.index[
-                -1
-            ]
-        ),
+        "thoi_gian": data.index[
+            -1
+        ],
     }
 
 
@@ -2269,50 +1806,42 @@ def load_latest_price(
 # ============================================================
 
 def market_snapshot(
-    du_lieu,
+    data,
 ):
 
     if (
-        du_lieu is None
-        or du_lieu.empty
+        data is None
+        or data.empty
     ):
-
         return {}
 
-    last = du_lieu.iloc[
+    last = data.iloc[
         -1
     ]
 
-    if len(du_lieu) >= 2:
-
-        previous = (
-            du_lieu.iloc[
-                -2
-            ]
-        )
-
-    else:
-
-        previous = last
-
-    price = _so(
-        last.get(
-            "Close"
-        ),
-        np.nan,
+    previous = (
+        data.iloc[
+            -2
+        ]
+        if len(data) >= 2
+        else last
     )
 
-    previous_price = _so(
+    price = _to_number(
+        last.get(
+            "Close"
+        )
+    )
+
+    previous_price = _to_number(
         previous.get(
             "Close"
-        ),
-        np.nan,
+        )
     )
 
     if (
-        np.isfinite(
-            previous_price
-        )
+        price is not None
+        and previous_price is not None
         and previous_price != 0
     ):
 
@@ -2329,25 +1858,11 @@ def market_snapshot(
     def get_column(
         name,
     ):
-
-        try:
-
-            value = float(
-                last.get(
-                    name
-                )
+        return _to_number(
+            last.get(
+                name
             )
-
-            if np.isfinite(
-                value
-            ):
-
-                return value
-
-        except Exception:
-            pass
-
-        return np.nan
+        )
 
     return {
         "price": price,
@@ -2373,26 +1888,1850 @@ def market_snapshot(
         "volume": get_column(
             "Volume"
         ),
+        "trading_value": get_column(
+            "Trading_Value"
+        ),
         "atr14": get_column(
             "ATR14"
         ),
-        "volume_sma20": get_column(
-            "Volume_SMA20"
-        ),
         "relative_volume": get_column(
             "Relative_Volume"
-        ),
-        "ema20": get_column(
-            "EMA20"
-        ),
-        "ema50": get_column(
-            "EMA50"
         ),
     }
 
 
 # ============================================================
-# COMPATIBILITY
+# TRADING / FLOW COLUMN EXTRACTION
+# ============================================================
+
+def _extract_date_column(
+    df,
+):
+    return _find_column(
+        df,
+        [
+            "time",
+            "date",
+            "datetime",
+            "trading_date",
+            "tradingdate",
+        ],
+    )
+
+
+def _extract_volume_column(
+    df,
+):
+    return _find_column(
+        df,
+        [
+            "matched_volume",
+            "match_volume",
+            "matchvolume",
+            "total_match_volume",
+            "volume",
+            "vol",
+        ],
+    )
+
+
+def _extract_value_column(
+    df,
+):
+    return _find_column(
+        df,
+        [
+            "matched_value",
+            "match_value",
+            "matchvalue",
+            "total_value",
+            "trading_value",
+            "value_traded",
+            "value",
+            "turnover",
+        ],
+    )
+
+
+def _rename_flow_columns(
+    df,
+    prefix,
+):
+
+    if (
+        df is None
+        or df.empty
+    ):
+        return pd.DataFrame()
+
+    work = df.copy()
+
+    date_column = _extract_date_column(
+        work
+    )
+
+    if date_column is not None:
+
+        work[
+            date_column
+        ] = pd.to_datetime(
+            work[
+                date_column
+            ],
+            errors="coerce",
+        )
+
+        work = work[
+            work[
+                date_column
+            ].notna()
+        ].copy()
+
+        work = (
+            work
+            .set_index(
+                date_column
+            )
+            .sort_index()
+        )
+
+    else:
+
+        work.index = pd.to_datetime(
+            work.index,
+            errors="coerce",
+        )
+
+        work = work[
+            ~work.index.isna()
+        ].copy()
+
+    rename = {}
+
+    groups = {
+        "buy_vol": [
+            "buy_vol",
+            "buy_volume",
+            "total_buy_volume",
+            "foreign_buy_volume",
+            "proprietary_buy_volume",
+        ],
+        "sell_vol": [
+            "sell_vol",
+            "sell_volume",
+            "total_sell_volume",
+            "foreign_sell_volume",
+            "proprietary_sell_volume",
+        ],
+        "net_vol": [
+            "net_vol",
+            "net_volume",
+            "net_buy_volume",
+            "foreign_net_volume",
+            "proprietary_net_volume",
+        ],
+        "buy_val": [
+            "buy_val",
+            "buy_value",
+            "foreign_buy_value",
+            "proprietary_buy_value",
+        ],
+        "sell_val": [
+            "sell_val",
+            "sell_value",
+            "foreign_sell_value",
+            "proprietary_sell_value",
+        ],
+        "net_val": [
+            "net_val",
+            "net_value",
+            "net_buy_value",
+            "foreign_net_value",
+            "proprietary_net_value",
+        ],
+        "active_buy_volume": [
+            "active_buy_volume",
+            "total_buy_trade_volume",
+            "buy_trade_volume",
+        ],
+        "active_sell_volume": [
+            "active_sell_volume",
+            "total_sell_trade_volume",
+            "sell_trade_volume",
+        ],
+        "active_buy_value": [
+            "active_buy_value",
+            "total_buy_trade_value",
+            "buy_trade_value",
+        ],
+        "active_sell_value": [
+            "active_sell_value",
+            "total_sell_trade_value",
+            "sell_trade_value",
+        ],
+    }
+
+    for normalized_name, candidates in groups.items():
+
+        column = _find_column(
+            work,
+            candidates,
+        )
+
+        if column is not None:
+
+            rename[
+                column
+            ] = (
+                f"{prefix}_{normalized_name}"
+            )
+
+    work = work.rename(
+        columns=rename
+    )
+
+    for column in work.columns:
+
+        work[
+            column
+        ] = pd.to_numeric(
+            work[
+                column
+            ],
+            errors="coerce",
+        )
+
+    result_columns = [
+        column
+        for column in work.columns
+        if str(column).startswith(
+            f"{prefix}_"
+        )
+    ]
+
+    if not result_columns:
+
+        return pd.DataFrame()
+
+    result = work[
+        result_columns
+    ].copy()
+
+    return (
+        result
+        .sort_index()
+        .groupby(
+            result.index
+        )
+        .last()
+    )
+
+
+# ============================================================
+# CALL FLOW METHOD WITH COMPATIBILITY
+# ============================================================
+
+def _call_historical_method(
+    obj,
+    method_name,
+    start_date,
+    end_date,
+):
+    method = getattr(
+        obj,
+        method_name,
+        None,
+    )
+
+    if method is None:
+        return None
+
+    # Ưu tiên start/end.
+    try:
+
+        return method(
+            start=pd.Timestamp(
+                start_date
+            ).strftime(
+                "%Y-%m-%d"
+            ),
+            end=pd.Timestamp(
+                end_date
+            ).strftime(
+                "%Y-%m-%d"
+            ),
+        )
+
+    except TypeError:
+        pass
+
+    except Exception:
+        pass
+
+    # Fallback method không tham số.
+    try:
+
+        return method()
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# FLOW HISTORY
+# ============================================================
+
+@st.cache_data(
+    ttl=CACHE_TTL_FLOW,
+    show_spinner=False,
+)
+def load_stock_flow_history(
+    symbol,
+    start_date,
+    end_date,
+):
+
+    market = _create_market()
+
+    obj = market.equity(
+        normalize_symbol(
+            symbol
+        )
+    )
+
+    result_parts = []
+
+    # ========================================================
+    # TRADE HISTORY
+    # ========================================================
+
+    trade = _call_historical_method(
+        obj,
+        "trade_history",
+        start_date,
+        end_date,
+    )
+
+    if (
+        isinstance(
+            trade,
+            pd.DataFrame,
+        )
+        and not trade.empty
+    ):
+
+        trade = _rename_flow_columns(
+            trade,
+            "flow",
+        )
+
+        if not trade.empty:
+
+            result_parts.append(
+                trade
+            )
+
+        # Tổng hợp khối lượng/value
+        trade_raw = _normalize_datetime_index(
+            trade
+        )
+
+    # ========================================================
+    # FOREIGN
+    # ========================================================
+
+    foreign = _call_historical_method(
+        obj,
+        "foreign_flow",
+        start_date,
+        end_date,
+    )
+
+    foreign = _rename_flow_columns(
+        foreign,
+        "foreign",
+    )
+
+    if not foreign.empty:
+
+        result_parts.append(
+            foreign
+        )
+
+    # ========================================================
+    # PROPRIETARY
+    # ========================================================
+
+    proprietary = _call_historical_method(
+        obj,
+        "proprietary_flow",
+        start_date,
+        end_date,
+    )
+
+    proprietary = _rename_flow_columns(
+        proprietary,
+        "proprietary",
+    )
+
+    if not proprietary.empty:
+
+        result_parts.append(
+            proprietary
+        )
+
+    if not result_parts:
+
+        return pd.DataFrame()
+
+    # ========================================================
+    # MERGE
+    # ========================================================
+
+    merged = result_parts[
+        0
+    ].copy()
+
+    for part in result_parts[
+        1:
+    ]:
+
+        merged = merged.join(
+            part,
+            how="outer",
+        )
+
+    merged = (
+        merged
+        .sort_index()
+        .loc[
+            pd.Timestamp(
+                start_date
+            ):
+            pd.Timestamp(
+                end_date
+            )
+        ]
+    )
+
+    # ========================================================
+    # DERIVED FLOW FACTORS
+    # ========================================================
+
+    volume_buy_cols = [
+        column
+        for column in merged.columns
+        if column.endswith(
+            "_buy_vol"
+        )
+    ]
+
+    volume_sell_cols = [
+        column
+        for column in merged.columns
+        if column.endswith(
+            "_sell_vol"
+        )
+    ]
+
+    value_buy_cols = [
+        column
+        for column in merged.columns
+        if column.endswith(
+            "_buy_val"
+        )
+    ]
+
+    value_sell_cols = [
+        column
+        for column in merged.columns
+        if column.endswith(
+            "_sell_val"
+        )
+    ]
+
+    # ========================================================
+    # FOREIGN NET
+    # ========================================================
+
+    if (
+        "foreign_buy_val" in merged.columns
+        and "foreign_sell_val" in merged.columns
+    ):
+
+        merged[
+            "foreign_net_val_calc"
+        ] = (
+            merged[
+                "foreign_buy_val"
+            ]
+            - merged[
+                "foreign_sell_val"
+            ]
+        )
+
+    if (
+        "foreign_buy_vol" in merged.columns
+        and "foreign_sell_vol" in merged.columns
+    ):
+
+        merged[
+            "foreign_net_vol_calc"
+        ] = (
+            merged[
+                "foreign_buy_vol"
+            ]
+            - merged[
+                "foreign_sell_vol"
+            ]
+        )
+
+    # ========================================================
+    # PROPRIETARY NET
+    # ========================================================
+
+    if (
+        "proprietary_buy_val" in merged.columns
+        and "proprietary_sell_val" in merged.columns
+    ):
+
+        merged[
+            "proprietary_net_val_calc"
+        ] = (
+            merged[
+                "proprietary_buy_val"
+            ]
+            - merged[
+                "proprietary_sell_val"
+            ]
+        )
+
+    if (
+        "proprietary_buy_vol" in merged.columns
+        and "proprietary_sell_vol" in merged.columns
+    ):
+
+        merged[
+            "proprietary_net_vol_calc"
+        ] = (
+            merged[
+                "proprietary_buy_vol"
+            ]
+            - merged[
+                "proprietary_sell_vol"
+            ]
+        )
+
+    # ========================================================
+    # FLOW MOMENTUM
+    # ========================================================
+
+    for column in list(
+        merged.columns
+    ):
+
+        if any(
+            token in str(column)
+            for token in [
+                "net_val",
+                "net_vol",
+                "buy_val",
+                "sell_val",
+            ]
+        ):
+
+            merged[
+                f"{column}_chg"
+            ] = (
+                merged[
+                    column
+                ]
+                .pct_change()
+            )
+
+            merged[
+                f"{column}_sma20"
+            ] = (
+                merged[
+                    column
+                ]
+                .rolling(
+                    20
+                )
+                .mean()
+            )
+
+    return merged.replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    )
+
+
+# ============================================================
+# LISTING
+# ============================================================
+
+@st.cache_data(
+    ttl=CACHE_TTL_LISTING,
+    show_spinner=False,
+)
+def _load_listing():
+
+    if not LISTING_AVAILABLE or Listing is None:
+
+        return pd.DataFrame()
+
+    try:
+
+        listing = Listing(
+            source="VCI"
+        )
+
+        df = listing.all_symbols(
+            to_df=True
+        )
+
+        if (
+            isinstance(
+                df,
+                pd.DataFrame,
+            )
+            and not df.empty
+        ):
+
+            return df
+
+    except Exception:
+        pass
+
+    return pd.DataFrame()
+
+
+def _get_stock_metadata(
+    symbol,
+):
+
+    listing = _load_listing()
+
+    if listing.empty:
+
+        return {
+            "symbol": normalize_symbol(symbol),
+            "sector": "",
+            "icb_code": "",
+            "icb_code4": "",
+        }
+
+    symbol_column = _find_column(
+        listing,
+        [
+            "symbol",
+            "ticker",
+            "code",
+        ],
+    )
+
+    if symbol_column is None:
+
+        return {
+            "symbol": normalize_symbol(symbol),
+            "sector": "",
+            "icb_code": "",
+            "icb_code4": "",
+        }
+
+    target = normalize_symbol(
+        symbol
+    )
+
+    values = (
+        listing[
+            symbol_column
+        ]
+        .astype(str)
+        .str.upper()
+        .str.replace(
+            ".VN",
+            "",
+            regex=False,
+        )
+    )
+
+    rows = listing[
+        values == target
+    ]
+
+    if rows.empty:
+
+        return {
+            "symbol": target,
+            "sector": "",
+            "icb_code": "",
+            "icb_code4": "",
+        }
+
+    row = rows.iloc[
+        0
+    ]
+
+    sector_column = _find_column(
+        listing,
+        [
+            "icb_name",
+            "industry_name",
+            "industry",
+            "sector",
+        ],
+    )
+
+    icb_column = _find_column(
+        listing,
+        [
+            "icb_code",
+            "industry_code",
+        ],
+    )
+
+    icb4_column = _find_column(
+        listing,
+        [
+            "icb_code4",
+            "industry_code4",
+        ],
+    )
+
+    sector = ""
+
+    if sector_column is not None:
+
+        value = row.get(
+            sector_column
+        )
+
+        if pd.notna(
+            value
+        ):
+
+            sector = str(
+                value
+            ).strip()
+
+    icb_code = ""
+
+    if icb_column is not None:
+
+        value = row.get(
+            icb_column
+        )
+
+        if pd.notna(
+            value
+        ):
+
+            icb_code = str(
+                value
+            ).strip()
+
+    icb_code4 = ""
+
+    if icb4_column is not None:
+
+        value = row.get(
+            icb4_column
+        )
+
+        if pd.notna(
+            value
+        ):
+
+            icb_code4 = str(
+                value
+            ).strip()
+
+    return {
+        "symbol": target,
+        "sector": sector,
+        "icb_code": icb_code,
+        "icb_code4": icb_code4,
+    }
+
+
+# ============================================================
+# SECTOR PEERS
+# ============================================================
+
+def _get_sector_peers(
+    symbol,
+    max_peers=5,
+):
+
+    listing = _load_listing()
+
+    if listing.empty:
+
+        return []
+
+    symbol_column = _find_column(
+        listing,
+        [
+            "symbol",
+            "ticker",
+            "code",
+        ],
+    )
+
+    industry_column = _find_column(
+        listing,
+        [
+            "icb_code4",
+            "icb_code",
+            "industry_code",
+        ],
+    )
+
+    if (
+        symbol_column is None
+        or industry_column is None
+    ):
+
+        return []
+
+    target = normalize_symbol(
+        symbol
+    )
+
+    target_rows = listing[
+        listing[
+            symbol_column
+        ]
+        .astype(str)
+        .str.upper()
+        .str.replace(
+            ".VN",
+            "",
+            regex=False,
+        )
+        .eq(
+            target
+        )
+    ]
+
+    if target_rows.empty:
+
+        return []
+
+    target_code = str(
+        target_rows.iloc[
+            0
+        ][
+            industry_column
+        ]
+    ).strip()
+
+    if not target_code:
+
+        return []
+
+    peer_symbols = (
+        listing[
+            listing[
+                industry_column
+            ]
+            .astype(str)
+            .str.strip()
+            .eq(
+                target_code
+            )
+        ][
+            symbol_column
+        ]
+        .astype(str)
+        .str.upper()
+        .str.replace(
+            ".VN",
+            "",
+            regex=False,
+        )
+        .tolist()
+    )
+
+    peer_symbols = [
+        peer
+        for peer in peer_symbols
+        if peer != target
+    ]
+
+    return peer_symbols[
+        :max_peers
+    ]
+
+
+# ============================================================
+# MARKET FACTOR HISTORY
+# ============================================================
+
+@st.cache_data(
+    ttl=CACHE_TTL_RESEARCH,
+    show_spinner=False,
+)
+def load_market_factor_history(
+    start_date,
+    end_date,
+):
+
+    market = _create_market()
+
+    start = pd.Timestamp(
+        start_date
+    ).normalize()
+
+    end = pd.Timestamp(
+        end_date
+    ).normalize()
+
+    indices = {
+        "VNINDEX": "market_vnindex",
+        "VN30": "market_vn30",
+        "HNXINDEX": "market_hnx",
+    }
+
+    result = None
+
+    last_request = None
+
+    for index_symbol, prefix in indices.items():
+
+        _sleep_between_requests(
+            last_request
+        )
+
+        request_start = time.monotonic()
+
+        try:
+
+            df = _request_index_ohlcv(
+                market,
+                index_symbol,
+                start,
+                end,
+            )
+
+        except Exception:
+
+            last_request = request_start
+
+            continue
+
+        last_request = request_start
+
+        if (
+            df is None
+            or df.empty
+        ):
+            continue
+
+        try:
+
+            df = _normalize_ohlcv(
+                df,
+                stock=False,
+            )
+
+        except Exception:
+
+            continue
+
+        close = df[
+            "Close"
+        ]
+
+        temp = pd.DataFrame(
+            index=df.index
+        )
+
+        temp[
+            f"{prefix}_close"
+        ] = close
+
+        temp[
+            f"{prefix}_return"
+        ] = close.pct_change()
+
+        temp[
+            f"{prefix}_return_pct"
+        ] = (
+            temp[
+                f"{prefix}_return"
+            ]
+            * 100
+        )
+
+        temp[
+            f"{prefix}_momentum20"
+        ] = (
+            close
+            / close.shift(
+                20
+            )
+            - 1
+        )
+
+        temp[
+            f"{prefix}_volatility20"
+        ] = (
+            temp[
+                f"{prefix}_return"
+            ]
+            .rolling(
+                20
+            )
+            .std()
+            * np.sqrt(
+                252
+            )
+        )
+
+        temp[
+            f"{prefix}_volume"
+        ] = df[
+            "Volume"
+        ]
+
+        if "Value" in df.columns:
+
+            temp[
+                f"{prefix}_value"
+            ] = df[
+                "Value"
+            ]
+
+        else:
+
+            temp[
+                f"{prefix}_value"
+            ] = (
+                df[
+                    "Close"
+                ]
+                * df[
+                    "Volume"
+                ]
+            )
+
+        if result is None:
+
+            result = temp
+
+        else:
+
+            result = result.join(
+                temp,
+                how="outer",
+            )
+
+    if result is None:
+
+        return pd.DataFrame()
+
+    result = (
+        result
+        .sort_index()
+        .loc[
+            start:end
+        ]
+    )
+
+    # ========================================================
+    # MARKET BREADTH PROXY
+    #
+    # Dùng số index return dương/âm từ các index có sẵn.
+    # Đây là proxy, không phải breadth toàn sàn.
+    # ========================================================
+
+    return result.replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    )
+
+
+# ============================================================
+# SECTOR FACTOR VIA PEERS
+# ============================================================
+
+@st.cache_data(
+    ttl=CACHE_TTL_RESEARCH,
+    show_spinner=False,
+)
+def load_sector_factor_history(
+    symbol,
+    start_date,
+    end_date,
+):
+
+    peers = _get_sector_peers(
+        symbol,
+        max_peers=5,
+    )
+
+    if not peers:
+
+        return pd.DataFrame()
+
+    market = _create_market()
+
+    start = pd.Timestamp(
+        start_date
+    ).normalize()
+
+    end = pd.Timestamp(
+        end_date
+    ).normalize()
+
+    peer_returns = []
+
+    last_request = None
+
+    successful_peers = 0
+
+    for peer in peers:
+
+        _sleep_between_requests(
+            last_request
+        )
+
+        request_start = time.monotonic()
+
+        try:
+
+            df = _request_equity_ohlcv(
+                market,
+                peer,
+                start,
+                end,
+            )
+
+        except Exception:
+
+            last_request = request_start
+
+            continue
+
+        last_request = request_start
+
+        if (
+            df is None
+            or df.empty
+        ):
+            continue
+
+        try:
+
+            df = _normalize_ohlcv(
+                df,
+                stock=True,
+            )
+
+        except Exception:
+
+            continue
+
+        close = df[
+            "Close"
+        ]
+
+        ret = close.pct_change()
+
+        peer_returns.append(
+            ret.rename(
+                peer
+            )
+        )
+
+        successful_peers += 1
+
+    if not peer_returns:
+
+        return pd.DataFrame()
+
+    peers_df = pd.concat(
+        peer_returns,
+        axis=1,
+    ).sort_index()
+
+    result = pd.DataFrame(
+        index=peers_df.index
+    )
+
+    # ========================================================
+    # SECTOR DAILY GROWTH
+    # ========================================================
+
+    result[
+        "sector_return"
+    ] = peers_df.mean(
+        axis=1,
+        skipna=True,
+    )
+
+    result[
+        "sector_return_pct"
+    ] = (
+        result[
+            "sector_return"
+        ]
+        * 100
+    )
+
+    # ========================================================
+    # SECTOR MOMENTUM
+    # ========================================================
+
+    result[
+        "sector_momentum20"
+    ] = (
+        (
+            1
+            + result[
+                "sector_return"
+            ]
+        )
+        .rolling(
+            20
+        )
+        .apply(
+            np.prod,
+            raw=True,
+        )
+        - 1
+    )
+
+    result[
+        "sector_momentum60"
+    ] = (
+        (
+            1
+            + result[
+                "sector_return"
+            ]
+        )
+        .rolling(
+            60
+        )
+        .apply(
+            np.prod,
+            raw=True,
+        )
+        - 1
+    )
+
+    # ========================================================
+    # SECTOR VOLATILITY
+    # ========================================================
+
+    result[
+        "sector_volatility20"
+    ] = (
+        result[
+            "sector_return"
+        ]
+        .rolling(
+            20
+        )
+        .std()
+        * np.sqrt(
+            252
+        )
+    )
+
+    # ========================================================
+    # SECTOR BREADTH
+    # ========================================================
+
+    result[
+        "sector_positive_ratio"
+    ] = (
+        peers_df
+        .gt(0)
+        .sum(
+            axis=1
+        )
+        / peers_df.notna()
+        .sum(
+            axis=1
+        )
+    )
+
+    result[
+        "sector_negative_ratio"
+    ] = (
+        peers_df
+        .lt(0)
+        .sum(
+            axis=1
+        )
+        / peers_df.notna()
+        .sum(
+            axis=1
+        )
+    )
+
+    result[
+        "sector_peer_count"
+    ] = (
+        peers_df
+        .notna()
+        .sum(
+            axis=1
+        )
+    )
+
+    result.attrs[
+        "peers_requested"
+    ] = peers
+
+    result.attrs[
+        "peers_loaded"
+    ] = successful_peers
+
+    return result.replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    )
+
+
+# ============================================================
+# MULTIFACTOR RESEARCH DATASET
+# ============================================================
+
+@st.cache_data(
+    ttl=CACHE_TTL_RESEARCH,
+    show_spinner=False,
+)
+def load_multifactor_research_history(
+    symbol,
+    start_date,
+    end_date,
+):
+    """
+    DATASET NGHIÊN CỨU ĐẦY ĐỦ:
+
+    1. Technical factors của cổ phiếu.
+    2. Trading flow.
+    3. Foreign flow.
+    4. Proprietary flow.
+    5. Market factors.
+    6. Sector factors.
+
+    Tất cả được align theo ngày.
+    """
+
+    symbol = normalize_symbol(
+        symbol
+    )
+
+    start = pd.Timestamp(
+        start_date
+    ).normalize()
+
+    end = pd.Timestamp(
+        end_date
+    ).normalize()
+
+    if start > end:
+
+        raise ValueError(
+            "Ngày bắt đầu phải nhỏ hơn ngày kết thúc."
+        )
+
+    # ========================================================
+    # STOCK
+    # ========================================================
+
+    stock_raw = _load_stock_raw(
+        symbol,
+        start,
+        end,
+    )
+
+    stock = add_indicators(
+        stock_raw,
+        la_co_phieu=True,
+    )
+
+    # ========================================================
+    # STOCK META
+    # ========================================================
+
+    metadata = _get_stock_metadata(
+        symbol
+    )
+
+    # ========================================================
+    # FLOWS
+    # ========================================================
+
+    flow = load_stock_flow_history(
+        symbol,
+        start,
+        end,
+    )
+
+    # ========================================================
+    # MARKET
+    # ========================================================
+
+    market = load_market_factor_history(
+        start,
+        end,
+    )
+
+    # ========================================================
+    # SECTOR
+    # ========================================================
+
+    sector = load_sector_factor_history(
+        symbol,
+        start,
+        end,
+    )
+
+    result = stock.copy()
+
+    # ========================================================
+    # MERGE FLOW
+    # ========================================================
+
+    if (
+        isinstance(
+            flow,
+            pd.DataFrame,
+        )
+        and not flow.empty
+    ):
+
+        flow = flow[
+            ~flow.index.duplicated(
+                keep="last"
+            )
+        ]
+
+        result = result.join(
+            flow,
+            how="left",
+        )
+
+    # ========================================================
+    # MERGE MARKET
+    # ========================================================
+
+    if (
+        isinstance(
+            market,
+            pd.DataFrame,
+        )
+        and not market.empty
+    ):
+
+        market = market[
+            ~market.index.duplicated(
+                keep="last"
+            )
+        ]
+
+        result = result.join(
+            market,
+            how="left",
+        )
+
+    # ========================================================
+    # MERGE SECTOR
+    # ========================================================
+
+    if (
+        isinstance(
+            sector,
+            pd.DataFrame,
+        )
+        and not sector.empty
+    ):
+
+        sector = sector[
+            ~sector.index.duplicated(
+                keep="last"
+            )
+        ]
+
+        # Không merge peer raw.
+        result = result.join(
+            sector[
+                [
+                    column
+                    for column in sector.columns
+                    if column.startswith(
+                        "sector_"
+                    )
+                ]
+            ],
+            how="left",
+        )
+
+    # ========================================================
+    # CROSS MARKET / STOCK FACTORS
+    # ========================================================
+
+    if (
+        "market_vnindex_return"
+        in result.columns
+    ):
+
+        result[
+            "stock_minus_market_1d"
+        ] = (
+            result[
+                "Return"
+            ]
+            - result[
+                "market_vnindex_return"
+            ]
+        )
+
+    if (
+        "market_vnindex_momentum20"
+        in result.columns
+    ):
+
+        result[
+            "stock_minus_market_momentum20"
+        ] = (
+            result[
+                "Momentum20"
+            ]
+            - result[
+                "market_vnindex_momentum20"
+            ]
+        )
+
+    if (
+        "sector_return"
+        in result.columns
+    ):
+
+        result[
+            "stock_minus_sector_1d"
+        ] = (
+            result[
+                "Return"
+            ]
+            - result[
+                "sector_return"
+            ]
+        )
+
+    if (
+        "sector_momentum20"
+        in result.columns
+    ):
+
+        result[
+            "stock_minus_sector_momentum20"
+        ] = (
+            result[
+                "Momentum20"
+            ]
+            - result[
+                "sector_momentum20"
+            ]
+        )
+
+    # ========================================================
+    # FLOW RATIOS
+    # ========================================================
+
+    ratio_pairs = [
+        (
+            "foreign_buy_val",
+            "foreign_sell_val",
+            "foreign_buy_sell_value_ratio",
+        ),
+        (
+            "proprietary_buy_val",
+            "proprietary_sell_val",
+            "proprietary_buy_sell_value_ratio",
+        ),
+        (
+            "foreign_buy_vol",
+            "foreign_sell_vol",
+            "foreign_buy_sell_volume_ratio",
+        ),
+        (
+            "proprietary_buy_vol",
+            "proprietary_sell_vol",
+            "proprietary_buy_sell_volume_ratio",
+        ),
+    ]
+
+    for buy_column, sell_column, output_column in ratio_pairs:
+
+        if (
+            buy_column in result.columns
+            and sell_column in result.columns
+        ):
+
+            denominator = (
+                result[
+                    sell_column
+                ]
+                .abs()
+                .replace(
+                    0,
+                    np.nan,
+                )
+            )
+
+            result[
+                output_column
+            ] = (
+                result[
+                    buy_column
+                ]
+                / denominator
+            )
+
+    # ========================================================
+    # FLOW NET / TRADING VALUE RATIOS
+    # ========================================================
+
+    flow_ratio_pairs = [
+        (
+            "foreign_net_val_calc",
+            "Trading_Value",
+            "foreign_net_value_to_trading_value",
+        ),
+        (
+            "proprietary_net_val_calc",
+            "Trading_Value",
+            "proprietary_net_value_to_trading_value",
+        ),
+    ]
+
+    for numerator, denominator, output in flow_ratio_pairs:
+
+        if (
+            numerator in result.columns
+            and denominator in result.columns
+        ):
+
+            result[
+                output
+            ] = (
+                result[
+                    numerator
+                ]
+                / result[
+                    denominator
+                ].replace(
+                    0,
+                    np.nan,
+                )
+            )
+
+    # ========================================================
+    # MARKET BREADTH ACROSS AVAILABLE INDICES
+    # ========================================================
+
+    market_return_columns = [
+        column
+        for column in result.columns
+        if (
+            column.endswith(
+                "_return"
+            )
+            and column.startswith(
+                "market_"
+            )
+        )
+    ]
+
+    if market_return_columns:
+
+        result[
+            "market_positive_index_count"
+        ] = (
+            result[
+                market_return_columns
+            ]
+            .gt(0)
+            .sum(
+                axis=1
+            )
+        )
+
+        result[
+            "market_negative_index_count"
+        ] = (
+            result[
+                market_return_columns
+            ]
+            .lt(0)
+            .sum(
+                axis=1
+            )
+        )
+
+        result[
+            "market_average_return"
+        ] = (
+            result[
+                market_return_columns
+            ]
+            .mean(
+                axis=1
+            )
+        )
+
+    # ========================================================
+    # TARGETS
+    #
+    # Đây là biến phụ thuộc cho nghiên cứu.
+    # ========================================================
+
+    close = result[
+        "Close"
+    ]
+
+    for horizon, periods in {
+        "1D": 1,
+        "5D": 5,
+        "20D": 20,
+    }.items():
+
+        result[
+            f"Target_{horizon}"
+        ] = (
+            close.shift(
+                -periods
+            )
+            / close
+            - 1
+        )
+
+        result[
+            f"Target_{horizon}_Pct"
+        ] = (
+            result[
+                f"Target_{horizon}"
+            ]
+            * 100
+        )
+
+    # ========================================================
+    # ATTRS
+    # ========================================================
+
+    result.attrs[
+        "symbol"
+    ] = symbol
+
+    result.attrs[
+        "display_symbol"
+    ] = display_symbol(
+        symbol
+    )
+
+    result.attrs[
+        "source"
+    ] = "Vnstock multifactor"
+
+    result.attrs[
+        "research_start"
+    ] = str(
+        start.date()
+    )
+
+    result.attrs[
+        "research_end"
+    ] = str(
+        end.date()
+    )
+
+    result.attrs[
+        "sector"
+    ] = metadata.get(
+        "sector",
+        "",
+    )
+
+    result.attrs[
+        "icb_code"
+    ] = metadata.get(
+        "icb_code",
+        "",
+    )
+
+    result.attrs[
+        "icb_code4"
+    ] = metadata.get(
+        "icb_code4",
+        "",
+    )
+
+    result.attrs[
+        "sector_peers"
+    ] = sector.attrs.get(
+        "peers_requested",
+        [],
+    )
+
+    result.attrs[
+        "sector_peers_loaded"
+    ] = sector.attrs.get(
+        "peers_loaded",
+        0,
+    )
+
+    return result.replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    )
+
+
+# ============================================================
+# RESEARCH HISTORY COMPATIBILITY
+# ============================================================
+
+@st.cache_data(
+    ttl=CACHE_TTL_RESEARCH,
+    show_spinner=False,
+)
+def load_research_history(
+    symbol,
+    start_date,
+    end_date,
+):
+
+    data = load_multifactor_research_history(
+        symbol,
+        start_date,
+        end_date,
+    )
+
+    return data
+
+
+# ============================================================
+# MARKET DATA COMPATIBILITY
 # ============================================================
 
 def market_data(
@@ -2446,38 +3785,37 @@ def classify_news(
         "vi phạm",
     ]
 
-    positive_score = sum(
+    positive = sum(
         word in text
         for word in positive_words
     )
 
-    negative_score = sum(
+    negative = sum(
         word in text
         for word in negative_words
     )
 
-    if positive_score > negative_score:
+    if positive > negative:
         return "positive"
 
-    if negative_score > positive_score:
+    if negative > positive:
         return "negative"
 
     return "neutral"
 
 
 # ============================================================
-# OLS CŨ
+# LEGACY OLS
 # ============================================================
 
 def run_ols(
-    du_lieu,
+    data,
 ):
 
     if (
-        du_lieu is None
-        or du_lieu.empty
+        data is None
+        or data.empty
     ):
-
         return None
 
     try:
@@ -2485,51 +3823,58 @@ def run_ols(
         import statsmodels.api as sm
 
     except Exception:
-
         return None
 
-    columns = [
-        "Volume_Change",
+    candidate = [
         "RSI",
         "MACD",
+        "MACD_Hist",
         "Volatility20",
+        "Volume_Change",
+        "Momentum20",
+        "Range_Percent",
+        "Relative_Volume",
+        "market_vnindex_return",
+        "market_vnindex_momentum20",
+        "sector_return",
+        "sector_momentum20",
+        "foreign_net_val_calc",
+        "proprietary_net_val_calc",
     ]
 
-    if any(
-        column not in du_lieu.columns
-        for column in columns
-    ):
+    features = [
+        column
+        for column in candidate
+        if column in data.columns
+    ]
 
+    if not features:
         return None
 
-    data = (
-        du_lieu[
-            columns
-            + ["Return"]
-        ]
-        .replace(
-            [
-                np.inf,
-                -np.inf,
-            ],
-            np.nan,
-        )
-        .dropna()
-    )
+    dataset = data[
+        features
+        + ["Return"]
+    ].replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    ).dropna()
 
-    if len(data) < 50:
+    if len(dataset) < 50:
         return None
 
     try:
 
         X = sm.add_constant(
-            data[
-                columns
+            dataset[
+                features
             ],
             has_constant="add",
         )
 
-        y = data[
+        y = dataset[
             "Return"
         ]
 
@@ -2538,7 +3883,9 @@ def run_ols(
                 y,
                 X,
             )
-            .fit()
+            .fit(
+                cov_type="HC3"
+            )
         )
 
     except Exception:
@@ -2547,18 +3894,17 @@ def run_ols(
 
 
 # ============================================================
-# RANDOM FOREST CŨ
+# RANDOM FOREST
 # ============================================================
 
 def run_random_forest(
-    du_lieu,
+    data,
 ):
 
     if (
-        du_lieu is None
-        or du_lieu.empty
+        data is None
+        or data.empty
     ):
-
         return None
 
     try:
@@ -2568,86 +3914,99 @@ def run_random_forest(
         )
 
     except Exception:
-
         return None
 
-    columns = [
-        "Volume_Change",
-        "RSI",
-        "MACD",
-        "Volatility20",
-    ]
+    excluded = {
+        "Target_1D",
+        "Target_5D",
+        "Target_20D",
+        "Target_1D_Pct",
+        "Target_5D_Pct",
+        "Target_20D_Pct",
+    }
 
-    if any(
-        column not in du_lieu.columns
-        for column in columns
-    ):
-
-        return None
-
-    data = (
-        du_lieu[
-            columns
-            + ["Return"]
-        ]
-        .replace(
-            [
-                np.inf,
-                -np.inf,
-            ],
-            np.nan,
-        )
-        .dropna()
-        .copy()
-    )
-
-    data[
-        "Target"
-    ] = (
-        data[
-            "Return"
-        ]
-        .shift(
-            -1
-        )
-    )
-
-    data = data.dropna()
-
-    if len(data) < 80:
-        return None
-
-    try:
-
-        X = data[
-            columns
-        ].astype(
-            float
-        )
-
-        y = data[
-            "Target"
-        ].astype(
-            float
-        )
-
-        split = int(
-            len(data)
-            * 0.8
-        )
-
-        if split < 40:
-            return None
-
-        model = (
-            RandomForestRegressor(
-                n_estimators=300,
-                max_depth=7,
-                min_samples_leaf=3,
-                random_state=42,
-                n_jobs=-1,
+    features = [
+        column
+        for column in data.columns
+        if (
+            column not in excluded
+            and pd.api.types.is_numeric_dtype(
+                data[column]
             )
         )
+    ]
+
+    if not features:
+        return None
+
+    work = data[
+        features
+        + ["Target_1D"]
+    ].replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    )
+
+    X = work[
+        features
+    ].copy()
+
+    y = work[
+        "Target_1D"
+    ].copy()
+
+    for column in X.columns:
+
+        median = X[
+            column
+        ].median()
+
+        if pd.isna(
+            median
+        ):
+            median = 0.0
+
+        X[
+            column
+        ] = X[
+            column
+        ].fillna(
+            median
+        )
+
+    valid = y.notna()
+
+    X = X.loc[
+        valid
+    ]
+
+    y = y.loc[
+        valid
+    ]
+
+    if len(X) < 80:
+        return None
+
+    split = int(
+        len(X)
+        * 0.8
+    )
+
+    if split < 40:
+        return None
+
+    model = RandomForestRegressor(
+        n_estimators=300,
+        max_depth=8,
+        min_samples_leaf=3,
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    try:
 
         model.fit(
             X.iloc[
@@ -2670,7 +4029,7 @@ def run_random_forest(
 
         importance = dict(
             zip(
-                columns,
+                features,
                 model.feature_importances_,
             )
         )
@@ -2687,215 +4046,736 @@ def run_random_forest(
 
 
 # ============================================================
-# BUILD QUANT CŨ
+# BUILD QUANT — FULL FACTOR VERSION
 # ============================================================
 
 def build_quant(
-    du_lieu,
+    data,
 ):
 
     if (
-        du_lieu is None
-        or du_lieu.empty
+        data is None
+        or data.empty
     ):
-
         return None
 
     try:
 
         from sklearn.ensemble import (
+            ExtraTreesRegressor,
+            GradientBoostingRegressor,
             RandomForestRegressor,
+        )
+
+        from sklearn.linear_model import (
+            ElasticNet,
+            Lasso,
+            Ridge,
         )
 
         from sklearn.metrics import (
             mean_absolute_error,
+            mean_squared_error,
             r2_score,
         )
 
-        import statsmodels.api as sm
+        from sklearn.pipeline import (
+            Pipeline,
+        )
+
+        from sklearn.preprocessing import (
+            StandardScaler,
+        )
 
     except Exception:
-
         return None
 
-    columns = [
-        "RSI",
-        "MACD",
-        "MACD_Hist",
-        "Volatility20",
-        "Volume_Change",
-        "Return",
+    # ========================================================
+    # ALL NUMERIC FACTORS
+    # ========================================================
+
+    excluded = {
+        "Target_1D",
+        "Target_5D",
+        "Target_20D",
+        "Target_1D_Pct",
+        "Target_5D_Pct",
+        "Target_20D_Pct",
+    }
+
+    features = [
+        column
+        for column in data.columns
+        if (
+            column not in excluded
+            and pd.api.types.is_numeric_dtype(
+                data[column]
+            )
+        )
     ]
 
-    if any(
-        column not in du_lieu.columns
-        for column in columns
-    ):
+    # Không dùng target/current future leakage.
+    leakage_names = {
+        column
+        for column in features
+        if str(
+            column
+        ).startswith(
+            "Target_"
+        )
+    }
+
+    features = [
+        column
+        for column in features
+        if column not in leakage_names
+    ]
+
+    if not features:
 
         return None
 
-    data = (
-        du_lieu.copy()
-    )
+    results = {}
 
-    data[
-        "Target"
-    ] = (
-        data[
-            "Return"
-        ]
-        .shift(
-            -1
+    # ========================================================
+    # THREE HORIZONS
+    # ========================================================
+
+    for horizon in [
+        "1D",
+        "5D",
+        "20D",
+    ]:
+
+        target_column = (
+            f"Target_{horizon}"
         )
-    )
 
-    data = (
-        data
-        .replace(
+        if target_column not in data.columns:
+            continue
+
+        work = data[
+            features
+            + [
+                target_column
+            ]
+        ].replace(
             [
                 np.inf,
                 -np.inf,
             ],
             np.nan,
+        ).copy()
+
+        X = work[
+            features
+        ].copy()
+
+        y = work[
+            target_column
+        ].copy()
+
+        # Median fill.
+        for column in X.columns:
+
+            median = X[
+                column
+            ].median()
+
+            if pd.isna(
+                median
+            ):
+                median = 0.0
+
+            X[
+                column
+            ] = X[
+                column
+            ].fillna(
+                median
+            )
+
+        valid = y.notna()
+
+        X = X.loc[
+            valid
+        ]
+
+        y = y.loc[
+            valid
+        ]
+
+        if len(X) < 60:
+            continue
+
+        split = int(
+            len(X)
+            * 0.8
         )
-        .dropna(
-            subset=(
-                columns
-                + ["Target"]
+
+        if (
+            split < 30
+            or len(X) - split < 10
+        ):
+            continue
+
+        X_train = X.iloc[
+            :split
+        ]
+
+        X_test = X.iloc[
+            split:
+        ]
+
+        y_train = y.iloc[
+            :split
+        ]
+
+        y_test = y.iloc[
+            split:
+        ]
+
+        models = [
+            (
+                "Ridge",
+                Pipeline(
+                    [
+                        (
+                            "scaler",
+                            StandardScaler(),
+                        ),
+                        (
+                            "model",
+                            Ridge(
+                                alpha=1.0
+                            ),
+                        ),
+                    ]
+                ),
+            ),
+            (
+                "Lasso",
+                Pipeline(
+                    [
+                        (
+                            "scaler",
+                            StandardScaler(),
+                        ),
+                        (
+                            "model",
+                            Lasso(
+                                alpha=0.0001,
+                                max_iter=50000,
+                            ),
+                        ),
+                    ]
+                ),
+            ),
+            (
+                "Elastic Net",
+                Pipeline(
+                    [
+                        (
+                            "scaler",
+                            StandardScaler(),
+                        ),
+                        (
+                            "model",
+                            ElasticNet(
+                                alpha=0.0001,
+                                l1_ratio=0.5,
+                                max_iter=50000,
+                            ),
+                        ),
+                    ]
+                ),
+            ),
+            (
+                "Random Forest",
+                RandomForestRegressor(
+                    n_estimators=300,
+                    max_depth=8,
+                    min_samples_leaf=3,
+                    random_state=42,
+                    n_jobs=-1,
+                ),
+            ),
+            (
+                "Extra Trees",
+                ExtraTreesRegressor(
+                    n_estimators=300,
+                    max_depth=8,
+                    min_samples_leaf=3,
+                    random_state=42,
+                    n_jobs=-1,
+                ),
+            ),
+            (
+                "Gradient Boosting",
+                GradientBoostingRegressor(
+                    n_estimators=250,
+                    learning_rate=0.03,
+                    max_depth=3,
+                    min_samples_leaf=3,
+                    random_state=42,
+                ),
+            ),
+        ]
+
+        rows = []
+
+        fitted = {}
+
+        predictions = {}
+
+        for name, model in models:
+
+            try:
+
+                model.fit(
+                    X_train,
+                    y_train,
+                )
+
+                pred = np.asarray(
+                    model.predict(
+                        X_test
+                    ),
+                    dtype=float,
+                )
+
+                actual = np.asarray(
+                    y_test,
+                    dtype=float,
+                )
+
+                mae = float(
+                    mean_absolute_error(
+                        actual,
+                        pred,
+                    )
+                )
+
+                mse = float(
+                    mean_squared_error(
+                        actual,
+                        pred,
+                    )
+                )
+
+                rmse = float(
+                    np.sqrt(
+                        mse
+                    )
+                )
+
+                try:
+
+                    r2 = float(
+                        r2_score(
+                            actual,
+                            pred,
+                        )
+                    )
+
+                except Exception:
+
+                    r2 = np.nan
+
+                rows.append(
+                    {
+                        "Mô hình": name,
+                        "MAE": mae,
+                        "MSE": mse,
+                        "RMSE": rmse,
+                        "R²": r2,
+                    }
+                )
+
+                fitted[
+                    name
+                ] = model
+
+                predictions[
+                    name
+                ] = pred
+
+            except Exception:
+                continue
+
+        models_df = (
+            pd.DataFrame(
+                rows
+            )
+            .sort_values(
+                "RMSE",
+                ascending=True,
+            )
+            .reset_index(
+                drop=True
             )
         )
-    )
 
-    if len(data) < 60:
+        # ====================================================
+        # FEATURE IMPORTANCE BEST TREE
+        # ====================================================
+
+        tree_importance = pd.DataFrame()
+
+        if (
+            not models_df.empty
+        ):
+
+            best_name = str(
+                models_df.iloc[
+                    0
+                ][
+                    "Mô hình"
+                ]
+            )
+
+            best_model = fitted.get(
+                best_name
+            )
+
+            if best_model is not None:
+
+                raw_model = best_model
+
+                if hasattr(
+                    best_model,
+                    "named_steps",
+                ):
+
+                    raw_model = (
+                        best_model
+                        .named_steps
+                        .get(
+                            "model",
+                            best_model,
+                        )
+                    )
+
+                if hasattr(
+                    raw_model,
+                    "feature_importances_",
+                ):
+
+                    tree_importance = (
+                        pd.DataFrame(
+                            {
+                                "Biến": X.columns,
+                                "Importance": (
+                                    raw_model
+                                    .feature_importances_
+                                ),
+                            }
+                        )
+                        .sort_values(
+                            "Importance",
+                            ascending=False,
+                        )
+                        .reset_index(
+                            drop=True
+                        )
+                    )
+
+        results[
+            horizon
+        ] = {
+            "observations": len(X),
+            "train": len(X_train),
+            "test": len(X_test),
+            "features": features,
+            "models": models_df,
+            "fitted": fitted,
+            "predictions": predictions,
+            "tree_importance": tree_importance,
+        }
+
+    if not results:
         return None
 
-    X = data[
-        columns
-    ].astype(
-        float
-    )
+    return results
 
-    y = data[
-        "Target"
-    ].astype(
-        float
-    )
 
-    split = int(
-        len(data)
-        * 0.8
-    )
+# ============================================================
+# SNAPSHOT FACTOR SUMMARY
+# ============================================================
+
+def research_factor_groups(
+    data,
+):
 
     if (
-        split < 30
-        or split >= len(data)
+        data is None
+        or data.empty
     ):
 
-        return None
+        return {
+            "technical": [],
+            "flow": [],
+            "foreign": [],
+            "proprietary": [],
+            "market": [],
+            "sector": [],
+        }
 
-    X_train = X.iloc[
-        :split
+    columns = [
+        str(column)
+        for column in data.columns
     ]
 
-    X_test = X.iloc[
-        split:
-    ]
-
-    y_train = y.iloc[
-        :split
-    ]
-
-    y_test = y.iloc[
-        split:
-    ]
-
-    try:
-
-        ols_model = (
-            sm.OLS(
-                y_train,
-                sm.add_constant(
-                    X_train,
-                    has_constant="add",
-                ),
+    return {
+        "technical": [
+            column
+            for column in columns
+            if not (
+                column.startswith(
+                    "market_"
+                )
+                or column.startswith(
+                    "sector_"
+                )
+                or column.startswith(
+                    "foreign_"
+                )
+                or column.startswith(
+                    "proprietary_"
+                )
+                or column.startswith(
+                    "flow_"
+                )
+                or column.startswith(
+                    "Target_"
+                )
             )
-            .fit(
-                cov_type="HC3"
+        ],
+        "flow": [
+            column
+            for column in columns
+            if (
+                column.startswith(
+                    "flow_"
+                )
+                or "Trading_Value" in column
             )
+        ],
+        "foreign": [
+            column
+            for column in columns
+            if column.startswith(
+                "foreign_"
+            )
+        ],
+        "proprietary": [
+            column
+            for column in columns
+            if column.startswith(
+                "proprietary_"
+            )
+        ],
+        "market": [
+            column
+            for column in columns
+            if column.startswith(
+                "market_"
+            )
+        ],
+        "sector": [
+            column
+            for column in columns
+            if column.startswith(
+                "sector_"
+            )
+        ],
+    }
+
+
+# ============================================================
+# FACTOR IMPORTANCE — CORRELATION
+# ============================================================
+
+def factor_correlation_table(
+    data,
+    target_column,
+):
+
+    if (
+        data is None
+        or data.empty
+        or target_column not in data.columns
+    ):
+
+        return pd.DataFrame()
+
+    excluded = {
+        "Target_1D",
+        "Target_5D",
+        "Target_20D",
+        "Target_1D_Pct",
+        "Target_5D_Pct",
+        "Target_20D_Pct",
+    }
+
+    rows = []
+
+    y = pd.to_numeric(
+        data[
+            target_column
+        ],
+        errors="coerce",
+    )
+
+    for column in data.columns:
+
+        if column == target_column:
+            continue
+
+        if column in excluded:
+            continue
+
+        if not pd.api.types.is_numeric_dtype(
+            data[
+                column
+            ]
+        ):
+            continue
+
+        x = pd.to_numeric(
+            data[
+                column
+            ],
+            errors="coerce",
         )
 
-        rf_model = (
-            RandomForestRegressor(
-                n_estimators=300,
-                max_depth=7,
-                min_samples_leaf=3,
-                random_state=42,
-                n_jobs=-1,
-            )
+        valid = (
+            x.notna()
+            & y.notna()
         )
 
-        rf_model.fit(
-            X_train,
-            y_train,
-        )
+        x_valid = x.loc[
+            valid
+        ]
 
-        prediction_test = (
-            rf_model.predict(
-                X_test
-            )
-        )
+        y_valid = y.loc[
+            valid
+        ]
 
-        mae = float(
-            mean_absolute_error(
-                y_test,
-                prediction_test,
-            )
-        )
+        if len(
+            x_valid
+        ) < 20:
+            continue
 
         try:
 
-            r2 = float(
-                r2_score(
-                    y_test,
-                    prediction_test,
+            pearson = float(
+                x_valid.corr(
+                    y_valid,
+                    method="pearson",
                 )
             )
 
         except Exception:
 
-            r2 = np.nan
+            pearson = np.nan
 
-        next_prediction = float(
-            rf_model.predict(
-                X.iloc[
-                    [
-                        -1
-                    ]
-                ]
-            )[0]
-        )
+        try:
 
-        importance = (
-            pd.Series(
-                rf_model.feature_importances_,
-                index=columns,
+            spearman = float(
+                x_valid.corr(
+                    y_valid,
+                    method="spearman",
+                )
             )
-            .sort_values(
-                ascending=False
-            )
-        )
 
-        return (
-            ols_model,
-            rf_model,
+        except Exception:
+
+            spearman = np.nan
+
+        rows.append(
             {
-                "MAE": mae,
-                "R2": r2,
-            },
-            next_prediction,
-            importance,
+                "Biến": column,
+                "Pearson": pearson,
+                "Spearman": spearman,
+                "|Spearman|": (
+                    abs(
+                        spearman
+                    )
+                    if np.isfinite(
+                        spearman
+                    )
+                    else np.nan
+                ),
+            }
         )
 
-    except Exception:
+    if not rows:
+        return pd.DataFrame()
 
-        return None
+    return (
+        pd.DataFrame(
+            rows
+        )
+        .sort_values(
+            "|Spearman|",
+            ascending=False,
+            na_position="last",
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+
+# ============================================================
+# FINAL FACTOR DATASET
+# ============================================================
+
+def build_research_factor_dataset(
+    data,
+    target_column="Target_20D",
+):
+
+    correlation = factor_correlation_table(
+        data,
+        target_column,
+    )
+
+    return {
+        "data": data,
+        "correlation": correlation,
+        "groups": research_factor_groups(
+            data
+        ),
+    }
+
+
+# ============================================================
+# ALIASES FOR FUTURE PAGES
+# ============================================================
+
+def get_research_data(
+    symbol,
+    start_date,
+    end_date,
+):
+
+    return load_multifactor_research_history(
+        symbol,
+        start_date,
+        end_date,
+    )
+
+
+def load_full_research_data(
+    symbol,
+    start_date,
+    end_date,
+):
+
+    return load_multifactor_research_history(
+        symbol,
+        start_date,
+        end_date,
+    )
