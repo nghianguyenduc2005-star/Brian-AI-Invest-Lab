@@ -100,6 +100,10 @@ def _dinh_dang_khoi_luong(
     )
 
 
+# ============================================================
+# ĐỊNH DẠNG GIÁ TRỊ GIAO DỊCH
+# ============================================================
+
 def _dinh_dang_gia_tri(
     value,
 ):
@@ -140,6 +144,10 @@ def _dinh_dang_gia_tri(
     )
 
 
+# ============================================================
+# ĐỊNH DẠNG GIÁ
+# ============================================================
+
 def _dinh_dang_gia(
     value,
 ):
@@ -155,6 +163,10 @@ def _dinh_dang_gia(
         f"{value:,.0f} đồng/cổ phiếu"
     )
 
+
+# ============================================================
+# ĐỊNH DẠNG RSI
+# ============================================================
 
 def _dinh_dang_rsi(
     value,
@@ -172,6 +184,10 @@ def _dinh_dang_rsi(
     )
 
 
+# ============================================================
+# ĐỊNH DẠNG MACD
+# ============================================================
+
 def _dinh_dang_macd(
     value,
 ):
@@ -187,6 +203,10 @@ def _dinh_dang_macd(
         f"{value:.3f}"
     )
 
+
+# ============================================================
+# ĐỊNH DẠNG %
+# ============================================================
 
 def _dinh_dang_phan_tram(
     value,
@@ -235,6 +255,10 @@ def _lay_vn_index():
 
     du_lieu = du_lieu.copy()
 
+    # ========================================================
+    # ĐIỂM
+    # ========================================================
+
     cot_diem = _tim_cot(
         du_lieu,
         [
@@ -281,11 +305,13 @@ def _lay_vn_index():
         ].iloc[-1]
     )
 
-    # --------------------------------------------------------
-    # Thay đổi
-    # --------------------------------------------------------
+    # ========================================================
+    # THAY ĐỔI
+    # ========================================================
 
-    if len(du_lieu) >= 2:
+    if len(
+        du_lieu
+    ) >= 2:
 
         diem_truoc = float(
             du_lieu[
@@ -315,15 +341,19 @@ def _lay_vn_index():
         thay_doi = None
         phan_tram = None
 
-    # --------------------------------------------------------
-    # Khối lượng
-    # --------------------------------------------------------
+    # ========================================================
+    # KHỐI LƯỢNG
+    # ========================================================
 
     cot_khoi_luong = _tim_cot(
         du_lieu,
         [
             "Volume",
             "volume",
+            "Vol",
+            "total_volume",
+            "match_volume",
+            "matchvolume",
             "Khối lượng",
             "khối lượng",
         ],
@@ -349,17 +379,27 @@ def _lay_vn_index():
             None,
         )
 
-    # --------------------------------------------------------
-    # Giá trị
-    # --------------------------------------------------------
+    # ========================================================
+    # GIÁ TRỊ GIAO DỊCH
+    #
+    # Chỉ lấy nếu nguồn thực sự trả về cột value.
+    # Không tự nhân điểm VN-INDEX × volume vì đó không phải
+    # giá trị giao dịch thị trường.
+    # ========================================================
 
     cot_gia_tri = _tim_cot(
         du_lieu,
         [
             "Value",
             "value",
+            "ValueTraded",
             "value_traded",
             "trading_value",
+            "traded_value",
+            "match_value",
+            "matchvalue",
+            "turnover",
+            "Turnover",
             "Giá trị",
             "giá trị",
         ],
@@ -404,7 +444,6 @@ def render_dashboard():
 
     # ========================================================
     # HERO
-    # KHÔNG DÙNG HTML
     # ========================================================
 
     st.caption(
@@ -500,7 +539,9 @@ def render_dashboard():
         "📌 Theo dõi nhanh"
     )
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4 = st.columns(
+        4
+    )
 
     with c1:
 
@@ -542,7 +583,9 @@ def render_dashboard():
         "📊 VN-INDEX"
     )
 
-    a, b, c, d = st.columns(4)
+    a, b, c, d = st.columns(
+        4
+    )
 
     with a:
 
@@ -593,9 +636,11 @@ def render_dashboard():
         "📈 Theo dõi cổ phiếu"
     )
 
-    ma_mac_dinh = st.session_state.get(
-        "dashboard_symbol",
-        "HPG",
+    ma_mac_dinh = (
+        st.session_state.get(
+            "dashboard_symbol",
+            "HPG",
+        )
     )
 
     ma_nhap = st.text_input(
@@ -756,7 +801,9 @@ def render_dashboard():
         # THÔNG TIN
         # ====================================================
 
-        a, b, c, d = st.columns(4)
+        a, b, c, d = st.columns(
+            4
+        )
 
         with a:
 
@@ -798,7 +845,9 @@ def render_dashboard():
         # CHỈ BÁO
         # ====================================================
 
-        e, f, g, h = st.columns(4)
+        e, f, g, h = st.columns(
+            4
+        )
 
         with e:
 
@@ -842,13 +891,15 @@ def render_dashboard():
         # CHỈ BÁO BỔ SUNG
         # ====================================================
 
-        i, j, k, l = st.columns(4)
+        i, j, k, l = st.columns(
+            4
+        )
 
         with i:
 
             st.metric(
                 "ATR 14 phiên",
-                _dinh_dang_gia(
+                _dinh_dạng_gia(
                     atr14
                 ),
             )
@@ -942,9 +993,6 @@ def render_dashboard():
 
     # ========================================================
     # TIN MỚI
-    #
-    # DÙNG STREAMLIT NATIVE
-    # => KHÔNG CÒN HTML <div> HIỆN RA MÀN HÌNH
     # ========================================================
 
     st.subheader(
@@ -1002,11 +1050,6 @@ def render_dashboard():
                     "",
                 )
             ).strip()
-
-            # ------------------------------------------------
-            # Mỗi tin là một container riêng.
-            # Không dùng HTML.
-            # ------------------------------------------------
 
             with st.container(
                 border=True,
