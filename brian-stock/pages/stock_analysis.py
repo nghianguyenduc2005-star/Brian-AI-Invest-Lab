@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import html
+import json
+import os
+import re
 
 import pandas as pd
 import streamlit as st
@@ -22,42 +25,7 @@ from analysis.quant import (
 
 
 # ============================================================
-# TIỆN ÍCH
-# ============================================================
-
-def _so(gia_tri, mac_dinh=None):
-    try:
-        gia_tri = float(gia_tri)
-
-        if pd.isna(gia_tri):
-            return mac_dinh
-
-        return gia_tri
-
-    except Exception:
-        return mac_dinh
-
-
-def _dinh_dang_khoi_luong(gia_tri):
-    gia_tri = _so(gia_tri)
-
-    if gia_tri is None:
-        return "—"
-
-    if gia_tri >= 1_000_000_000:
-        return f"{gia_tri / 1_000_000_000:.2f} tỷ"
-
-    if gia_tri >= 1_000_000:
-        return f"{gia_tri / 1_000_000:.2f} triệu"
-
-    if gia_tri >= 1_000:
-        return f"{gia_tri / 1_000:.2f} nghìn"
-
-    return f"{gia_tri:,.0f}"
-
-
-# ============================================================
-# QUANT - DỊCH TÊN BIẾN
+# TÊN BIẾN HIỂN THỊ
 # ============================================================
 
 TEN_BIEN_HIEN_THI = {
@@ -83,7 +51,7 @@ TEN_BIEN_HIEN_THI = {
     "EMA26": "Trung bình lũy thừa 26 phiên",
     "EMA50": "Trung bình lũy thừa 50 phiên",
 
-    "RSI": "Sức mạnh tương đối (RSI)",
+    "RSI": "Sức mạnh tương đối RSI",
     "MACD": "MACD",
     "MACD_Signal": "Tín hiệu MACD",
     "MACD_Hist": "Động lượng MACD",
@@ -127,11 +95,11 @@ TEN_BIEN_HIEN_THI = {
     "Gap_Up": "Khoảng trống tăng",
     "Gap_Down": "Khoảng trống giảm",
 
-    "Khoang_Cach_SMA20": "Khoảng cách tới trung bình 20 phiên",
-    "Khoang_Cach_SMA50": "Khoảng cách tới trung bình 50 phiên",
-    "Khoang_Cach_SMA200": "Khoảng cách tới trung bình 200 phiên",
-    "Khoang_Cach_EMA20": "Khoảng cách tới EMA20",
-    "Khoang_Cach_EMA50": "Khoảng cách tới EMA50",
+    "Khoang_Cach_SMA20": "Khoảng cách tới SMA20 (%)",
+    "Khoang_Cach_SMA50": "Khoảng cách tới SMA50 (%)",
+    "Khoang_Cach_SMA200": "Khoảng cách tới SMA200 (%)",
+    "Khoang_Cach_EMA20": "Khoảng cách tới EMA20 (%)",
+    "Khoang_Cach_EMA50": "Khoảng cách tới EMA50 (%)",
 
     "Bien_Dong_Gia_2": "Thay đổi giá 2 phiên",
     "Bien_Dong_Gia_3": "Thay đổi giá 3 phiên",
@@ -149,7 +117,7 @@ TEN_BIEN_HIEN_THI = {
     "Vi_Tri_Vung_50": "Vị trí trong vùng 50 phiên",
     "Vi_Tri_Vung_252": "Vị trí trong vùng 252 phiên",
 
-    "Bien_Do_Ngay": "Biên độ trong ngày",
+    "Bien_Do_Ngay": "Biên độ trong ngày (%)",
     "Ty_Le_Khoi_Luong_TB20": "Tỷ lệ khối lượng / trung bình 20 phiên",
 
     "Thu_Trong_Tuan": "Thứ trong tuần",
@@ -166,6 +134,248 @@ def _ten_hien_thi(ten_bien):
 
 
 # ============================================================
+# TIỆN ÍCH
+# ============================================================
+
+def _so(
+    gia_tri,
+    mac_dinh=None,
+):
+    try:
+        gia_tri = float(gia_tri)
+
+        if pd.isna(gia_tri):
+            return mac_dinh
+
+        return gia_tri
+
+    except Exception:
+        return mac_dinh
+
+
+def _dinh_dang_khoi_luong(
+    gia_tri,
+):
+    gia_tri = _so(
+        gia_tri,
+        None,
+    )
+
+    if gia_tri is None:
+        return "—"
+
+    if gia_tri >= 1_000_000_000:
+        return f"{gia_tri / 1_000_000_000:.2f} tỷ"
+
+    if gia_tri >= 1_000_000:
+        return f"{gia_tri / 1_000_000:.2f} triệu"
+
+    if gia_tri >= 1_000:
+        return f"{gia_tri / 1_000:.2f} nghìn"
+
+    return f"{gia_tri:,.0f}"
+
+
+# ============================================================
+# LẤY API KEY GOOGLE
+# ============================================================
+
+def _lay_google_api_key():
+
+    try:
+
+        if "GOOGLE_API_KEY" in st.secrets:
+
+            key = st.secrets[
+                "GOOGLE_API_KEY"
+            ]
+
+            if key:
+                return str(key).strip()
+
+    except Exception:
+        pass
+
+    key = os.getenv(
+        "GOOGLE_API_KEY",
+        "",
+    )
+
+    return str(
+        key or ""
+    ).strip()
+
+
+# ============================================================
+# AI PHÂN TÍCH PROMPT
+# ============================================================
+
+def _ai_chon_bien(
+    prompt,
+    danh_sach_bien,
+):
+
+    prompt = str(
+        prompt or ""
+    ).strip()
+
+    if not prompt:
+        return []
+
+    api_key = _lay_google_api_key()
+
+    if not api_key:
+        return []
+
+    try:
+
+        from google import genai
+
+    except Exception:
+        return []
+
+    # --------------------------------------------------------
+    # Danh sách biến cho AI
+    # --------------------------------------------------------
+
+    danh_sach_text = "\n".join(
+        [
+            f"- {bien}: {_ten_hien_thi(bien)}"
+            for bien
+            in danh_sach_bien
+        ]
+    )
+
+    yeu_cau = f"""
+Bạn là trợ lý phân tích định lượng cổ phiếu.
+
+Người dùng yêu cầu:
+{prompt}
+
+Danh sách biến có thể sử dụng:
+{danh_sach_text}
+
+Hãy chọn những biến phù hợp nhất với yêu cầu.
+
+Chỉ được chọn những biến xuất hiện chính xác
+trong danh sách ở trên.
+
+Trả về JSON hợp lệ theo đúng cấu trúc:
+
+{{
+  "bien": [
+    "ten_bien_1",
+    "ten_bien_2"
+  ],
+  "ly_do": "Giải thích ngắn gọn"
+}}
+
+Không thêm markdown.
+Không thêm biến ngoài danh sách.
+"""
+
+    try:
+
+        client = genai.Client(
+            api_key=api_key
+        )
+
+        phan_hoi = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=yeu_cau,
+        )
+
+        noi_dung = str(
+            getattr(
+                phan_hoi,
+                "text",
+                "",
+            )
+            or ""
+        ).strip()
+
+        if not noi_dung:
+            return []
+
+        # ----------------------------------------------------
+        # Làm sạch JSON
+        # ----------------------------------------------------
+
+        noi_dung = re.sub(
+            r"^```json\s*",
+            "",
+            noi_dung,
+            flags=re.IGNORECASE,
+        )
+
+        noi_dung = re.sub(
+            r"\s*```$",
+            "",
+            noi_dung,
+        )
+
+        du_lieu_ai = json.loads(
+            noi_dung
+        )
+
+        bien_ai = (
+            du_lieu_ai.get(
+                "bien",
+                [],
+            )
+        )
+
+        if not isinstance(
+            bien_ai,
+            list,
+        ):
+            return []
+
+        # ----------------------------------------------------
+        # Chỉ nhận biến hợp lệ
+        # ----------------------------------------------------
+
+        ket_qua = []
+
+        for bien in bien_ai:
+
+            bien = str(
+                bien
+            ).strip()
+
+            if (
+                bien in danh_sach_bien
+                and bien not in ket_qua
+            ):
+
+                ket_qua.append(
+                    bien
+                )
+
+        # Lưu lý do
+        st.session_state[
+            "quant_ai_reason"
+        ] = str(
+            du_lieu_ai.get(
+                "ly_do",
+                "",
+            )
+        )
+
+        return ket_qua
+
+    except Exception as loi:
+
+        st.session_state[
+            "quant_ai_error"
+        ] = str(
+            loi
+        )
+
+        return []
+
+
+# ============================================================
 # RENDER
 # ============================================================
 
@@ -178,6 +388,7 @@ def render_stock_analysis():
     st.markdown(
         """
         <div class="hero">
+
             <div class="eyebrow">
                 BRIAN STOCK · STOCK RESEARCH
             </div>
@@ -191,6 +402,7 @@ def render_stock_analysis():
                 thanh khoản, biến động và định lượng
                 từ dữ liệu thị trường thực.
             </p>
+
         </div>
         """,
         unsafe_allow_html=True,
@@ -239,6 +451,11 @@ def render_stock_analysis():
                 None,
             )
 
+            st.session_state.pop(
+                "quant_ai_reason",
+                None,
+            )
+
             st.rerun()
 
     ma = normalize_symbol(
@@ -249,7 +466,7 @@ def render_stock_analysis():
     )
 
     # ========================================================
-    # DỮ LIỆU
+    # TẢI DỮ LIỆU
     # ========================================================
 
     try:
@@ -274,7 +491,8 @@ def render_stock_analysis():
     ):
 
         st.error(
-            f"Không có dữ liệu cho {display_symbol(ma)}."
+            f"Không có dữ liệu cho "
+            f"{display_symbol(ma)}."
         )
 
         return
@@ -357,8 +575,10 @@ def render_stock_analysis():
         )
 
     # ========================================================
-    # CÁC CHỈ SỐ BỔ SUNG
+    # CHỈ SỐ BỔ SUNG
     # ========================================================
+
+    e, f, g, h = st.columns(4)
 
     sma20 = _so(
         anh_chup.get("sma20")
@@ -373,10 +593,10 @@ def render_stock_analysis():
     )
 
     bien_dong = _so(
-        anh_chup.get("volatility20")
+        anh_chup.get(
+            "volatility20"
+        )
     )
-
-    e, f, g, h = st.columns(4)
 
     with e:
 
@@ -454,7 +674,7 @@ def render_stock_analysis():
         )
 
     # ========================================================
-    # PHÂN TÍCH ĐỊNH LƯỢNG
+    # QUANT
     # ========================================================
 
     st.markdown(
@@ -463,12 +683,12 @@ def render_stock_analysis():
     )
 
     st.caption(
-        "Lựa chọn biến được sử dụng để phân tích "
-        "và dự báo lợi suất."
+        "Có thể tự chọn biến hoặc nhập yêu cầu "
+        "bằng ngôn ngữ tự nhiên để AI lựa chọn biến."
     )
 
     # ========================================================
-    # LẤY DANH SÁCH BIẾN
+    # DANH SÁCH BIẾN
     # ========================================================
 
     try:
@@ -489,10 +709,144 @@ def render_stock_analysis():
     if not danh_sach_bien:
 
         st.warning(
-            "Không có đủ biến hợp lệ để phân tích."
+            "Không có đủ biến để phân tích."
         )
 
         return
+
+    # ========================================================
+    # AI PROMPT
+    # ========================================================
+
+    st.markdown(
+        "#### 🤖 AI tự chọn biến"
+    )
+
+    st.caption(
+        "Ví dụ: "
+        "\"Tìm các biến giải thích khả năng tăng giá ngắn hạn, "
+        "ưu tiên động lượng và thanh khoản.\""
+    )
+
+    prompt_ai = st.text_area(
+        "Yêu cầu cho AI",
+        placeholder=(
+            "Ví dụ: Hãy chọn biến để phân tích "
+            "khả năng tăng giá trong 20 phiên tới, "
+            "ưu tiên xu hướng, động lượng và khối lượng."
+        ),
+        height=110,
+        key="quant_ai_prompt",
+    )
+
+    col_ai_1, col_ai_2 = st.columns(
+        [1, 1]
+    )
+
+    with col_ai_1:
+
+        if st.button(
+            "🤖 AI chọn biến",
+            type="secondary",
+            key="quant_ai_choose",
+        ):
+
+            if not prompt_ai.strip():
+
+                st.warning(
+                    "Hãy nhập yêu cầu cho AI."
+                )
+
+            else:
+
+                with st.spinner(
+                    "AI đang phân tích yêu cầu..."
+                ):
+
+                    bien_ai = _ai_chon_bien(
+                        prompt_ai,
+                        danh_sach_bien,
+                    )
+
+                if bien_ai:
+
+                    st.session_state[
+                        "quant_ai_selected"
+                    ] = bien_ai
+
+                    # Đồng bộ với multiselect
+                    st.session_state[
+                        "quant_bien_giai_thich"
+                    ] = [
+                        _ten_hien_thi(x)
+                        for x
+                        in bien_ai
+                    ]
+
+                    st.success(
+                        "AI đã chọn "
+                        f"{len(bien_ai)} biến."
+                    )
+
+                    st.rerun()
+
+                else:
+
+                    api_key = _lay_google_api_key()
+
+                    if not api_key:
+
+                        st.warning(
+                            "Chưa cấu hình GOOGLE_API_KEY. "
+                            "Không có API key thì vẫn có thể "
+                            "chọn biến thủ công."
+                        )
+
+                    else:
+
+                        st.error(
+                            "AI không chọn được biến. "
+                            "Kiểm tra yêu cầu hoặc API key."
+                        )
+
+    with col_ai_2:
+
+        if st.button(
+            "🧹 Xóa lựa chọn AI",
+            key="quant_ai_clear",
+        ):
+
+            st.session_state.pop(
+                "quant_ai_selected",
+                None,
+            )
+
+            st.session_state.pop(
+                "quant_ai_reason",
+                None,
+            )
+
+            st.session_state.pop(
+                "quant_ai_error",
+                None,
+            )
+
+            st.rerun()
+
+    # ========================================================
+    # LÝ DO AI
+    # ========================================================
+
+    ly_do_ai = st.session_state.get(
+        "quant_ai_reason",
+        "",
+    )
+
+    if ly_do_ai:
+
+        st.info(
+            f"AI giải thích: {ly_do_ai}"
+        )
 
     # ========================================================
     # NHÓM BIẾN
@@ -509,8 +863,27 @@ def render_stock_analysis():
 
         nhom_bien = {}
 
+    with st.expander(
+        "📚 Xem toàn bộ biến",
+        expanded=False,
+    ):
+
+        for ten_nhom, cac_bien in nhom_bien.items():
+
+            st.markdown(
+                f"**{ten_nhom}**"
+            )
+
+            for bien in cac_bien:
+
+                if bien in danh_sach_bien:
+
+                    st.write(
+                        f"• {_ten_hien_thi(bien)}"
+                    )
+
     # ========================================================
-    # ÁNH XẠ HIỂN THỊ
+    # ÁNH XẠ BIẾN
     # ========================================================
 
     anh_xa = {}
@@ -521,7 +894,6 @@ def render_stock_analysis():
             bien
         )
 
-        # Tránh trùng tên hiển thị
         if ten_hien_thi in anh_xa:
 
             ten_hien_thi = (
@@ -537,63 +909,51 @@ def render_stock_analysis():
     )
 
     # ========================================================
-    # DANH SÁCH BIẾN THEO NHÓM
+    # GIÁ TRỊ MẶC ĐỊNH
     # ========================================================
 
-    with st.expander(
-        "📚 Xem toàn bộ biến có thể sử dụng",
-        expanded=False,
-    ):
-
-        if nhom_bien:
-
-            for ten_nhom, cac_bien in nhom_bien.items():
-
-                st.markdown(
-                    f"**{ten_nhom}**"
-                )
-
-                for bien in cac_bien:
-
-                    if bien in danh_sach_bien:
-
-                        st.write(
-                            f"• {_ten_hien_thi(bien)}"
-                        )
-
-                st.markdown("")
-
-        else:
-
-            for bien in danh_sach_bien:
-
-                st.write(
-                    f"• {_ten_hien_thi(bien)}"
-                )
-
-    # ========================================================
-    # BIẾN GIẢI THÍCH
-    # ========================================================
-
-    bien_mac_dinh = [
-        "RSI",
-        "MACD",
-        "SMA20",
-        "SMA50",
-        "Volatility20",
-        "Volume_Change",
-        "Momentum20",
-        "Gap_Open_Pct",
-    ]
-
-    mac_dinh_hien_thi = [
-        _ten_hien_thi(
-            bien
+    bien_ai_da_chon = (
+        st.session_state.get(
+            "quant_ai_selected",
+            [],
         )
-        for bien
-        in bien_mac_dinh
-        if bien in danh_sach_bien
-    ]
+    )
+
+    if bien_ai_da_chon:
+
+        mac_dinh_hien_thi = [
+            _ten_hien_thi(
+                bien
+            )
+            for bien
+            in bien_ai_da_chon
+            if bien in danh_sach_bien
+        ]
+
+    else:
+
+        bien_mac_dinh = [
+            "RSI",
+            "MACD",
+            "SMA20",
+            "SMA50",
+            "Volatility20",
+            "Volume_Change",
+            "Momentum20",
+        ]
+
+        mac_dinh_hien_thi = [
+            _ten_hien_thi(
+                bien
+            )
+            for bien
+            in bien_mac_dinh
+            if bien in danh_sach_bien
+        ]
+
+    # ========================================================
+    # CHỌN BIẾN THỦ CÔNG
+    # ========================================================
 
     bien_giai_thich_hien_thi = (
         st.multiselect(
@@ -614,20 +974,19 @@ def render_stock_analysis():
     ]
 
     # ========================================================
-    # BIẾN PHỤ THUỘC
+    # BIẾN MỤC TIÊU
     # ========================================================
 
     cac_muc_tieu = []
 
     if "Return" in du_lieu.columns:
+
         cac_muc_tieu.append(
             "Return"
         )
 
-    if (
-        "ReturnPct"
-        in du_lieu.columns
-    ):
+    if "ReturnPct" in du_lieu.columns:
+
         cac_muc_tieu.append(
             "ReturnPct"
         )
@@ -635,42 +994,42 @@ def render_stock_analysis():
     if not cac_muc_tieu:
 
         st.error(
-            "Không tìm thấy biến mục tiêu."
+            "Không có biến mục tiêu."
         )
 
         return
 
-    muc_tieu_hien_thi = [
+    anh_xa_muc_tieu = {
         _ten_hien_thi(
             bien
-        )
+        ): bien
         for bien
         in cac_muc_tieu
-    ]
+    }
 
-    ten_muc_tieu = st.selectbox(
+    muc_tieu_hien_thi = st.selectbox(
         "Biến mục tiêu",
-        options=muc_tieu_hien_thi,
-        index=0,
+        options=list(
+            anh_xa_muc_tieu.keys()
+        ),
         key="quant_bien_muc_tieu",
     )
 
     bien_phu_thuoc = (
-        cac_muc_tieu[
-            muc_tieu_hien_thi.index(
-                ten_muc_tieu
-            )
+        anh_xa_muc_tieu[
+            muc_tieu_hien_thi
         ]
     )
 
     # ========================================================
-    # TÓM TẮT LỰA CHỌN
+    # TÓM TẮT
     # ========================================================
 
     if bien_giai_thich_hien_thi:
 
         st.info(
-            f"Đã chọn {len(bien_giai_thich_hien_thi)} biến giải thích: "
+            "Đã chọn "
+            f"{len(bien_giai_thich_hien_thi)} biến: "
             + ", ".join(
                 bien_giai_thich_hien_thi
             )
@@ -695,7 +1054,7 @@ def render_stock_analysis():
         if not bien_giai_thich:
 
             st.error(
-                "Hãy chọn ít nhất một biến giải thích."
+                "Hãy chọn ít nhất một biến."
             )
 
         else:
@@ -719,7 +1078,8 @@ def render_stock_analysis():
                 if ket_qua is None:
 
                     st.error(
-                        "Không đủ dữ liệu hợp lệ để chạy mô hình."
+                        "Không đủ dữ liệu hợp lệ "
+                        "để chạy mô hình."
                     )
 
                 else:
@@ -728,10 +1088,14 @@ def render_stock_analysis():
                         "quant_result"
                     ] = ket_qua
 
+                    st.success(
+                        "Mô hình đã chạy xong."
+                    )
+
             except Exception as loi:
 
                 st.error(
-                    f"Lỗi mô hình định lượng: {loi}"
+                    f"Lỗi mô hình: {loi}"
                 )
 
     # ========================================================
@@ -746,7 +1110,7 @@ def render_stock_analysis():
         return
 
     st.markdown(
-        "#### 📌 Kết quả"
+        "#### 📌 Kết quả mô hình"
     )
 
     a, b, c, d = st.columns(4)
@@ -774,7 +1138,7 @@ def render_stock_analysis():
     with c:
 
         st.metric(
-            "Số mẫu huấn luyện",
+            "Huấn luyện",
             ket_qua.get(
                 "so_huan_luyen",
                 0,
@@ -784,7 +1148,7 @@ def render_stock_analysis():
     with d:
 
         st.metric(
-            "Số mẫu kiểm tra",
+            "Kiểm tra",
             ket_qua.get(
                 "so_kiem_tra",
                 0,
@@ -809,14 +1173,14 @@ def render_stock_analysis():
         )
 
     # ========================================================
-    # BIẾN ĐƯỢC MÔ HÌNH SỬ DỤNG
+    # BIẾN SỬ DỤNG
     # ========================================================
 
     st.markdown(
         "#### 🔎 Biến mô hình sử dụng"
     )
 
-    cac_bien_thuc = ket_qua.get(
+    cac_bien = ket_qua.get(
         "danh_sach_bien",
         [],
     )
@@ -828,13 +1192,9 @@ def render_stock_analysis():
                     bien
                 )
                 for bien
-                in cac_bien_thuc
+                in cac_bien
             ],
-            "Tên kỹ thuật": [
-                bien
-                for bien
-                in cac_bien_thuc
-            ],
+            "Mã kỹ thuật": cac_bien,
         }
     )
 
@@ -927,7 +1287,7 @@ def render_stock_analysis():
             )
         ):
 
-            bang_quan_trong = (
+            bang = (
                 tam_quan_trong
                 .sort_values(
                     ascending=False
@@ -937,16 +1297,16 @@ def render_stock_analysis():
                     index=_ten_hien_thi
                 )
                 .to_frame(
-                    "Mức độ quan trọng"
+                    "Mức độ quan trọng (%)"
                 )
             )
 
-            bang_quan_trong[
-                "Mức độ quan trọng"
+            bang[
+                "Mức độ quan trọng (%)"
             ] *= 100
 
             st.bar_chart(
-                bang_quan_trong
+                bang
             )
 
     # ========================================================
@@ -1018,14 +1378,18 @@ def render_stock_analysis():
                 ),
             )
 
-        he_so = ket_qua_ols.get(
-            "he_so",
-            {},
+        he_so = (
+            ket_qua_ols.get(
+                "he_so",
+                {},
+            )
         )
 
-        p_value = ket_qua_ols.get(
-            "p_value",
-            {},
+        p_value = (
+            ket_qua_ols.get(
+                "p_value",
+                {},
+            )
         )
 
         if he_so:
