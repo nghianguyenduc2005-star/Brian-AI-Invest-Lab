@@ -16,12 +16,11 @@ AI_CACHE_TTL = 1800
 
 DEFAULT_NEWS_COUNT = 15
 
-# Gemini hiện tại
 GEMINI_MODEL = "gemini-3.7-flash"
 
 
 # ============================================================
-# TEXT
+# TEXT HELPER
 # ============================================================
 
 def _text(
@@ -31,18 +30,22 @@ def _text(
     if value is None:
         return default
 
-    text = str(value).strip()
+    value = str(value).strip()
 
-    return text if text else default
+    if not value:
+        return default
+
+    return value
 
 
 # ============================================================
-# NEWS NORMALIZE
+# NORMALIZE NEWS
 # ============================================================
 
 def normalize_news(news):
     """
-    Chuẩn hóa dữ liệu từ data.news.
+    Chuẩn hóa danh sách tin.
+    Loại tin trùng tiêu đề.
     """
 
     if not isinstance(news, list):
@@ -64,14 +67,18 @@ def normalize_news(news):
         if not title:
             continue
 
-        key = " ".join(
-            title.lower().split()
+        dedupe_key = (
+            " ".join(
+                title.lower().split()
+            )
         )
 
-        if key in seen:
+        if dedupe_key in seen:
             continue
 
-        seen.add(key)
+        seen.add(
+            dedupe_key
+        )
 
         result.append(
             {
@@ -89,7 +96,8 @@ def normalize_news(news):
                             "date",
                             "",
                         ),
-                    )
+                    ),
+                    "",
                 ),
 
                 "summary": _text(
@@ -99,14 +107,16 @@ def normalize_news(news):
                             "description",
                             "",
                         ),
-                    )
+                    ),
+                    "",
                 ),
 
                 "link": _text(
                     item.get(
                         "link",
                         "",
-                    )
+                    ),
+                    "",
                 ),
             }
         )
@@ -126,23 +136,25 @@ def load_news_cached(
     limit: int,
 ):
     """
-    News cache.
-    Không gọi API mỗi lần Streamlit rerun.
+    Chỉ gọi nguồn tin khi cache hết hạn
+    hoặc khi người dùng bấm Lấy tin mới.
     """
 
     try:
 
-        news = fetch_market_news(
+        raw_news = fetch_market_news(
             limit
         )
 
         return normalize_news(
-            news
+            raw_news
         )
 
-    except Exception:
+    except Exception as error:
 
-        return []
+        return {
+            "_error": str(error)
+        }
 
 
 # ============================================================
@@ -150,6 +162,7 @@ def load_news_cached(
 # ============================================================
 
 def get_gemini_api_key():
+
     try:
 
         key = st.secrets.get(
@@ -169,14 +182,14 @@ def get_gemini_api_key():
 
 
 # ============================================================
-# BUILD NEWS INPUT
+# BUILD NEWS CONTEXT
 # ============================================================
 
 def build_news_context(
     news,
 ):
     """
-    Chuyển toàn bộ tin đã tải thành input cho AI.
+    Chuyển toàn bộ tin thành một input duy nhất cho Gemini.
     """
 
     blocks = []
@@ -211,29 +224,29 @@ def build_news_context(
             "",
         )
 
-        parts = [
+        lines = [
             f"=== TIN {index} ===",
             f"Tiêu đề: {title}",
             f"Nguồn: {source}",
         ]
 
         if published:
-            parts.append(
+            lines.append(
                 f"Thời gian: {published}"
             )
 
         if summary:
-            parts.append(
-                f"Tóm tắt: {summary}"
+            lines.append(
+                f"Nội dung: {summary}"
             )
 
         if link:
-            parts.append(
+            lines.append(
                 f"Link: {link}"
             )
 
         blocks.append(
-            "\n".join(parts)
+            "\n".join(lines)
         )
 
     return "\n\n".join(
@@ -248,57 +261,88 @@ def build_news_context(
 def build_ai_prompt(
     news_context,
 ):
+
     return f"""
-Bạn là BRIAN AI — hệ thống phân tích tin tức
-cho thị trường chứng khoán Việt Nam.
+Bạn là BRIAN AI — chuyên gia tổng hợp và phân tích
+tin tức thị trường chứng khoán Việt Nam.
 
-Đọc TOÀN BỘ các tin tức bên dưới và tạo một
-Market Intelligence Brief.
+Bạn được cung cấp TOÀN BỘ tin tức thật đã được hệ thống
+thu thập.
 
-QUY TẮC:
+MỤC TIÊU:
+Biến các tin rời rạc thành một bản Market Intelligence
+Brief để người đọc hiểu ngay thị trường đang quan tâm gì.
 
-- Chỉ sử dụng thông tin có trong dữ liệu.
-- Không bịa số liệu.
-- Không bịa sự kiện.
-- Không tự lấy thêm tin từ trí nhớ.
-- Nếu thiếu dữ liệu, nói rõ "Chưa đủ dữ liệu để kết luận."
-- Không khẳng định quan hệ nhân quả khi dữ liệu chỉ cho thấy liên hệ.
-- Không đưa khuyến nghị mua/bán cá nhân hóa.
-- Gom những tin cùng nói về một chủ đề thành một câu chuyện.
-- Ưu tiên các yếu tố có thể ảnh hưởng rộng đến thị trường.
+QUY TẮC BẮT BUỘC:
 
-FORMAT BẮT BUỘC:
+1. Chỉ sử dụng thông tin trong dữ liệu được cung cấp.
+2. Không bịa số liệu.
+3. Không bịa sự kiện.
+4. Không tự bổ sung thông tin ngoài dữ liệu.
+5. Nếu dữ liệu không đủ, phải ghi:
+   "Chưa đủ dữ liệu để kết luận."
+6. Không đưa khuyến nghị mua/bán cá nhân hóa.
+7. Không biến tương quan thành quan hệ nhân quả.
+8. Nếu nhiều bài viết cùng nói về một câu chuyện,
+   phải gom chúng thành một nhóm.
+9. Phải phân biệt:
+   - Thông tin từ nguồn
+   - Nhận định tổng hợp
+10. Ưu tiên các yếu tố có thể ảnh hưởng rộng đến
+    thị trường chứng khoán Việt Nam.
 
-# 🧠 BRIAN AI — MARKET BRIEF
+============================================================
+FORMAT TRẢ LỜI
+============================================================
 
-## 1. Tổng quan
+# 🧠 BRIAN AI — MARKET INTELLIGENCE BRIEF
+
+## 1. TÓM TẮT NHANH
+
 Viết 4–6 câu.
-Trả lời:
-- Thị trường đang được dẫn dắt bởi câu chuyện gì?
-- Chủ đề nào nổi bật nhất?
-- Thông tin hiện tại nghiêng tích cực, trung tính hay thận trọng?
 
-## 2. 🔥 Tin quan trọng nhất
+Bắt buộc trả lời:
+- Thị trường đang quan tâm điều gì?
+- Câu chuyện nào nổi bật nhất?
+- Tâm lý thông tin đang nghiêng về đâu?
+- Có yếu tố nào đáng chú ý trong ngắn hạn?
+
+## 2. 🔥 5 CÂU CHUYỆN QUAN TRỌNG NHẤT
+
 Chọn tối đa 5 câu chuyện.
 
 Mỗi câu chuyện:
-**Tên câu chuyện**
-- Thông tin:
-- Nguồn:
-- Vì sao quan trọng:
-- Tác động tiềm năng:
 
-## 3. 🇻🇳 Thị trường Việt Nam
-Phân tích:
+### [Tên câu chuyện]
+
+**Thông tin:**
+...
+
+**Nguồn:**
+...
+
+**Vì sao quan trọng:**
+...
+
+**Tác động tiềm năng:**
+...
+
+## 3. 🇻🇳 THỊ TRƯỜNG VIỆT NAM
+
+Phân tích nếu có dữ liệu:
+
 - VN-INDEX
 - VN30
 - chứng khoán Việt Nam
 - dòng tiền
 - chính sách
-- kinh tế trong nước
+- kinh tế Việt Nam
+- tâm lý nhà đầu tư
 
-## 4. 🌎 Quốc tế
-Chỉ đề cập nếu có dữ liệu:
+## 4. 🌎 QUỐC TẾ
+
+Chỉ phân tích nếu dữ liệu có đề cập:
+
 - Mỹ
 - Fed
 - lãi suất
@@ -309,69 +353,93 @@ Chỉ đề cập nếu có dữ liệu:
 - MSCI
 - nâng hạng
 
-## 5. 💰 Vĩ mô
+## 5. 💰 VĨ MÔ
 
-### Hỗ trợ
-Các yếu tố hỗ trợ thị trường.
+### 🟢 Hỗ trợ
 
-### Gây áp lực
-Các yếu tố gây áp lực.
+Các yếu tố có khả năng hỗ trợ thị trường.
 
-### Chưa rõ
-Những vấn đề chưa đủ dữ liệu.
+### 🔴 Gây áp lực
 
-## 6. 🏢 Doanh nghiệp / ngành
-Xác định:
-- doanh nghiệp nào được nhắc tới
-- ngành nào được nhắc tới
+Các yếu tố có khả năng gây áp lực.
+
+### ⚪ Chưa rõ
+
+Các yếu tố cần thêm dữ liệu.
+
+## 6. 🏢 DOANH NGHIỆP / NGÀNH
+
+Nêu:
+
+- doanh nghiệp được nhắc tới
+- ngành được nhắc tới
+- câu chuyện chính
 - tác động tiềm năng
 - tích cực / tiêu cực / chưa rõ
 
-## 7. 🟢 Yếu tố tích cực
+Không được tự tạo số liệu tài chính.
+
+## 7. 🟢 YẾU TỐ TÍCH CỰC
+
+Tối đa 5 yếu tố.
+
+Mỗi yếu tố phải có bằng chứng từ dữ liệu.
+
+## 8. 🔴 YẾU TỐ TIÊU CỰC
+
+Tối đa 5 yếu tố.
+
+Mỗi yếu tố phải có bằng chứng từ dữ liệu.
+
+## 9. ⚠️ RỦI RO CẦN THEO DÕI
+
 Tối đa 5 điểm.
 
-## 8. 🔴 Yếu tố tiêu cực
-Tối đa 5 điểm.
+## 10. 📊 MARKET SENTIMENT
 
-## 9. ⚠️ Rủi ro cần theo dõi
-Tối đa 5 điểm.
-
-## 10. 📊 Market Sentiment
 Chọn đúng một:
 
 **TÍCH CỰC**
+
+hoặc
+
 **TRUNG TÍNH**
+
+hoặc
+
 **THẬN TRỌNG**
 
-Sau đó giải thích ngắn dựa trên tin.
+Sau đó giải thích 3–5 câu.
 
-## 11. 🎯 Kết luận
+## 11. 🎯 KẾT LUẬN
+
 Viết 6–10 câu.
 
-Bắt buộc trả lời:
-- Thị trường đang quan tâm gì nhất?
+Phải trả lời rõ:
+
+- Thị trường đang tập trung vào điều gì nhất?
 - Yếu tố nào có khả năng ảnh hưởng rộng nhất?
 - Điều gì đang hỗ trợ?
 - Điều gì đang gây áp lực?
-- Cần tiếp tục theo dõi gì?
+- Điều gì cần theo dõi tiếp?
 
-========================
+============================================================
 DỮ LIỆU TIN TỨC
-========================
+============================================================
 
 {news_context}
 """.strip()
 
 
 # ============================================================
-# GEMINI
+# CALL GEMINI
 # ============================================================
 
-def generate_market_brief(
-    news_context,
+def _call_gemini(
+    prompt,
 ):
     """
-    Chỉ 1 request Gemini.
+    Một request duy nhất.
     Không retry.
     Không AFC.
     Không tools.
@@ -385,7 +453,8 @@ def generate_market_brief(
             "ok": False,
             "text": "",
             "error": (
-                "Thiếu GEMINI_API_KEY trong Streamlit Secrets."
+                "Chưa cấu hình GEMINI_API_KEY "
+                "trong Streamlit Secrets."
             ),
         }
 
@@ -399,7 +468,7 @@ def generate_market_brief(
             "ok": False,
             "text": "",
             "error": (
-                "Chưa cài package google-genai. "
+                "Không import được google-genai: "
                 f"{error}"
             ),
         }
@@ -410,9 +479,17 @@ def generate_market_brief(
             api_key=api_key
         )
 
-        prompt = build_ai_prompt(
-            news_context
-        )
+    except Exception as error:
+
+        return {
+            "ok": False,
+            "text": "",
+            "error": (
+                f"Không khởi tạo Gemini: {error}"
+            ),
+        }
+
+    try:
 
         response = (
             client
@@ -460,7 +537,7 @@ def generate_market_brief(
 
 
 # ============================================================
-# CACHE AI
+# AI CACHE
 # ============================================================
 
 @st.cache_data(
@@ -470,8 +547,12 @@ def generate_market_brief(
 def generate_market_brief_cached(
     news_context,
 ):
-    return generate_market_brief(
+    prompt = build_ai_prompt(
         news_context
+    )
+
+    return _call_gemini(
+        prompt
     )
 
 
@@ -482,6 +563,7 @@ def generate_market_brief_cached(
 def render_news_card(
     item,
 ):
+
     title = _text(
         item.get("title"),
         "Không có tiêu đề",
@@ -541,52 +623,40 @@ def render_news_card(
 
 
 # ============================================================
-# AI UI
+# AI PANEL
 # ============================================================
 
 def render_ai_brief(
     news,
 ):
+
     st.subheader(
         "✨ Tổng hợp bằng AI"
     )
 
     st.caption(
-        f"Brian AI sẽ đọc toàn bộ {len(news)} tin hiện có."
+        f"Brian AI sẽ đọc toàn bộ {len(news)} tin "
+        "đang hiển thị."
     )
 
-    if not news:
-
-        st.info(
-            "Không có tin để phân tích."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # BUTTON
-    # --------------------------------------------------------
-
-    run_ai = st.button(
-        "🤖 Tóm tắt & phân tích tin tức",
+    if st.button(
+        "🤖 Phân tích toàn bộ tin",
         type="primary",
         width="stretch",
         key="market_news_ai_button",
-    )
+    ):
 
-    if run_ai:
-
-        context = build_news_context(
+        news_context = build_news_context(
             news
         )
 
         with st.spinner(
-            "Brian AI đang tổng hợp..."
+            "Brian AI đang tổng hợp tin tức..."
         ):
 
             result = (
                 generate_market_brief_cached(
-                    context
+                    news_context
                 )
             )
 
@@ -594,20 +664,15 @@ def render_ai_brief(
             "market_news_ai_result"
         ] = result
 
-    # --------------------------------------------------------
-    # RESULT
-    # --------------------------------------------------------
+        st.session_state[
+            "market_news_ai_news_count"
+        ] = len(news)
 
     result = st.session_state.get(
         "market_news_ai_result"
     )
 
     if not result:
-
-        st.info(
-            "Bấm nút để AI phân tích toàn bộ tin."
-        )
-
         return
 
     if not result.get(
@@ -628,8 +693,10 @@ def render_ai_brief(
 
         return
 
-    text = result.get(
-        "text",
+    text = _text(
+        result.get(
+            "text"
+        ),
         "",
     )
 
@@ -641,7 +708,7 @@ def render_ai_brief(
 
 
 # ============================================================
-# PAGE
+# MAIN PAGE
 # ============================================================
 
 def render_market_news():
@@ -659,22 +726,22 @@ def render_market_news():
     )
 
     st.write(
-        "Tổng hợp tin tức thị trường và dùng Brian AI "
-        "để tạo Market Intelligence Brief."
+        "Tổng hợp tin tức thị trường và sử dụng "
+        "Brian AI để tạo Market Intelligence Brief."
     )
 
     # ========================================================
-    # CONTROL
+    # CONTROLS
     # ========================================================
 
-    left, right = st.columns(
+    c1, c2 = st.columns(
         [
             1,
             4,
         ]
     )
 
-    with left:
+    with c1:
 
         news_count = st.selectbox(
             "Số tin",
@@ -688,7 +755,7 @@ def render_market_news():
             key="market_news_count",
         )
 
-    with right:
+    with c2:
 
         refresh = st.button(
             "🔄 Lấy tin mới",
@@ -696,12 +763,14 @@ def render_market_news():
         )
 
     # ========================================================
-    # REFRESH
+    # REFRESH NEWS
     # ========================================================
 
     if refresh:
 
         load_news_cached.clear()
+
+        generate_market_brief_cached.clear()
 
         st.session_state.pop(
             "market_news_ai_result",
@@ -711,26 +780,41 @@ def render_market_news():
         st.rerun()
 
     # ========================================================
-    # NEWS
+    # LOAD NEWS
     # ========================================================
 
-    try:
+    loaded_news = load_news_cached(
+        news_count
+    )
 
-        news = load_news_cached(
-            news_count
+    # Error returned by loader
+    if (
+        isinstance(
+            loaded_news,
+            dict,
         )
-
-    except Exception as error:
+        and "_error" in loaded_news
+    ):
 
         st.error(
             "Không thể tải tin tức."
         )
 
         st.code(
-            str(error)
+            loaded_news[
+                "_error"
+            ]
         )
 
         return
+
+    news = normalize_news(
+        loaded_news
+    )
+
+    # ========================================================
+    # EMPTY
+    # ========================================================
 
     if not news:
 
@@ -757,7 +841,7 @@ def render_market_news():
     )
 
     # ========================================================
-    # NEWS SOURCE
+    # SOURCE NEWS
     # ========================================================
 
     st.divider()
@@ -779,9 +863,9 @@ def render_market_news():
     st.divider()
 
     st.caption(
-        "AI chỉ tổng hợp các tin đã được hệ thống tải. "
-        "Kiểm tra nguồn gốc bài viết trước khi sử dụng "
-        "cho quyết định đầu tư."
+        "Brian AI chỉ tổng hợp thông tin từ các tin đã "
+        "được hệ thống thu thập. Hãy kiểm tra nguồn gốc "
+        "bài viết trước khi sử dụng cho quyết định đầu tư."
     )
 
 
