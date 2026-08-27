@@ -9,7 +9,7 @@ from plotly.subplots import make_subplots
 
 
 # ============================================================
-# MÀU SẮC
+# MÀU
 # ============================================================
 
 MAU_TANG = "#00d4a8"
@@ -19,27 +19,127 @@ MAU_SMA50 = "#19d3ae"
 MAU_EMA20 = "#ffd166"
 MAU_EMA50 = "#9b8cff"
 MAU_BOLLINGER = "#94a3b8"
-MAU_TRUNG_BINH_KL = "#f59e0b"
+MAU_KLTB = "#f59e0b"
 MAU_RSI = "#38bdf8"
 MAU_MACD = "#f59e0b"
-MAU_TIN_HIEU = "#a78bfa"
+MAU_MACD_TIN_HIEU = "#a78bfa"
 MAU_TRUNG_TINH = "#64748b"
 
 
 # ============================================================
-# KIỂM TRA CỘT
+# TIỆN ÍCH
 # ============================================================
 
 def _co_cot(
-    du_lieu,
-    ten_cot,
-):
+    du_lieu: pd.DataFrame,
+    ten_cot: str,
+) -> bool:
+
     return (
         isinstance(
             du_lieu,
             pd.DataFrame,
         )
         and ten_cot in du_lieu.columns
+    )
+
+
+def _to_float_series(
+    series,
+) -> pd.Series:
+
+    return pd.to_numeric(
+        series,
+        errors="coerce",
+    )
+
+
+def _dinh_dang_don_vi(
+    gia_tri,
+) -> str:
+
+    try:
+
+        gia_tri = float(
+            gia_tri
+        )
+
+        if not np.isfinite(
+            gia_tri
+        ):
+            return "0"
+
+    except Exception:
+
+        return "0"
+
+    gia_tri_abs = abs(
+        gia_tri
+    )
+
+    if gia_tri_abs >= 1_000_000_000:
+
+        return (
+            f"{gia_tri / 1_000_000_000:.1f} tỷ"
+        )
+
+    if gia_tri_abs >= 1_000_000:
+
+        return (
+            f"{gia_tri / 1_000_000:.1f} triệu"
+        )
+
+    if gia_tri_abs >= 1_000:
+
+        return (
+            f"{gia_tri / 1_000:.1f} nghìn"
+        )
+
+    return f"{gia_tri:,.0f}"
+
+
+def _tao_tick_khoi_luong(
+    series: pd.Series,
+):
+
+    series = _to_float_series(
+        series
+    ).dropna()
+
+    if series.empty:
+        return [], []
+
+    gia_tri_lon_nhat = float(
+        series.max()
+    )
+
+    if (
+        not np.isfinite(
+            gia_tri_lon_nhat
+        )
+        or gia_tri_lon_nhat <= 0
+    ):
+        return [], []
+
+    so_tick = 5
+
+    tickvals = np.linspace(
+        0,
+        gia_tri_lon_nhat,
+        so_tick,
+    )
+
+    ticktext = [
+        _dinh_dang_don_vi(
+            gia_tri
+        )
+        for gia_tri
+        in tickvals
+    ]
+
+    return (
+        list(tickvals),
+        ticktext,
     )
 
 
@@ -57,16 +157,21 @@ def _them_duong(
     do_rong=1.5,
     kieu_net="solid",
 ):
+
     if not _co_cot(
         du_lieu,
         ten_cot,
     ):
         return
 
+    gia_tri = _to_float_series(
+        du_lieu[ten_cot]
+    )
+
     bieu_do.add_trace(
         go.Scatter(
             x=du_lieu.index,
-            y=du_lieu[ten_cot],
+            y=gia_tri,
             name=ten_hien_thi,
             mode="lines",
             line=dict(
@@ -74,6 +179,7 @@ def _them_duong(
                 width=do_rong,
                 dash=kieu_net,
             ),
+            connectgaps=False,
             hovertemplate=(
                 f"{ten_hien_thi}: "
                 "%{y:,.2f}"
@@ -92,6 +198,7 @@ def _them_duong(
 def _mau_khoi_luong(
     du_lieu,
 ):
+
     mau = []
 
     for _, dong in du_lieu.iterrows():
@@ -107,65 +214,92 @@ def _mau_khoi_luong(
         )
 
         try:
-            gia_mo = float(gia_mo)
-            gia_dong = float(gia_dong)
+
+            gia_mo = float(
+                gia_mo
+            )
+
+            gia_dong = float(
+                gia_dong
+            )
+
         except Exception:
-            mau.append(MAU_TRUNG_TINH)
+
+            mau.append(
+                MAU_TRUNG_TINH
+            )
+
             continue
 
-        if gia_dong > gia_mo:
-            mau.append(MAU_TANG)
+        if gia_dong >= gia_mo:
 
-        elif gia_dong < gia_mo:
-            mau.append(MAU_GIAM)
+            mau.append(
+                MAU_TANG
+            )
 
         else:
-            mau.append(MAU_TRUNG_TINH)
+
+            mau.append(
+                MAU_GIAM
+            )
 
     return mau
 
 
 # ============================================================
-# TÍNH GAP
+# KHOẢNG TRỐNG GIÁ
 # ============================================================
 
 def _them_khoang_trong_gia(
     du_lieu,
     bieu_do,
 ):
-    """
-    Chỉ tính khoảng trống giá giữa hai phiên
-    thực tế liền nhau trong dữ liệu.
-
-    Không bị ảnh hưởng bởi:
-    - thứ bảy
-    - chủ nhật
-    - ngày nghỉ lễ
-    """
 
     if len(du_lieu) < 2:
         return
 
-    du_lieu = du_lieu.copy()
-
     cao_phien_truoc = (
-        du_lieu["High"].shift(1)
+        _to_float_series(
+            du_lieu["High"]
+        )
+        .shift(1)
     )
 
     thap_phien_truoc = (
-        du_lieu["Low"].shift(1)
+        _to_float_series(
+            du_lieu["Low"]
+        )
+        .shift(1)
     )
 
-    gia_mo = du_lieu["Open"]
+    gia_mo = _to_float_series(
+        du_lieu["Open"]
+    )
+
+    # --------------------------------------------------------
+    # GAP TĂNG
+    # --------------------------------------------------------
 
     dieu_kien_gap_tang = (
         cao_phien_truoc.notna()
-        & (gia_mo > cao_phien_truoc)
+        & gia_mo.notna()
+        & (
+            gia_mo
+            > cao_phien_truoc
+        )
     )
+
+    # --------------------------------------------------------
+    # GAP GIẢM
+    # --------------------------------------------------------
 
     dieu_kien_gap_giam = (
         thap_phien_truoc.notna()
-        & (gia_mo < thap_phien_truoc)
+        & gia_mo.notna()
+        & (
+            gia_mo
+            < thap_phien_truoc
+        )
     )
 
     gap_tang = du_lieu[
@@ -176,14 +310,22 @@ def _them_khoang_trong_gia(
         dieu_kien_gap_giam
     ].copy()
 
+    # ========================================================
+    # GAP TĂNG
+    # ========================================================
+
     if not gap_tang.empty:
+
+        muc_truoc = (
+            cao_phien_truoc.loc[
+                gap_tang.index
+            ]
+        )
 
         phan_tram = (
             (
                 gap_tang["Open"]
-                / cao_phien_truoc.loc[
-                    gap_tang.index
-                ]
+                / muc_truoc
                 - 1
             )
             * 100
@@ -193,22 +335,29 @@ def _them_khoang_trong_gia(
             go.Scatter(
                 x=gap_tang.index,
                 y=gap_tang["Open"],
-                name="Khoảng trống tăng",
+                name="Gap tăng",
                 mode="markers",
                 marker=dict(
                     symbol="triangle-up",
                     size=9,
                     color=MAU_TANG,
+                    line=dict(
+                        width=0,
+                    ),
                 ),
-                customdata=(
-                    phan_tram
-                    .fillna(0)
-                    .to_numpy()
+                customdata=np.column_stack(
+                    [
+                        muc_truoc.to_numpy(),
+                        phan_tram
+                        .fillna(0)
+                        .to_numpy(),
+                    ]
                 ),
                 hovertemplate=(
                     "<b>Khoảng trống tăng</b>"
                     "<br>Giá mở: %{y:,.0f}"
-                    "<br>Mức gap: %{customdata:+.2f}%"
+                    "<br>Đỉnh phiên trước: %{customdata[0]:,.0f}"
+                    "<br>Mức gap: %{customdata[1]:+.2f}%"
                     "<extra></extra>"
                 ),
             ),
@@ -216,14 +365,22 @@ def _them_khoang_trong_gia(
             col=1,
         )
 
+    # ========================================================
+    # GAP GIẢM
+    # ========================================================
+
     if not gap_giam.empty:
+
+        muc_truoc = (
+            thap_phien_truoc.loc[
+                gap_giam.index
+            ]
+        )
 
         phan_tram = (
             (
                 gap_giam["Open"]
-                / thap_phien_truoc.loc[
-                    gap_giam.index
-                ]
+                / muc_truoc
                 - 1
             )
             * 100
@@ -233,22 +390,29 @@ def _them_khoang_trong_gia(
             go.Scatter(
                 x=gap_giam.index,
                 y=gap_giam["Open"],
-                name="Khoảng trống giảm",
+                name="Gap giảm",
                 mode="markers",
                 marker=dict(
                     symbol="triangle-down",
                     size=9,
                     color=MAU_GIAM,
+                    line=dict(
+                        width=0,
+                    ),
                 ),
-                customdata=(
-                    phan_tram
-                    .fillna(0)
-                    .to_numpy()
+                customdata=np.column_stack(
+                    [
+                        muc_truoc.to_numpy(),
+                        phan_tram
+                        .fillna(0)
+                        .to_numpy(),
+                    ]
                 ),
                 hovertemplate=(
                     "<b>Khoảng trống giảm</b>"
                     "<br>Giá mở: %{y:,.0f}"
-                    "<br>Mức gap: %{customdata:+.2f}%"
+                    "<br>Đáy phiên trước: %{customdata[0]:,.0f}"
+                    "<br>Mức gap: %{customdata[1]:+.2f}%"
                     "<extra></extra>"
                 ),
             ),
@@ -264,6 +428,7 @@ def _them_khoang_trong_gia(
 def _tao_ngay_khong_giao_dich(
     chi_so,
 ):
+
     if len(chi_so) < 2:
         return []
 
@@ -280,24 +445,24 @@ def _tao_ngay_khong_giao_dich(
         return []
 
     try:
+
         if ngay.tz is not None:
-            ngay = ngay.tz_localize(None)
+
+            ngay = ngay.tz_localize(
+                None
+            )
+
     except Exception:
         pass
 
+    ngay = ngay.normalize()
+
     ngay_da_co = set(
-        ngay.normalize()
+        ngay
     )
 
-    ngay_dau = (
-        ngay.min()
-        .normalize()
-    )
-
-    ngay_cuoi = (
-        ngay.max()
-        .normalize()
-    )
+    ngay_dau = ngay.min()
+    ngay_cuoi = ngay.max()
 
     tat_ca_ngay = pd.date_range(
         start=ngay_dau,
@@ -309,13 +474,20 @@ def _tao_ngay_khong_giao_dich(
 
     for mot_ngay in tat_ca_ngay:
 
+        # ----------------------------------------------------
+        # Cuối tuần
+        # ----------------------------------------------------
+
         if mot_ngay.weekday() >= 5:
             continue
 
-        if (
-            mot_ngay.normalize()
-            not in ngay_da_co
-        ):
+        # ----------------------------------------------------
+        # Ngày trong tuần nhưng không có dữ liệu
+        # thường là ngày nghỉ / không có phiên
+        # ----------------------------------------------------
+
+        if mot_ngay not in ngay_da_co:
+
             ngay_thieu.append(
                 mot_ngay.strftime(
                     "%Y-%m-%d"
@@ -332,6 +504,7 @@ def _tao_ngay_khong_giao_dich(
 def _tao_nhan_thoi_gian(
     chi_so,
 ):
+
     if len(chi_so) == 0:
         return [], []
 
@@ -348,77 +521,87 @@ def _tao_nhan_thoi_gian(
         return [], []
 
     try:
+
         if ngay.tz is not None:
-            ngay = ngay.tz_localize(None)
+
+            ngay = ngay.tz_localize(
+                None
+            )
+
     except Exception:
         pass
 
-    ngay_dau = (
-        ngay.min()
-        .normalize()
+    # --------------------------------------------------------
+    # Lấy phiên giao dịch đầu tiên của mỗi tháng.
+    # Không dùng ngày 01 vì ngày 01 có thể là cuối tuần/ngày nghỉ.
+    # --------------------------------------------------------
+
+    bang = pd.DataFrame(
+        {
+            "ngay": ngay
+        }
     )
 
-    ngay_cuoi = (
-        ngay.max()
-        .normalize()
+    bang["thang"] = (
+        bang["ngay"]
+        .dt.to_period("M")
     )
 
-    moc_thang = pd.date_range(
-        start=ngay_dau.replace(day=1),
-        end=ngay_cuoi,
-        freq="MS",
+    cac_moc = (
+        bang
+        .groupby(
+            "thang",
+            sort=True,
+        )["ngay"]
+        .min()
     )
 
-    if len(moc_thang) > 18:
+    moc = list(
+        cac_moc.to_numpy()
+    )
+
+    # --------------------------------------------------------
+    # Giới hạn số nhãn
+    # --------------------------------------------------------
+
+    if len(moc) > 18:
 
         buoc = int(
             np.ceil(
-                len(moc_thang)
+                len(moc)
                 / 18
             )
         )
 
-        moc_thang = (
-            moc_thang[::buoc]
-        )
+        moc = moc[
+            ::buoc
+        ]
 
     nhan = []
 
-    for moc in moc_thang:
+    for gia_tri in moc:
+
+        gia_tri = pd.Timestamp(
+            gia_tri
+        )
 
         nhan.append(
-            f"Thg {moc.month} "
-            f"{moc.year}"
+            f"Thg {gia_tri.month} "
+            f"{gia_tri.year}"
         )
 
     return (
-        list(moc_thang),
+        moc,
         nhan,
     )
 
 
 # ============================================================
-# NHÃN HOVER NGÀY VIỆT NAM
-# ============================================================
-
-def _ngay_hover(
-    gia_tri,
-):
-    try:
-        return pd.Timestamp(
-            gia_tri
-        ).strftime(
-            "%d/%m/%Y"
-        )
-    except Exception:
-        return str(gia_tri)
-
-
-# ============================================================
-# CHỈ BÁO ĐƯỢC CHỌN
+# CHỌN CHỈ BÁO
 # ============================================================
 
 def _bo_chon_chi_bao():
+
     return st.multiselect(
         "Chỉ báo hiển thị",
         [
@@ -439,16 +622,21 @@ def _bo_chon_chi_bao():
             "MACD",
         ],
         key="bo_chon_chi_bao",
+        placeholder="Chọn các chỉ báo cần hiển thị",
     )
 
 
 # ============================================================
-# BIỂU ĐỒ GIÁ + KHỐI LƯỢNG
+# BIỂU ĐỒ CHÍNH
 # ============================================================
 
 def price_volume_chart(
     du_lieu: pd.DataFrame,
 ):
+
+    # ========================================================
+    # KIỂM TRA
+    # ========================================================
 
     if du_lieu is None:
         return None
@@ -468,13 +656,15 @@ def price_volume_chart(
     # CHUẨN HÓA OHLCV
     # ========================================================
 
-    for cot in [
+    cac_cot_bat_buoc = [
         "Open",
         "High",
         "Low",
         "Close",
         "Volume",
-    ]:
+    ]
+
+    for cot in cac_cot_bat_buoc:
 
         if cot not in du_lieu.columns:
             return None
@@ -491,18 +681,62 @@ def price_volume_chart(
             "Low",
             "Close",
         ]
+    ).copy()
+
+    if du_lieu.empty:
+        return None
+
+    # ========================================================
+    # THỜI GIAN
+    # ========================================================
+
+    try:
+
+        du_lieu.index = pd.to_datetime(
+            du_lieu.index,
+            errors="coerce",
+        )
+
+        du_lieu = du_lieu[
+            ~du_lieu.index.isna()
+        ]
+
+        if getattr(
+            du_lieu.index,
+            "tz",
+            None,
+        ) is not None:
+
+            du_lieu.index = (
+                du_lieu.index.tz_localize(
+                    None
+                )
+            )
+
+    except Exception:
+        pass
+
+    du_lieu = (
+        du_lieu
+        .sort_index()
+        .loc[
+            ~du_lieu.index.duplicated(
+                keep="last"
+            )
+        ]
+        .copy()
     )
 
     if du_lieu.empty:
         return None
 
-    du_lieu = du_lieu.sort_index()
-
     # ========================================================
     # CHỌN CHỈ BÁO
     # ========================================================
 
-    lua_chon = _bo_chon_chi_bao()
+    lua_chon = (
+        _bo_chon_chi_bao()
+    )
 
     co_rsi = (
         "Sức mạnh tương đối RSI"
@@ -530,40 +764,49 @@ def price_volume_chart(
     # TỶ LỆ PANEL
     # ========================================================
 
-    ty_le = [
-        0.58,
-        0.18,
-    ]
+    if so_hang == 2:
 
-    if co_rsi:
-        ty_le.append(
-            0.12
-        )
+        ty_le = [
+            0.78,
+            0.22,
+        ]
 
-    if co_macd:
-        ty_le.append(
-            0.12
-        )
+    elif so_hang == 3:
+
+        ty_le = [
+            0.58,
+            0.22,
+            0.20,
+        ]
+
+    else:
+
+        ty_le = [
+            0.52,
+            0.20,
+            0.14,
+            0.14,
+        ]
 
     tong = sum(
         ty_le
     )
 
     ty_le = [
-        gia_tri / tong
-        for gia_tri
+        x / tong
+        for x
         in ty_le
     ]
 
     # ========================================================
-    # TẠO BIỂU ĐỒ
+    # TẠO SUBPLOT
     # ========================================================
 
     bieu_do = make_subplots(
         rows=so_hang,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.006,
+        vertical_spacing=0.008,
         row_heights=ty_le,
     )
 
@@ -595,7 +838,7 @@ def price_volume_chart(
             ),
             whiskerwidth=0.5,
             hovertemplate=(
-                "Ngày: %{x|%d/%m/%Y}"
+                "<b>%{x|%d/%m/%Y}</b>"
                 "<br>Mở: %{open:,.0f}"
                 "<br>Cao: %{high:,.0f}"
                 "<br>Thấp: %{low:,.0f}"
@@ -623,7 +866,7 @@ def price_volume_chart(
             "TB20",
             MAU_SMA20,
             1,
-            1.7,
+            1.8,
         )
 
     # ========================================================
@@ -642,7 +885,7 @@ def price_volume_chart(
             "TB50",
             MAU_SMA50,
             1,
-            1.7,
+            1.8,
         )
 
     # ========================================================
@@ -690,63 +933,72 @@ def price_volume_chart(
     if (
         "Dải Bollinger"
         in lua_chon
-        and _co_cot(
-            du_lieu,
-            "Bollinger_Upper",
-        )
-        and _co_cot(
-            du_lieu,
-            "Bollinger_Lower",
-        )
     ):
 
-        bieu_do.add_trace(
-            go.Scatter(
-                x=du_lieu.index,
-                y=du_lieu[
-                    "Bollinger_Upper"
-                ],
-                name="Dải trên",
-                mode="lines",
-                line=dict(
-                    color=MAU_BOLLINGER,
-                    width=1,
-                    dash="dot",
-                ),
-                hovertemplate=(
-                    "Dải trên: %{y:,.0f}"
-                    "<extra></extra>"
-                ),
-            ),
-            row=1,
-            col=1,
-        )
+        if (
+            _co_cot(
+                du_lieu,
+                "Bollinger_Upper",
+            )
+            and _co_cot(
+                du_lieu,
+                "Bollinger_Lower",
+            )
+        ):
 
-        bieu_do.add_trace(
-            go.Scatter(
-                x=du_lieu.index,
-                y=du_lieu[
-                    "Bollinger_Lower"
-                ],
-                name="Dải dưới",
-                mode="lines",
-                line=dict(
-                    color=MAU_BOLLINGER,
-                    width=1,
-                    dash="dot",
+            bieu_do.add_trace(
+                go.Scatter(
+                    x=du_lieu.index,
+                    y=_to_float_series(
+                        du_lieu[
+                            "Bollinger_Upper"
+                        ]
+                    ),
+                    name="Dải trên",
+                    mode="lines",
+                    line=dict(
+                        color=MAU_BOLLINGER,
+                        width=1,
+                        dash="dot",
+                    ),
+                    connectgaps=False,
+                    hovertemplate=(
+                        "Dải trên: %{y:,.0f}"
+                        "<extra></extra>"
+                    ),
                 ),
-                fill="tonexty",
-                fillcolor=(
-                    "rgba(148,163,184,0.05)"
+                row=1,
+                col=1,
+            )
+
+            bieu_do.add_trace(
+                go.Scatter(
+                    x=du_lieu.index,
+                    y=_to_float_series(
+                        du_lieu[
+                            "Bollinger_Lower"
+                        ]
+                    ),
+                    name="Dải dưới",
+                    mode="lines",
+                    line=dict(
+                        color=MAU_BOLLINGER,
+                        width=1,
+                        dash="dot",
+                    ),
+                    fill="tonexty",
+                    fillcolor=(
+                        "rgba(148,163,184,0.05)"
+                    ),
+                    connectgaps=False,
+                    hovertemplate=(
+                        "Dải dưới: %{y:,.0f}"
+                        "<extra></extra>"
+                    ),
                 ),
-                hovertemplate=(
-                    "Dải dưới: %{y:,.0f}"
-                    "<extra></extra>"
-                ),
-            ),
-            row=1,
-            col=1,
-        )
+                row=1,
+                col=1,
+            )
 
     # ========================================================
     # GAP
@@ -781,7 +1033,7 @@ def price_volume_chart(
             ),
             opacity=0.82,
             hovertemplate=(
-                "Ngày: %{x|%d/%m/%Y}"
+                "<b>%{x|%d/%m/%Y}</b>"
                 "<br>Khối lượng: %{y:,.0f}"
                 "<extra></extra>"
             ),
@@ -791,24 +1043,20 @@ def price_volume_chart(
     )
 
     # ========================================================
-    # TRUNG BÌNH KHỐI LƯỢNG
+    # KHỐI LƯỢNG TRUNG BÌNH 20
     # ========================================================
-
-    ten_cot_kltb = (
-        "Volume_SMA20"
-    )
 
     if _co_cot(
         du_lieu,
-        ten_cot_kltb,
+        "Volume_SMA20",
     ):
 
         _them_duong(
             bieu_do,
             du_lieu,
-            ten_cot_kltb,
+            "Volume_SMA20",
             "KLTB20",
-            MAU_TRUNG_BINH_KL,
+            MAU_KLTB,
             2,
             1.4,
         )
@@ -817,7 +1065,7 @@ def price_volume_chart(
     # RSI
     # ========================================================
 
-    hang_hien_tai = 3
+    hang_rsi = 3
 
     if co_rsi:
 
@@ -829,19 +1077,22 @@ def price_volume_chart(
             bieu_do.add_trace(
                 go.Scatter(
                     x=du_lieu.index,
-                    y=du_lieu["RSI"],
+                    y=_to_float_series(
+                        du_lieu["RSI"]
+                    ),
                     name="RSI",
                     mode="lines",
                     line=dict(
                         color=MAU_RSI,
-                        width=1.7,
+                        width=1.8,
                     ),
+                    connectgaps=False,
                     hovertemplate=(
                         "RSI: %{y:.1f}"
                         "<extra></extra>"
                     ),
                 ),
-                row=hang_hien_tai,
+                row=hang_rsi,
                 col=1,
             )
 
@@ -850,7 +1101,7 @@ def price_volume_chart(
                 line_dash="dot",
                 line_width=1,
                 line_color=MAU_GIAM,
-                row=hang_hien_tai,
+                row=hang_rsi,
                 col=1,
             )
 
@@ -859,7 +1110,7 @@ def price_volume_chart(
                 line_dash="dot",
                 line_width=1,
                 line_color=MAU_TRUNG_TINH,
-                row=hang_hien_tai,
+                row=hang_rsi,
                 col=1,
             )
 
@@ -868,11 +1119,11 @@ def price_volume_chart(
                 line_dash="dot",
                 line_width=1,
                 line_color=MAU_TANG,
-                row=hang_hien_tai,
+                row=hang_rsi,
                 col=1,
             )
 
-        hang_hien_tai += 1
+        hang_rsi += 1
 
     # ========================================================
     # MACD
@@ -880,10 +1131,20 @@ def price_volume_chart(
 
     if co_macd:
 
+        hang_macd = (
+            3
+            if not co_rsi
+            else 4
+        )
+
         if _co_cot(
             du_lieu,
             "MACD",
         ):
+
+            # ------------------------------------------------
+            # Histogram
+            # ------------------------------------------------
 
             if _co_cot(
                 du_lieu,
@@ -891,11 +1152,12 @@ def price_volume_chart(
             ):
 
                 histogram = (
-                    du_lieu[
-                        "MACD_Hist"
-                    ]
+                    _to_float_series(
+                        du_lieu[
+                            "MACD_Hist"
+                        ]
+                    )
                     .fillna(0)
-                    .astype(float)
                 )
 
                 mau_histogram = [
@@ -919,34 +1181,45 @@ def price_volume_chart(
                                 width=0,
                             ),
                         ),
-                        opacity=0.55,
+                        opacity=0.50,
                         hovertemplate=(
                             "Histogram: %{y:.3f}"
                             "<extra></extra>"
                         ),
                     ),
-                    row=hang_hien_tai,
+                    row=hang_macd,
                     col=1,
                 )
+
+            # ------------------------------------------------
+            # MACD
+            # ------------------------------------------------
 
             bieu_do.add_trace(
                 go.Scatter(
                     x=du_lieu.index,
-                    y=du_lieu["MACD"],
+                    y=_to_float_series(
+                        du_lieu["MACD"]
+                    ),
                     name="MACD",
                     mode="lines",
                     line=dict(
                         color=MAU_MACD,
-                        width=1.5,
+                        width=1.6,
                     ),
+                    connectgaps=False,
                     hovertemplate=(
                         "MACD: %{y:.3f}"
                         "<extra></extra>"
                     ),
                 ),
-                row=hang_hien_tai,
+                row=hang_macd,
                 col=1,
             )
+
+            # ------------------------------------------------
+            # Tín hiệu MACD
+            # ------------------------------------------------
 
             if _co_cot(
                 du_lieu,
@@ -956,21 +1229,24 @@ def price_volume_chart(
                 bieu_do.add_trace(
                     go.Scatter(
                         x=du_lieu.index,
-                        y=du_lieu[
-                            "MACD_Signal"
-                        ],
+                        y=_to_float_series(
+                            du_lieu[
+                                "MACD_Signal"
+                            ]
+                        ),
                         name="Tín hiệu MACD",
                         mode="lines",
                         line=dict(
-                            color=MAU_TIN_HIEU,
-                            width=1.3,
+                            color=MAU_MACD_TIN_HIEU,
+                            width=1.4,
                         ),
+                        connectgaps=False,
                         hovertemplate=(
-                            "Tín hiệu: %{y:.3f}"
+                            "Tín hiệu MACD: %{y:.3f}"
                             "<extra></extra>"
                         ),
                     ),
-                    row=hang_hien_tai,
+                    row=hang_macd,
                     col=1,
                 )
 
@@ -979,7 +1255,7 @@ def price_volume_chart(
                 line_dash="dot",
                 line_width=1,
                 line_color=MAU_TRUNG_TINH,
-                row=hang_hien_tai,
+                row=hang_macd,
                 col=1,
             )
 
@@ -999,6 +1275,30 @@ def price_volume_chart(
         col=1,
     )
 
+    # --------------------------------------------------------
+    # Đơn vị khối lượng tiếng Việt
+    # --------------------------------------------------------
+
+    tickvals_khoi_luong, ticktext_khoi_luong = (
+        _tao_tick_khoi_luong(
+            du_lieu["Volume"]
+        )
+    )
+
+    if tickvals_khoi_luong:
+
+        bieu_do.update_yaxes(
+            tickmode="array",
+            tickvals=tickvals_khoi_luong,
+            ticktext=ticktext_khoi_luong,
+            row=2,
+            col=1,
+        )
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
     hang_truc = 3
 
     if co_rsi:
@@ -1015,6 +1315,10 @@ def price_volume_chart(
 
         hang_truc += 1
 
+    # --------------------------------------------------------
+    # MACD
+    # --------------------------------------------------------
+
     if co_macd:
 
         bieu_do.update_yaxes(
@@ -1024,7 +1328,7 @@ def price_volume_chart(
         )
 
     # ========================================================
-    # NGÀY NGHỈ / CUỐI TUẦN
+    # RANGE BREAK
     # ========================================================
 
     rangebreaks = [
@@ -1036,17 +1340,17 @@ def price_volume_chart(
         )
     ]
 
-    ngay_nghi = (
+    ngay_khong_giao_dich = (
         _tao_ngay_khong_giao_dich(
             du_lieu.index
         )
     )
 
-    if ngay_nghi:
+    if ngay_khong_giao_dich:
 
         rangebreaks.append(
             dict(
-                values=ngay_nghi
+                values=ngay_khong_giao_dich
             )
         )
 
@@ -1055,7 +1359,7 @@ def price_volume_chart(
     )
 
     # ========================================================
-    # NHÃN THÁNG TIẾNG VIỆT
+    # NHÃN THỜI GIAN TIẾNG VIỆT
     # ========================================================
 
     moc_thang, nhan_thang = (
@@ -1078,16 +1382,16 @@ def price_volume_chart(
 
     bieu_do.update_layout(
         template="plotly_dark",
-        height=920,
+        height=900,
         margin=dict(
             l=12,
-            r=20,
+            r=22,
             t=58,
-            b=30,
+            b=36,
         ),
         hovermode="x unified",
         dragmode="zoom",
-        bargap=0.03,
+        bargap=0.04,
         paper_bgcolor="#07131d",
         plot_bgcolor="#07131d",
         font=dict(
@@ -1106,7 +1410,7 @@ def price_volume_chart(
     )
 
     # ========================================================
-    # LƯỚI
+    # LƯỚI + SPIKE
     # ========================================================
 
     for hang in range(
@@ -1122,6 +1426,10 @@ def price_volume_chart(
             showspikes=True,
             spikemode="across",
             spikesnap="cursor",
+            spikecolor=(
+                "rgba(148,163,184,0.35)"
+            ),
+            spikethickness=1,
         )
 
         bieu_do.update_yaxes(
@@ -1142,6 +1450,10 @@ def price_volume_chart(
         rangeslider_visible=False
     )
 
+    # ========================================================
+    # ẨN NÚT PHÂN TÍCH LỖI / LOGO PLOTLY
+    # ========================================================
+
     return bieu_do
 
 
@@ -1152,6 +1464,7 @@ def price_volume_chart(
 def vnindex_chart(
     dataframe: pd.DataFrame,
 ):
+
     return price_volume_chart(
         dataframe
     )
