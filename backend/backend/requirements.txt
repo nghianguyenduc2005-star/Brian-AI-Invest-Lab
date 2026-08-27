@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+requests
+pandas
+numpy
+pyreadstat
+google-genai
+python-multipart
+streamlit
