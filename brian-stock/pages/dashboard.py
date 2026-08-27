@@ -819,31 +819,47 @@ def render_dashboard():
                     st.markdown(
                         f"[Đọc bài ↗]({link})"
                     )
-    # ========================================================
+       # ========================================================
     # AI DASHBOARD
     # ========================================================
 
+    ai_vn_index = {}
+
+    if isinstance(vn_index, dict):
+
+        ai_vn_index = {
+            "diem": vn_index.get("diem"),
+            "thay_doi": vn_index.get("thay_doi"),
+            "phan_tram": vn_index.get("phan_tram"),
+            "khoi_luong": vn_index.get("khoi_luong"),
+            "gia_tri": vn_index.get("gia_tri"),
+        }
+
+    ai_stock_symbol = display_symbol(
+        ma_dang_xem
+    )
+
+    ai_snapshot = {}
+
+    if (
+        du_lieu is not None
+        and not du_lieu.empty
+    ):
+
+        ai_snapshot = market_snapshot(
+            du_lieu
+        )
+
+    ai_news = tin_tuc if isinstance(
+        tin_tuc,
+        list,
+    ) else []
+
     ai_prompt = dashboard_prompt(
-        vn_index={
-            "diem": vn_diem,
-            "thay_doi": vn_thay_doi,
-            "thay_doi_1d": vn_1d,
-            "khoi_luong": vn_khoi_luong,
-            "gia_tri": vn_gia_tri,
-        },
-
-        stock_symbol=display_symbol(
-            ma_dang_xem
-        ),
-
-        stock_snapshot=(
-            anh_chup
-            if du_lieu is not None
-            and not du_lieu.empty
-            else {}
-        ),
-
-        news=tin_tuc,
+        vn_index=ai_vn_index,
+        stock_symbol=ai_stock_symbol,
+        stock_snapshot=ai_snapshot,
+        news=ai_news,
     )
 
     render_ai_panel(
