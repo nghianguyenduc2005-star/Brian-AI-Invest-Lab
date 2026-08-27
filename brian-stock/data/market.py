@@ -1,380 +1,481 @@
+```python
 import pandas as pd
-import numpy as np
+from datetime import datetime, timedelta
 
-try:
-    from vnstock import Market, Reference
-    _CO_VNSTOCK_HIEN_DAI = True
-except Exception:
-    Market = None
-    Reference = None
-    _CO_VNSTOCK_HIEN_DAI = False
+from vnstock_data import Market, Reference
+
+
+# ============================================================
+# KHỞI TẠO NGUỒN DỮ LIỆU
+# ============================================================
+
+_thi_truong = Market()
+_tham_chieu = Reference()
 
 
 # ============================================================
 # CHUẨN HÓA MÃ CỔ PHIẾU
 # ============================================================
 
-def chuan_hoa_ma(ma):
-    if ma is None:
+def normalize_symbol(ma_co_phieu):
+    if ma_co_phieu is None:
         return ""
 
-    ma = str(ma).strip().upper()
-    ma = "".join(ky_tu for ky_tu in ma if ky_tu.isalnum())
+    ma_co_phieu = str(ma_co_phieu).strip().upper()
 
-    return ma
+    ky_tu_hop_le = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    ma_co_phieu = "".join(
+        ky_tu
+        for ky_tu in ma_co_phieu
+        if ky_tu in ky_tu_hop_le
+    )
+
+    return ma_co_phieu
 
 
-def hien_thi_ma(ma):
-    return chuan_hoa_ma(ma)
+def display_symbol(ma_co_phieu):
+    ma_co_phieu = normalize_symbol(ma_co_phieu)
 
+    if not ma_co_phieu:
+        return "—"
 
-# Giữ tên hàm cũ để các tệp khác không bị lỗi nhập hàm.
-normalize_symbol = chuan_hoa_ma
-display_symbol = hien_thi_ma
+    return ma_co_phieu
 
 
 # ============================================================
-# CHUẨN HÓA DỮ LIỆU GIÁ
+# LẤY TOÀN BỘ DANH SÁCH CỔ PHIẾU
 # ============================================================
 
-def _tim_cot(du_lieu, danh_sach_ten):
-    if du_lieu is None or du_lieu.empty:
-        return None
+def load_symbol_list():
+    try:
+        du_lieu = _tham_chieu.equity.list()
 
-    ban_do = {
-        str(cot).strip().lower(): cot
-        for cot in du_lieu.columns
-    }
+        if du_lieu is None:
+            return []
 
-    for ten in danh_sach_ten:
-        if ten.lower() in ban_do:
-            return ban_do[ten.lower()]
+        if not isinstance(du_lieu, pd.DataFrame):
+            du_lieu = pd.DataFrame(du_lieu)
 
-    return None
+        if du_lieu.empty:
+            return []
+
+        cot_ma = None
+
+        for ten_cot in du_lieu.columns:
+            ten_cot_chuan = str(ten_cot).strip().lower()
+
+            if ten_cot_chuan in [
+                "symbol",
+                "ticker",
+                "code",
+                "ma",
+                "mã",
+                "mã ck",
+                "ma_ck",
+            ]:
+                cot_ma = ten_cot
+                break
+
+        if cot_ma is None:
+            return []
+
+        danh_sach = (
+            du_lieu[cot_ma]
+            .dropna()
+            .astype(str)
+            .map(normalize_symbol)
+        )
+
+        danh_sach = [
+            ma
+            for ma in danh_sach.tolist()
+            if ma
+        ]
+
+        return sorted(list(set(danh_sach)))
+
+    except Exception:
+        return []
 
 
-def _chuan_hoa_ohlcv(du_lieu):
+# ============================================================
+# KIỂM TRA MÃ CỔ PHIẾU
+# ============================================================
+
+def is_valid_symbol(ma_co_phieu):
+    ma_co_phieu = normalize_symbol(ma_co_phieu)
+
+    if not ma_co_phieu:
+        return False
+
+    danh_sach = load_symbol_list()
+
+    if not danh_sach:
+        return True
+
+    return ma_co_phieu in danh_sach
+
+
+# ============================================================
+# CHUYỂN TÊN CỘT VỀ CHUẨN TIẾNG VIỆT
+# ============================================================
+
+def _normalize_columns(du_lieu):
+
+    if du_lieu is None:
+        return pd.DataFrame()
+
+    if not isinstance(du_lieu, pd.DataFrame):
+        du_lieu = pd.DataFrame(du_lieu)
+
+    if du_lieu.empty:
+        return du_lieu
+
+    anh_xa = {}
+
+    for cot in du_lieu.columns:
+
+        ten = str(cot).strip().lower()
+
+        if ten in ["time", "datetime", "date", "timestamp"]:
+            anh_xa[cot] = "Thời gian"
+
+        elif ten in ["open", "open_price"]:
+            anh_xa[cot] = "Mở cửa"
+
+        elif ten in ["high", "high_price"]:
+            anh_xa[cot] = "Cao nhất"
+
+        elif ten in ["low", "low_price"]:
+            anh_xa[cot] = "Thấp nhất"
+
+        elif ten in ["close", "close_price"]:
+            anh_xa[cot] = "Đóng cửa"
+
+        elif ten in ["volume", "total_volume"]:
+            anh_xa[cot] = "Khối lượng"
+
+        elif ten in ["value", "value_traded"]:
+            anh_xa[cot] = "Giá trị giao dịch"
+
+        elif ten in ["change", "price_change"]:
+            anh_xa[cot] = "Thay đổi"
+
+        elif ten in ["change_percent", "percent_change"]:
+            anh_xa[cot] = "Phần trăm thay đổi"
+
+        elif ten in ["symbol", "ticker"]:
+            anh_xa[cot] = "Mã cổ phiếu"
+
+    du_lieu = du_lieu.rename(columns=anh_xa)
+
+    return du_lieu
+
+
+# ============================================================
+# CHUẨN HÓA ĐƠN VỊ GIÁ
+# ============================================================
+
+def _normalize_price(du_lieu):
+
+    if du_lieu.empty:
+        return du_lieu
+
+    for cot in [
+        "Mở cửa",
+        "Cao nhất",
+        "Thấp nhất",
+        "Đóng cửa",
+    ]:
+
+        if cot not in du_lieu.columns:
+            continue
+
+        try:
+
+            gia_trung_binh = pd.to_numeric(
+                du_lieu[cot],
+                errors="coerce"
+            ).median()
+
+            if pd.notna(gia_trung_binh) and gia_trung_binh < 1000:
+
+                du_lieu[cot] = pd.to_numeric(
+                    du_lieu[cot],
+                    errors="coerce"
+                ) * 1000
+
+        except Exception:
+            pass
+
+    return du_lieu
+
+
+# ============================================================
+# THÊM CÁC CHỈ BÁO CƠ BẢN
+# ============================================================
+
+def add_indicators(du_lieu):
+
     if du_lieu is None or du_lieu.empty:
         return pd.DataFrame()
 
     du_lieu = du_lieu.copy()
 
-    cot_ngay = _tim_cot(
-        du_lieu,
-        [
-            "time",
-            "date",
-            "datetime",
-            "timestamp",
-            "ngày",
-            "thời gian",
-        ],
+    cot_gia = None
+
+    for ten_cot in [
+        "Đóng cửa",
+        "close",
+        "Close",
+    ]:
+
+        if ten_cot in du_lieu.columns:
+            cot_gia = ten_cot
+            break
+
+    if cot_gia is None:
+        return du_lieu
+
+    gia = pd.to_numeric(
+        du_lieu[cot_gia],
+        errors="coerce"
     )
 
-    cot_mo = _tim_cot(
-        du_lieu,
-        [
-            "open",
-            "giá mở cửa",
-            "mở cửa",
-        ],
+    # --------------------------------------------------------
+    # ĐƯỜNG TRUNG BÌNH 5
+    # --------------------------------------------------------
+
+    du_lieu["Trung bình động 5"] = gia.rolling(
+        window=5
+    ).mean()
+
+    # --------------------------------------------------------
+    # ĐƯỜNG TRUNG BÌNH 10
+    # --------------------------------------------------------
+
+    du_lieu["Trung bình động 10"] = gia.rolling(
+        window=10
+    ).mean()
+
+    # --------------------------------------------------------
+    # ĐƯỜNG TRUNG BÌNH 20
+    # --------------------------------------------------------
+
+    du_lieu["Trung bình động 20"] = gia.rolling(
+        window=20
+    ).mean()
+
+    # --------------------------------------------------------
+    # ĐƯỜNG TRUNG BÌNH 50
+    # --------------------------------------------------------
+
+    du_lieu["Trung bình động 50"] = gia.rolling(
+        window=50
+    ).mean()
+
+    # --------------------------------------------------------
+    # ĐƯỜNG TRUNG BÌNH 100
+    # --------------------------------------------------------
+
+    du_lieu["Trung bình động 100"] = gia.rolling(
+        window=100
+    ).mean()
+
+    # --------------------------------------------------------
+    # ĐƯỜNG TRUNG BÌNH 200
+    # --------------------------------------------------------
+
+    du_lieu["Trung bình động 200"] = gia.rolling(
+        window=200
+    ).mean()
+
+    # --------------------------------------------------------
+    # THAY ĐỔI GIÁ
+    # --------------------------------------------------------
+
+    du_lieu["Thay đổi giá"] = gia.diff()
+
+    # --------------------------------------------------------
+    # PHẦN TRĂM THAY ĐỔI
+    # --------------------------------------------------------
+
+    du_lieu["Phần trăm thay đổi"] = gia.pct_change() * 100
+
+    # --------------------------------------------------------
+    # BIẾN ĐỘNG
+    # --------------------------------------------------------
+
+    du_lieu["Biến động 20 ngày"] = (
+        du_lieu["Phần trăm thay đổi"]
+        .rolling(20)
+        .std()
     )
 
-    cot_cao = _tim_cot(
-        du_lieu,
-        [
-            "high",
-            "giá cao nhất",
-            "cao nhất",
-        ],
+    # --------------------------------------------------------
+    # GIÁ CAO NHẤT 20 NGÀY
+    # --------------------------------------------------------
+
+    du_lieu["Cao nhất 20 ngày"] = gia.rolling(
+        20
+    ).max()
+
+    # --------------------------------------------------------
+    # GIÁ THẤP NHẤT 20 NGÀY
+    # --------------------------------------------------------
+
+    du_lieu["Thấp nhất 20 ngày"] = gia.rolling(
+        20
+    ).min()
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
+    thay_doi = gia.diff()
+
+    tang = thay_doi.clip(lower=0)
+
+    giam = -thay_doi.clip(upper=0)
+
+    trung_binh_tang = tang.rolling(
+        14
+    ).mean()
+
+    trung_binh_giam = giam.rolling(
+        14
+    ).mean()
+
+    ti_le_tang_giam = (
+        trung_binh_tang /
+        trung_binh_giam.replace(0, pd.NA)
     )
 
-    cot_thap = _tim_cot(
-        du_lieu,
-        [
-            "low",
-            "giá thấp nhất",
-            "thấp nhất",
-        ],
+    du_lieu["RSI"] = (
+        100 -
+        (
+            100 /
+            (1 + ti_le_tang_giam)
+        )
     )
 
-    cot_dong = _tim_cot(
-        du_lieu,
-        [
-            "close",
-            "giá đóng cửa",
-            "đóng cửa",
-        ],
-    )
+    # --------------------------------------------------------
+    # KHỐI LƯỢNG TRUNG BÌNH
+    # --------------------------------------------------------
 
-    cot_khoi_luong = _tim_cot(
-        du_lieu,
-        [
-            "volume",
-            "khối lượng",
-            "khoiluong",
-        ],
-    )
+    if "Khối lượng" in du_lieu.columns:
 
-    cot_gia_tri = _tim_cot(
-        du_lieu,
-        [
-            "value",
-            "trading_value",
-            "giá trị",
-            "giá trị giao dịch",
-        ],
-    )
-
-    cot_dieu_chinh = _tim_cot(
-        du_lieu,
-        [
-            "adjust",
-            "adjusted",
-            "giá điều chỉnh",
-        ],
-    )
-
-    du_lieu_chuan = pd.DataFrame(index=du_lieu.index)
-
-    if cot_ngay is not None:
-        du_lieu_chuan["ngày"] = pd.to_datetime(
-            du_lieu[cot_ngay],
-            errors="coerce",
-        )
-    else:
-        du_lieu_chuan["ngày"] = pd.NaT
-
-    if cot_mo is not None:
-        du_lieu_chuan["mở_cửa"] = pd.to_numeric(
-            du_lieu[cot_mo],
-            errors="coerce",
+        khoi_luong = pd.to_numeric(
+            du_lieu["Khối lượng"],
+            errors="coerce"
         )
 
-    if cot_cao is not None:
-        du_lieu_chuan["cao_nhất"] = pd.to_numeric(
-            du_lieu[cot_cao],
-            errors="coerce",
+        du_lieu["Khối lượng trung bình 20"] = (
+            khoi_luong
+            .rolling(20)
+            .mean()
         )
 
-    if cot_thap is not None:
-        du_lieu_chuan["thấp_nhất"] = pd.to_numeric(
-            du_lieu[cot_thap],
-            errors="coerce",
-        )
-
-    if cot_dong is not None:
-        du_lieu_chuan["đóng_cửa"] = pd.to_numeric(
-            du_lieu[cot_dong],
-            errors="coerce",
-        )
-
-    if cot_khoi_luong is not None:
-        du_lieu_chuan["khối_lượng"] = pd.to_numeric(
-            du_lieu[cot_khoi_luong],
-            errors="coerce",
-        )
-
-    if cot_gia_tri is not None:
-        du_lieu_chuan["giá_trị"] = pd.to_numeric(
-            du_lieu[cot_gia_tri],
-            errors="coerce",
-        )
-
-    if cot_dieu_chinh is not None:
-        du_lieu_chuan["giá_điều_chỉnh"] = pd.to_numeric(
-            du_lieu[cot_dieu_chinh],
-            errors="coerce",
-        )
-
-    du_lieu_chuan = du_lieu_chuan.dropna(
-        subset=["đóng_cửa"],
-        how="all",
-    )
-
-    du_lieu_chuan = du_lieu_chuan.sort_values(
-        "ngày",
-        ignore_index=True,
-    )
-
-    return du_lieu_chuan
-
-
-# ============================================================
-# LẤY TOÀN BỘ DANH SÁCH MÃ
-# ============================================================
-
-def lay_danh_sach_ma():
-    """
-    Lấy toàn bộ mã cổ phiếu đang được hệ thống dữ liệu cung cấp.
-    Không sử dụng danh sách mã viết tay.
-    """
-
-    if not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame(
-            columns=[
-                "mã",
-                "tên_doanh_nghiệp",
-                "sàn",
-            ]
-        )
-
-    try:
-        tham_chieu = Reference()
-        du_lieu = tham_chieu.equity.list()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu).copy()
-
-        cot_ma = _tim_cot(
-            du_lieu,
-            [
-                "symbol",
-                "ticker",
-                "code",
-                "mã",
-            ],
-        )
-
-        cot_ten = _tim_cot(
-            du_lieu,
-            [
-                "organ_name",
-                "company_name",
-                "companyname",
-                "tên doanh nghiệp",
-                "tên công ty",
-            ],
-        )
-
-        cot_san = _tim_cot(
-            du_lieu,
-            [
-                "exchange",
-                "sàn",
-                "board",
-            ],
-        )
-
-        ket_qua = pd.DataFrame()
-
-        if cot_ma is not None:
-            ket_qua["mã"] = (
-                du_lieu[cot_ma]
-                .astype(str)
-                .str.upper()
-                .str.strip()
+        du_lieu["Tỷ lệ khối lượng"] = (
+            khoi_luong /
+            du_luong_trung_binh_an_toan(
+                khoi_luong,
+                20
             )
-
-        if cot_ten is not None:
-            ket_qua["tên_doanh_nghiệp"] = (
-                du_lieu[cot_ten]
-                .astype(str)
-                .str.strip()
-            )
-        else:
-            ket_qua["tên_doanh_nghiệp"] = ""
-
-        if cot_san is not None:
-            ket_qua["sàn"] = (
-                du_lieu[cot_san]
-                .astype(str)
-                .str.upper()
-                .str.strip()
-            )
-        else:
-            ket_qua["sàn"] = ""
-
-        if "mã" in ket_qua.columns:
-            ket_qua = ket_qua[
-                ket_qua["mã"].str.match(
-                    r"^[A-Z0-9]{2,10}$",
-                    na=False,
-                )
-            ]
-
-            ket_qua = ket_qua.drop_duplicates(
-                subset=["mã"]
-            )
-
-        return ket_qua.reset_index(drop=True)
-
-    except Exception:
-        return pd.DataFrame(
-            columns=[
-                "mã",
-                "tên_doanh_nghiệp",
-                "sàn",
-            ]
         )
 
+    return du_lieu
 
-def lay_toan_bo_ma():
-    return lay_danh_sach_ma()
+
+def du_luong_trung_binh_an_toan(
+    du_lieu,
+    so_phien
+):
+
+    return (
+        du_lieu
+        .rolling(so_phien)
+        .mean()
+        .replace(0, pd.NA)
+    )
 
 
 # ============================================================
 # LẤY DỮ LIỆU LỊCH SỬ
 # ============================================================
 
-def lay_du_lieu_lich_su(
-    ma,
-    ngay_bat_dau=None,
-    ngay_ket_thuc=None,
-    khung_thoi_gian="1D",
+def load_market_data(
+    ma_co_phieu,
+    so_ngay=365
 ):
-    ma = chuan_hoa_ma(ma)
 
-    if not ma:
-        return pd.DataFrame()
+    ma_co_phieu = normalize_symbol(ma_co_phieu)
 
-    if not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
+    if not ma_co_phieu:
+        raise ValueError("Mã cổ phiếu không hợp lệ.")
 
-    try:
-        thi_truong = Market()
+    ngay_ket_thuc = datetime.now()
 
-        doi_tuong = thi_truong.equity(ma)
+    ngay_bat_dau = (
+        ngay_ket_thuc -
+        timedelta(days=so_ngay)
+    )
 
-        tham_so = {}
+    loi_cuoi = None
 
-        if ngay_bat_dau:
-            tham_so["start"] = ngay_bat_dau
+    # --------------------------------------------------------
+    # ƯU TIÊN KBS
+    # --------------------------------------------------------
 
-        if ngay_ket_thuc:
-            tham_so["end"] = ngay_ket_thuc
+    for nguon_du_lieu in [
+        "kbs",
+        "vci",
+    ]:
 
-        if khung_thoi_gian:
-            tham_so["interval"] = khung_thoi_gian
+        try:
 
-        du_lieu = doi_tuong.ohlcv(**tham_so)
+            du_lieu = (
+                _thi_truong
+                .equity(ma_co_phieu)
+                .ohlcv(
+                    start=ngay_bat_dau.strftime("%Y-%m-%d"),
+                    end=ngay_ket_thuc.strftime("%Y-%m-%d"),
+                )
+            )
 
-        du_lieu = _chuan_hoa_ohlcv(du_lieu)
+            if du_lieu is None:
+                continue
 
-        if du_lieu.empty:
+            du_lieu = _normalize_columns(
+                du_lieu
+            )
+
+            if du_lieu.empty:
+                continue
+
+            du_lieu = _normalize_price(
+                du_lieu
+            )
+
+            du_lieu = add_indicators(
+                du_lieu
+            )
+
             return du_lieu
 
-        du_lieu["mã"] = ma
+        except Exception as loi:
 
-        return du_lieu
+            loi_cuoi = loi
+            continue
 
-    except Exception:
-        return pd.DataFrame()
+    if loi_cuoi is not None:
+        raise RuntimeError(
+            f"Không lấy được dữ liệu {ma_co_phieu}: {loi_cuoi}"
+        )
 
-
-def load_market_data(
-    symbol,
-    start=None,
-    end=None,
-    interval="1D",
-):
-    return lay_du_lieu_lich_su(
-        ma=symbol,
-        ngay_bat_dau=start,
-        ngay_ket_thuc=end,
-        khung_thoi_gian=interval,
+    raise RuntimeError(
+        f"Không lấy được dữ liệu {ma_co_phieu}."
     )
 
 
@@ -382,383 +483,166 @@ def load_market_data(
 # GIÁ HIỆN TẠI
 # ============================================================
 
-def lay_gia_hien_tai(ma):
-    ma = chuan_hoa_ma(ma)
+def load_current_quote(ma_co_phieu):
 
-    if not ma:
-        return pd.DataFrame()
+    ma_co_phieu = normalize_symbol(
+        ma_co_phieu
+    )
 
-    if not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
+    if not ma_co_phieu:
+        return {}
 
     try:
-        thi_truong = Market()
 
-        du_lieu = thi_truong.equity(ma).quote()
+        du_lieu = (
+            _thi_truong
+            .equity(ma_co_phieu)
+            .quote()
+        )
 
         if du_lieu is None:
-            return pd.DataFrame()
+            return {}
 
-        du_lieu = pd.DataFrame(du_lieu)
+        if not isinstance(
+            du_lieu,
+            pd.DataFrame
+        ):
+            du_lieu = pd.DataFrame(
+                du_lieu
+            )
 
         if du_lieu.empty:
-            return du_lieu
+            return {}
 
-        du_lieu["mã"] = ma
+        du_lieu = _normalize_columns(
+            du_lieu
+        )
 
-        return du_lieu
+        dong_cuoi = du_lieu.iloc[-1]
 
-    except Exception:
-        return pd.DataFrame()
+        ket_qua = {}
 
+        for cot in du_lieu.columns:
 
-def lay_bang_gia(ma):
-    return lay_gia_hien_tai(ma)
+            gia_tri = dong_cuoi[cot]
 
+            if pd.notna(gia_tri):
+                ket_qua[cot] = gia_tri
 
-# ============================================================
-# TỔNG HỢP DỮ LIỆU CỔ PHIẾU
-# ============================================================
-
-def lay_tong_hop(ma):
-    ma = chuan_hoa_ma(ma)
-
-    if not ma:
-        return pd.DataFrame()
-
-    if not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.equity(ma).summary()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu)
-
-        if not du_lieu.empty:
-            du_lieu["mã"] = ma
-
-        return du_lieu
+        return ket_qua
 
     except Exception:
-        return pd.DataFrame()
+        return {}
 
 
 # ============================================================
-# GIAO DỊCH TRONG PHIÊN
+# LẤY TỔNG HỢP CỔ PHIẾU
 # ============================================================
 
-def lay_giao_dich_trong_phien(ma):
-    ma = chuan_hoa_ma(ma)
+def load_stock_summary(ma_co_phieu):
 
-    if not ma or not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.equity(ma).trades()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu)
-
-        if not du_lieu.empty:
-            du_lieu["mã"] = ma
-
-        return du_lieu
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# SỔ LỆNH
-# ============================================================
-
-def lay_so_lenh(ma):
-    ma = chuan_hoa_ma(ma)
-
-    if not ma or not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.equity(ma).order_book()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu)
-
-        if not du_lieu.empty:
-            du_lieu["mã"] = ma
-
-        return du_lieu
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# THỐNG KÊ PHIÊN
-# ============================================================
-
-def lay_thong_ke_phien(ma):
-    ma = chuan_hoa_ma(ma)
-
-    if not ma or not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.equity(ma).session_stats()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu)
-
-        if not du_lieu.empty:
-            du_lieu["mã"] = ma
-
-        return du_lieu
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# DÒNG TIỀN NƯỚC NGOÀI
-# ============================================================
-
-def lay_dong_tien_nuoc_ngoai(ma):
-    ma = chuan_hoa_ma(ma)
-
-    if not ma or not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.equity(ma).foreign_flow()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu)
-
-        if not du_lieu.empty:
-            du_lieu["mã"] = ma
-
-        return du_lieu
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# DÒNG TIỀN TỰ DOANH
-# ============================================================
-
-def lay_dong_tien_tu_doanh(ma):
-    ma = chuan_hoa_ma(ma)
-
-    if not ma or not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.equity(ma).proprietary_flow()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu)
-
-        if not du_lieu.empty:
-            du_lieu["mã"] = ma
-
-        return du_lieu
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# GIAO DỊCH THỎA THUẬN
-# ============================================================
-
-def lay_giao_dich_thoa_thuan(ma):
-    ma = chuan_hoa_ma(ma)
-
-    if not ma or not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.equity(ma).block_trades()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu)
-
-        if not du_lieu.empty:
-            du_lieu["mã"] = ma
-
-        return du_lieu
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# GIAO DỊCH LÔ LẺ
-# ============================================================
-
-def lay_giao_dich_lo_le(ma):
-    ma = chuan_hoa_ma(ma)
-
-    if not ma or not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.equity(ma).odd_lot()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu)
-
-        if not du_lieu.empty:
-            du_lieu["mã"] = ma
-
-        return du_lieu
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# PHÂN BỐ KHỐI LƯỢNG THEO GIÁ
-# ============================================================
-
-def lay_phan_bo_khoi_luong(ma):
-    ma = chuan_hoa_ma(ma)
-
-    if not ma or not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.equity(ma).volume_profile()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        du_lieu = pd.DataFrame(du_lieu)
-
-        if not du_lieu.empty:
-            du_lieu["mã"] = ma
-
-        return du_lieu
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# CHỈ SỐ THỊ TRƯỜNG
-# ============================================================
-
-def lay_du_lieu_chi_so(ma_chi_so="VNINDEX"):
-    ma_chi_so = chuan_hoa_ma(ma_chi_so)
-
-    if not _CO_VNSTOCK_HIEN_DAI:
-        return pd.DataFrame()
-
-    try:
-        thi_truong = Market()
-
-        du_lieu = thi_truong.index(ma_chi_so).ohlcv()
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        return _chuan_hoa_ohlcv(du_lieu)
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# KIỂM TRA KẾT NỐI
-# ============================================================
-
-def kiem_tra_nguon_du_lieu():
-    try:
-        danh_sach = lay_danh_sach_ma()
-
-        if danh_sach.empty:
-            return {
-                "trạng_thái": False,
-                "thông_báo": "Không lấy được danh sách mã cổ phiếu.",
-            }
-
-        return {
-            "trạng_thái": True,
-            "thông_báo": (
-                f"Lấy được {len(danh_sach):,} mã "
-                "từ nguồn dữ liệu."
-            ),
-        }
-
-    except Exception as loi:
-        return {
-            "trạng_thái": False,
-            "thông_báo": str(loi),
-        }
-
-
-# ============================================================
-# TƯƠNG THÍCH VỚI CÁC TỆP CŨ
-# ============================================================
-
-def lay_lich_su(
-    ma,
-    ngay_bat_dau=None,
-    ngay_ket_thuc=None,
-    khung_thoi_gian="1D",
-):
-    return lay_du_lieu_lich_su(
-        ma=ma,
-        ngay_bat_dau=ngay_bat_dau,
-        ngay_ket_thuc=ngay_ket_thuc,
-        khung_thoi_gian=khung_thoi_gian,
+    ma_co_phieu = normalize_symbol(
+        ma_co_phieu
     )
 
+    try:
 
-def fetch_market_data(
-    ma,
-    ngay_bat_dau=None,
-    ngay_ket_thuc=None,
+        du_lieu = (
+            _thi_truong
+            .equity(ma_co_phieu)
+            .summary()
+        )
+
+        if du_lieu is None:
+            return pd.DataFrame()
+
+        if not isinstance(
+            du_lieu,
+            pd.DataFrame
+        ):
+            du_lieu = pd.DataFrame(
+                du_lieu
+            )
+
+        return _normalize_columns(
+            du_lieu
+        )
+
+    except Exception:
+        return pd.DataFrame()
+
+
+# ============================================================
+# DỮ LIỆU CHỈ SỐ VN-INDEX
+# ============================================================
+
+def load_vnindex_data():
+
+    try:
+
+        du_lieu = (
+            _thi_truong
+            .index("VNINDEX")
+            .ohlcv(
+                start=(
+                    datetime.now() -
+                    timedelta(days=30)
+                ).strftime("%Y-%m-%d"),
+                end=datetime.now().strftime(
+                    "%Y-%m-%d"
+                ),
+            )
+        )
+
+        if du_lieu is None:
+            return pd.DataFrame()
+
+        if not isinstance(
+            du_lieu,
+            pd.DataFrame
+        ):
+            du_lieu = pd.DataFrame(
+                du_lieu
+            )
+
+        return _normalize_columns(
+            du_lieu
+        )
+
+    except Exception:
+        return pd.DataFrame()
+
+
+# ============================================================
+# LẤY TOÀN BỘ DỮ LIỆU NGHIÊN CỨU
+# ============================================================
+
+def load_full_stock_data(
+    ma_co_phieu
 ):
-    return lay_du_lieu_lich_su(
-        ma=ma,
-        ngay_bat_dau=ngay_bat_dau,
-        ngay_ket_thuc=ngay_ket_thuc,
-        khung_thoi_gian="1D",
+
+    du_lieu_lich_su = load_market_data(
+        ma_co_phieu
     )
+
+    du_lieu_hien_tai = (
+        load_current_quote(
+            ma_co_phieu
+        )
+    )
+
+    du_lieu_tong_hop = (
+        load_stock_summary(
+            ma_co_phieu
+        )
+    )
+
+    return {
+        "ma_co_phieu": normalize_symbol(
+            ma_co_phieu
+        ),
+        "lich_su": du_lieu_lich_su,
+        "hien_tai": du_lieu_hien_tai,
+        "tong_hop": du_lieu_tong_hop,
+    }
+```
