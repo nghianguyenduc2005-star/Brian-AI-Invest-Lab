@@ -10,7 +10,6 @@ from data.market import (
     display_symbol,
     load_market_data,
     load_vnindex_data,
-    load_vnindex_market_summary,
     market_snapshot,
     normalize_symbol,
 )
@@ -22,98 +21,82 @@ from data.news import fetch_market_news
 # TIỆN ÍCH
 # ============================================================
 
-def _so(value, mac_dinh=None):
+def to_number(value, default=None):
     try:
         value = float(value)
 
         if pd.isna(value):
-            return mac_dinh
+            return default
 
         return value
 
     except Exception:
-        return mac_dinh
+        return default
 
 
-def _tim_cot(df, cac_ten):
+def find_column(df, names):
     if df is None or df.empty:
         return None
 
-    ban_do = {
-        str(cot).strip().lower(): cot
-        for cot in df.columns
+    mapping = {
+        str(col).strip().lower(): col
+        for col in df.columns
     }
 
-    for ten in cac_ten:
-        cot = ban_do.get(
-            str(ten).strip().lower()
-        )
+    for name in names:
+        key = str(name).strip().lower()
 
-        if cot is not None:
-            return cot
+        if key in mapping:
+            return mapping[key]
 
     return None
 
 
 # ============================================================
-# ĐỊNH DẠNG
+# FORMAT
 # ============================================================
 
-def _dinh_dang_khoi_luong(value):
-    value = _so(value)
+def fmt_volume(value):
+    value = to_number(value)
 
     if value is None:
         return "—"
 
     if value >= 1_000_000_000:
-        return (
-            f"{value / 1_000_000_000:.2f} tỷ cổ phiếu"
-        )
+        return f"{value / 1_000_000_000:.2f} tỷ cổ phiếu"
 
     if value >= 1_000_000:
-        return (
-            f"{value / 1_000_000:.2f} triệu cổ phiếu"
-        )
+        return f"{value / 1_000_000:.2f} triệu cổ phiếu"
 
     if value >= 1_000:
-        return (
-            f"{value / 1_000:.2f} nghìn cổ phiếu"
-        )
+        return f"{value / 1_000:.2f} nghìn cổ phiếu"
 
     return f"{value:,.0f} cổ phiếu"
 
 
-def _dinh_dang_gia_tri(value):
-    value = _so(value)
+def fmt_value(value):
+    value = to_number(value)
 
     if value is None:
         return "—"
 
     if value >= 1_000_000_000_000:
-        return (
-            f"{value / 1_000_000_000_000:.2f} nghìn tỷ đồng"
-        )
+        return f"{value / 1_000_000_000_000:.2f} nghìn tỷ đồng"
 
     if value >= 1_000_000_000:
-        return (
-            f"{value / 1_000_000_000:.2f} tỷ đồng"
-        )
+        return f"{value / 1_000_000_000:.2f} tỷ đồng"
 
     if value >= 1_000_000:
-        return (
-            f"{value / 1_000_000:.2f} triệu đồng"
-        )
+        return f"{value / 1_000_000:.2f} triệu đồng"
 
     if value >= 1_000:
-        return (
-            f"{value / 1_000:.2f} nghìn đồng"
-        )
+        return f"{value / 1_000:.2f} nghìn đồng"
 
     return f"{value:,.0f} đồng"
 
 
-def _dinh_dang_gia(value):
-    value = _so(value)
+def fmt_gia(value):
+    value = to_number(value)
 
     if value is None:
         return "—"
@@ -121,8 +104,8 @@ def _dinh_dang_gia(value):
     return f"{value:,.0f} đồng/cổ phiếu"
 
 
-def _dinh_dang_rsi(value):
-    value = _so(value)
+def fmt_rsi(value):
+    value = to_number(value)
 
     if value is None:
         return "—"
@@ -130,8 +113,8 @@ def _dinh_dang_rsi(value):
     return f"{value:.1f} điểm"
 
 
-def _dinh_dang_macd(value):
-    value = _so(value)
+def fmt_macd(value):
+    value = to_number(value)
 
     if value is None:
         return "—"
@@ -139,8 +122,8 @@ def _dinh_dang_macd(value):
     return f"{value:.3f}"
 
 
-def _dinh_dang_phan_tram(value):
-    value = _so(value)
+def fmt_percent(value):
+    value = to_number(value)
 
     if value is None:
         return "—"
@@ -149,32 +132,32 @@ def _dinh_dang_phan_tram(value):
 
 
 # ============================================================
-# VN-INDEX
+# LẤY VN-INDEX
 # ============================================================
 
-def _lay_vn_index():
+def get_vn_index():
 
     try:
-        du_lieu = load_vnindex_data()
+        df = load_vnindex_data()
 
-    except Exception as loi:
+    except Exception as error:
         return {
-            "loi": str(loi)
+            "loi": str(error)
         }
 
-    if du_lieu is None or du_lieu.empty:
+    if df is None or df.empty:
         return {
             "loi": "Nguồn VN-INDEX trả về dữ liệu rỗng."
         }
 
-    du_lieu = du_lieu.copy()
+    df = df.copy()
 
     # --------------------------------------------------------
     # Điểm
     # --------------------------------------------------------
 
-    cot_diem = _tim_cot(
-        du_lieu,
+    price_col = find_column(
+        df,
         [
             "Close",
             "close",
@@ -186,63 +169,67 @@ def _lay_vn_index():
         ],
     )
 
-    if cot_diem is None:
+    if price_col is None:
         return {
             "loi": "Không tìm thấy cột điểm VN-INDEX."
         }
 
-    du_lieu[cot_diem] = pd.to_numeric(
-        du_lieu[cot_diem],
+    df[price_col] = pd.to_numeric(
+        df[price_col],
         errors="coerce",
     )
 
-    du_lieu = du_lieu.dropna(
-        subset=[cot_diem]
+    df = df.dropna(
+        subset=[price_col]
     )
 
-    if du_lieu.empty:
+    if df.empty:
         return {
             "loi": "VN-INDEX không có điểm hợp lệ."
         }
 
-    diem = float(
-        du_lieu[cot_diem].iloc[-1]
+    current = float(
+        df[price_col].iloc[-1]
     )
 
     # --------------------------------------------------------
     # Thay đổi
     # --------------------------------------------------------
 
-    if len(du_lieu) >= 2:
+    if len(df) >= 2:
 
-        diem_truoc = float(
-            du_lieu[cot_diem].iloc[-2]
+        previous = float(
+            df[price_col].iloc[-2]
         )
 
-        thay_doi = (
-            diem - diem_truoc
+        change = (
+            current
+            - previous
         )
 
-        if diem_truoc != 0:
-            phan_tram = (
-                thay_doi
-                / diem_truoc
+        if previous != 0:
+
+            change_percent = (
+                change
+                / previous
                 * 100
             )
+
         else:
-            phan_tram = 0.0
+
+            change_percent = 0.0
 
     else:
 
-        thay_doi = None
-        phan_tram = None
+        change = None
+        change_percent = None
 
     # --------------------------------------------------------
     # Khối lượng
     # --------------------------------------------------------
 
-    cot_khoi_luong = _tim_cot(
-        du_lieu,
+    volume_col = find_column(
+        df,
         [
             "Volume",
             "volume",
@@ -255,25 +242,25 @@ def _lay_vn_index():
         ],
     )
 
-    khoi_luong = None
+    volume = None
 
-    if cot_khoi_luong is not None:
+    if volume_col is not None:
 
-        du_lieu[cot_khoi_luong] = pd.to_numeric(
-            du_lieu[cot_khoi_luong],
+        df[volume_col] = pd.to_numeric(
+            df[volume_col],
             errors="coerce",
         )
 
-        khoi_luong = _so(
-            du_lieu[cot_khoi_luong].iloc[-1]
+        volume = to_number(
+            df[volume_col].iloc[-1]
         )
 
     # --------------------------------------------------------
-    # Giá trị giao dịch trong OHLCV nếu có
+    # Giá trị giao dịch
     # --------------------------------------------------------
 
-    cot_gia_tri = _tim_cot(
-        du_lieu,
+    value_col = find_column(
+        df,
         [
             "Value",
             "value",
@@ -290,47 +277,71 @@ def _lay_vn_index():
         ],
     )
 
-    gia_tri = None
+    traded_value = None
 
-    if cot_gia_tri is not None:
+    if value_col is not None:
 
-        du_lieu[cot_gia_tri] = pd.to_numeric(
-            du_lieu[cot_gia_tri],
+        df[value_col] = pd.to_numeric(
+            df[value_col],
             errors="coerce",
         )
 
-        gia_tri = _so(
-            du_lieu[cot_gia_tri].iloc[-1]
+        traded_value = to_number(
+            df[value_col].iloc[-1]
         )
 
     # --------------------------------------------------------
-    # Fallback sang summary
+    # Summary fallback
+    #
+    # Không import hàm summary ở đầu file để tránh làm
+    # Dashboard chết nếu data/market.py chưa có hàm đó.
     # --------------------------------------------------------
 
-    if gia_tri is None or khoi_luong is None:
+    if traded_value is None:
 
         try:
-            summary = load_vnindex_market_summary()
+
+            import data.market as market_module
+
+            summary_function = getattr(
+                market_module,
+                "load_vnindex_market_summary",
+                None,
+            )
+
+            if summary_function is not None:
+
+                summary = summary_function()
+
+                if isinstance(
+                    summary,
+                    dict,
+                ):
+
+                    traded_value = to_number(
+                        summary.get(
+                            "gia_tri"
+                        )
+                    )
+
+                    if volume is None:
+
+                        volume = to_number(
+                            summary.get(
+                                "khoi_luong"
+                            )
+                        )
+
         except Exception:
-            summary = {}
-
-        if gia_tri is None:
-            gia_tri = _so(
-                summary.get("gia_tri")
-            )
-
-        if khoi_luong is None:
-            khoi_luong = _so(
-                summary.get("khoi_luong")
-            )
+            pass
 
     return {
-        "diem": diem,
-        "thay_doi": thay_doi,
-        "phan_tram": phan_tram,
-        "khoi_luong": khoi_luong,
-        "gia_tri": gia_tri,
-        "du_lieu": du_lieu,
+        "diem": current,
+        "thay_doi": change,
+        "phan_tram": change_percent,
+        "khoi_luong": volume,
+        "gia_tri": traded_value,
+        "du_lieu": df,
         "loi": None,
     }
 
@@ -364,27 +375,27 @@ def render_dashboard():
     # VN-INDEX
     # ========================================================
 
-    vn_index = _lay_vn_index()
+    vn_index = get_vn_index()
 
     if vn_index.get("loi"):
 
         vn_diem = "—"
-        vn_thay_doi = "—"
+        vn_change = "—"
         vn_1d = "—"
-        vn_khoi_luong = "—"
-        vn_gia_tri = "—"
+        vn_volume = "—"
+        vn_value = "—"
 
     else:
 
-        diem = _so(
+        diem = to_number(
             vn_index.get("diem")
         )
 
-        thay_doi = _so(
+        change = to_number(
             vn_index.get("thay_doi")
         )
 
-        phan_tram = _so(
+        change_percent = to_number(
             vn_index.get("phan_tram")
         )
 
@@ -394,28 +405,24 @@ def render_dashboard():
             else "—"
         )
 
-        vn_thay_doi = (
-            f"{thay_doi:+,.2f} điểm"
-            if thay_doi is not None
+        vn_change = (
+            f"{change:+,.2f} điểm"
+            if change is not None
             else "—"
         )
 
         vn_1d = (
-            f"{phan_tram:+.2f}%"
-            if phan_tram is not None
+            f"{change_percent:+.2f}%"
+            if change_percent is not None
             else "—"
         )
 
-        vn_khoi_luong = (
-            _dinh_dang_khoi_luong(
-                vn_index.get("khoi_luong")
-            )
+        vn_volume = fmt_volume(
+            vn_index.get("khoi_luong")
         )
 
-        vn_gia_tri = (
-            _dinh_dang_gia_tri(
-                vn_index.get("gia_tri")
-            )
+        vn_value = fmt_value(
+            vn_index.get("gia_tri")
         )
 
     # ========================================================
@@ -440,7 +447,7 @@ def render_dashboard():
 
         metric_card(
             "Khối lượng",
-            vn_khoi_luong,
+            vn_volume,
             "Khối lượng giao dịch toàn thị trường",
         )
 
@@ -448,7 +455,7 @@ def render_dashboard():
 
         metric_card(
             "Giá trị giao dịch",
-            vn_gia_tri,
+            vn_value,
             "Tổng giá trị giao dịch",
         )
 
@@ -471,31 +478,27 @@ def render_dashboard():
     a, b, c, d = st.columns(4)
 
     with a:
-
         st.metric(
             "Điểm",
             vn_diem,
         )
 
     with b:
-
         st.metric(
             "Thay đổi",
-            vn_thay_doi,
+            vn_change,
         )
 
     with c:
-
         st.metric(
             "Thay đổi 1D",
             vn_1d,
         )
 
     with d:
-
         st.metric(
             "Khối lượng",
-            vn_khoi_luong,
+            vn_volume,
         )
 
     if vn_index.get("loi"):
@@ -515,14 +518,14 @@ def render_dashboard():
         "📈 Theo dõi cổ phiếu"
     )
 
-    ma_mac_dinh = st.session_state.get(
+    default_symbol = st.session_state.get(
         "dashboard_symbol",
         "HPG",
     )
 
-    ma_nhap = st.text_input(
+    symbol_input = st.text_input(
         "Mã cổ phiếu",
-        value=ma_mac_dinh,
+        value=default_symbol,
         label_visibility="collapsed",
         placeholder=(
             "Nhập mã cổ phiếu, ví dụ HPG, MSR, VNM"
@@ -537,11 +540,11 @@ def render_dashboard():
         width="content",
     ):
 
-        ma_sach = normalize_symbol(
-            ma_nhap
+        clean_symbol = normalize_symbol(
+            symbol_input
         )
 
-        if not ma_sach:
+        if not clean_symbol:
 
             st.warning(
                 "Vui lòng nhập mã cổ phiếu."
@@ -551,14 +554,14 @@ def render_dashboard():
 
             st.session_state[
                 "dashboard_symbol"
-            ] = ma_sach
+            ] = clean_symbol
 
             st.rerun()
 
-    ma_dang_xem = normalize_symbol(
+    current_symbol = normalize_symbol(
         st.session_state.get(
             "dashboard_symbol",
-            ma_nhap,
+            symbol_input,
         )
     )
 
@@ -568,70 +571,70 @@ def render_dashboard():
 
     try:
 
-        du_lieu = load_market_data(
-            ma_dang_xem,
+        stock_data = load_market_data(
+            current_symbol,
             "1y",
         )
 
-    except Exception as loi:
+    except Exception as error:
 
         st.error(
             f"Không lấy được dữ liệu "
-            f"{display_symbol(ma_dang_xem)}: "
-            f"{loi}"
+            f"{display_symbol(current_symbol)}: "
+            f"{error}"
         )
 
-        du_lieu = None
+        stock_data = None
 
     if (
-        du_lieu is not None
-        and not du_lieu.empty
+        stock_data is not None
+        and not stock_data.empty
     ):
 
-        anh_chup = market_snapshot(
-            du_lieu
+        snapshot = market_snapshot(
+            stock_data
         )
 
-        gia = _so(
-            anh_chup.get("price")
+        price = to_number(
+            snapshot.get("price")
         )
 
-        thay_doi_1d = _so(
-            anh_chup.get("change_1d")
+        change_1d = to_number(
+            snapshot.get("change_1d")
         )
 
-        rsi = _so(
-            anh_chup.get("rsi")
+        rsi_value = to_number(
+            snapshot.get("rsi")
         )
 
-        khoi_luong = _so(
-            anh_chup.get("volume")
+        stock_volume = to_number(
+            snapshot.get("volume")
         )
 
-        sma20 = _so(
-            anh_chup.get("sma20")
+        sma20 = to_number(
+            snapshot.get("sma20")
         )
 
-        sma50 = _so(
-            anh_chup.get("sma50")
+        sma50 = to_number(
+            snapshot.get("sma50")
         )
 
-        macd = _so(
-            anh_chup.get("macd")
+        macd_value = to_number(
+            snapshot.get("macd")
         )
 
-        bien_dong = _so(
-            anh_chup.get("volatility20")
+        volatility = to_number(
+            snapshot.get("volatility20")
         )
 
-        dong_cuoi = du_lieu.iloc[-1]
+        last_row = stock_data.iloc[-1]
 
-        atr14 = _so(
-            dong_cuoi.get("ATR14")
+        atr14 = to_number(
+            last_row.get("ATR14")
         )
 
-        volume_tb20 = _so(
-            dong_cuoi.get("Volume_SMA20")
+        volume_sma20 = to_number(
+            last_row.get("Volume_SMA20")
         )
 
         # ====================================================
@@ -639,7 +642,7 @@ def render_dashboard():
         # ====================================================
 
         st.subheader(
-            f"📈 {display_symbol(ma_dang_xem)}"
+            f"📈 {display_symbol(current_symbol)}"
         )
 
         # ====================================================
@@ -652,32 +655,28 @@ def render_dashboard():
 
             st.metric(
                 "Giá",
-                _dinh_dang_gia(gia),
+                fmt_gia(price),
             )
 
         with b:
 
             st.metric(
                 "Thay đổi 1D",
-                _dinh_dang_phan_tram(
-                    thay_doi_1d
-                ),
+                fmt_percent(change_1d),
             )
 
         with c:
 
             st.metric(
                 "RSI",
-                _dinh_dang_rsi(rsi),
+                fmt_rsi(rsi_value),
             )
 
         with d:
 
             st.metric(
                 "Khối lượng",
-                _dinh_dang_khoi_luong(
-                    khoi_luong
-                ),
+                fmt_volume(stock_volume),
             )
 
         # ====================================================
@@ -690,21 +689,21 @@ def render_dashboard():
 
             st.metric(
                 "Trung bình 20 phiên",
-                _dinh_dang_gia(sma20),
+                fmt_gia(sma20),
             )
 
         with f:
 
             st.metric(
                 "Trung bình 50 phiên",
-                _dinh_dang_gia(sma50),
+                fmt_gia(sma50),
             )
 
         with g:
 
             st.metric(
                 "MACD",
-                _dinh_dang_macd(macd),
+                fmt_macd(macd_value),
             )
 
         with h:
@@ -712,8 +711,8 @@ def render_dashboard():
             st.metric(
                 "Biến động 20 phiên",
                 (
-                    f"{bien_dong:.2f}%"
-                    if bien_dong is not None
+                    f"{volatility:.2f}%"
+                    if volatility is not None
                     else "—"
                 ),
             )
@@ -728,51 +727,49 @@ def render_dashboard():
 
             st.metric(
                 "ATR 14 phiên",
-                _dinh_dang_gia(atr14),
+                fmt_gia(atr14),
             )
 
         with j:
 
             st.metric(
                 "Khối lượng TB20",
-                _dinh_dang_khoi_luong(
-                    volume_tb20
-                ),
+                fmt_volume(volume_sma20),
             )
 
         with k:
 
-            ty_le_volume = None
+            relative_volume = None
 
             if (
-                khoi_luong is not None
-                and volume_tb20 is not None
-                and volume_tb20 != 0
+                stock_volume is not None
+                and volume_sma20 is not None
+                and volume_sma20 != 0
             ):
 
-                ty_le_volume = (
-                    khoi_luong
-                    / volume_tb20
+                relative_volume = (
+                    stock_volume
+                    / volume_sma20
                 )
 
             st.metric(
                 "Khối lượng / TB20",
                 (
-                    f"{ty_le_volume:.2f} lần"
-                    if ty_le_volume is not None
+                    f"{relative_volume:.2f} lần"
+                    if relative_volume is not None
                     else "—"
                 ),
             )
 
         with l:
 
-            gia_mo = _so(
-                dong_cuoi.get("Open")
+            open_price = to_number(
+                last_row.get("Open")
             )
 
             st.metric(
                 "Giá mở cửa",
-                _dinh_dang_gia(gia_mo),
+                fmt_gia(open_price),
             )
 
         # ====================================================
@@ -785,32 +782,32 @@ def render_dashboard():
 
         try:
 
-            bieu_do = price_volume_chart(
-                du_lieu
+            chart = price_volume_chart(
+                stock_data
             )
 
-            if bieu_do is not None:
+            if chart is not None:
 
                 st.plotly_chart(
-                    bieu_do,
+                    chart,
                     width="stretch",
                     config={
                         "displaylogo": False,
                     },
                 )
 
-        except Exception as loi_bieu_do:
+        except Exception as error:
 
             st.warning(
                 "Không thể hiển thị biểu đồ: "
-                f"{loi_bieu_do}"
+                f"{error}"
             )
 
-    elif du_lieu is not None:
+    elif stock_data is not None:
 
         st.warning(
             f"Không tìm thấy dữ liệu thật cho "
-            f"{display_symbol(ma_dang_xem)}."
+            f"{display_symbol(current_symbol)}."
         )
 
     # ========================================================
@@ -823,17 +820,19 @@ def render_dashboard():
 
     try:
 
-        tin_tuc = fetch_market_news(6)
-
-    except Exception as loi:
-
-        st.info(
-            f"Chưa thể tải tin tức: {loi}"
+        news = fetch_market_news(
+            6
         )
 
-        tin_tuc = []
+    except Exception as error:
 
-    if not tin_tuc:
+        st.info(
+            f"Chưa thể tải tin tức: {error}"
+        )
+
+        news = []
+
+    if not news:
 
         st.info(
             "Hiện chưa lấy được tin tức mới."
@@ -841,31 +840,31 @@ def render_dashboard():
 
     else:
 
-        for tin in tin_tuc:
+        for item in news:
 
-            tieu_de = str(
-                tin.get(
+            title = str(
+                item.get(
                     "title",
                     "Không có tiêu đề",
                 )
             ).strip()
 
-            nguon = str(
-                tin.get(
+            source = str(
+                item.get(
                     "source",
                     "Nguồn không xác định",
                 )
             ).strip()
 
-            thoi_gian = str(
-                tin.get(
+            published = str(
+                item.get(
                     "published",
                     "",
                 )
             ).strip()
 
-            lien_ket = str(
-                tin.get(
+            link = str(
+                item.get(
                     "link",
                     "",
                 )
@@ -876,29 +875,29 @@ def render_dashboard():
             ):
 
                 st.markdown(
-                    f"**{tieu_de}**"
+                    f"**{title}**"
                 )
 
-                if nguon and thoi_gian:
+                if source and published:
 
                     st.caption(
-                        f"{nguon} · {thoi_gian}"
+                        f"{source} · {published}"
                     )
 
-                elif nguon:
+                elif source:
 
                     st.caption(
-                        nguon
+                        source
                     )
 
-                elif thoi_gian:
+                elif published:
 
                     st.caption(
-                        thoi_gian
+                        published
                     )
 
-                if lien_ket:
+                if link:
 
                     st.markdown(
-                        f"[Đọc bài ↗]({lien_ket})"
+                        f"[Đọc bài ↗]({link})"
                     )
