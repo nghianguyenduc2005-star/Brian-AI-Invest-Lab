@@ -22,10 +22,7 @@ from data.news import fetch_market_news
 # TIỆN ÍCH
 # ============================================================
 
-def _so(
-    value,
-    mac_dinh=None,
-):
+def _so(value, mac_dinh=None):
     try:
         value = float(value)
 
@@ -38,14 +35,8 @@ def _so(
         return mac_dinh
 
 
-def _tim_cot(
-    df,
-    cac_ten,
-):
-    if (
-        df is None
-        or df.empty
-    ):
+def _tim_cot(df, cac_ten):
+    if df is None or df.empty:
         return None
 
     ban_do = {
@@ -65,16 +56,11 @@ def _tim_cot(
 
 
 # ============================================================
-# ĐỊNH DẠNG KHỐI LƯỢNG
+# ĐỊNH DẠNG
 # ============================================================
 
-def _dinh_dang_khoi_luong(
-    value,
-):
-    value = _so(
-        value,
-        None,
-    )
+def _dinh_dang_khoi_luong(value):
+    value = _so(value)
 
     if value is None:
         return "—"
@@ -94,22 +80,11 @@ def _dinh_dang_khoi_luong(
             f"{value / 1_000:.2f} nghìn cổ phiếu"
         )
 
-    return (
-        f"{value:,.0f} cổ phiếu"
-    )
+    return f"{value:,.0f} cổ phiếu"
 
 
-# ============================================================
-# ĐỊNH DẠNG GIÁ TRỊ GIAO DỊCH
-# ============================================================
-
-def _dinh_dang_gia_tri(
-    value,
-):
-    value = _so(
-        value,
-        None,
-    )
+def _dinh_dang_gia_tri(value):
+    value = _so(value)
 
     if value is None:
         return "—"
@@ -134,89 +109,43 @@ def _dinh_dang_gia_tri(
             f"{value / 1_000:.2f} nghìn đồng"
         )
 
-    return (
-        f"{value:,.0f} đồng"
-    )
+    return f"{value:,.0f} đồng"
 
 
-# ============================================================
-# ĐỊNH DẠNG GIÁ
-# ============================================================
-
-def _dinh_dang_gia(
-    value,
-):
-    value = _so(
-        value,
-        None,
-    )
+def _dinh_dang_gia(value):
+    value = _so(value)
 
     if value is None:
         return "—"
 
-    return (
-        f"{value:,.0f} đồng/cổ phiếu"
-    )
+    return f"{value:,.0f} đồng/cổ phiếu"
 
 
-# ============================================================
-# ĐỊNH DẠNG RSI
-# ============================================================
-
-def _dinh_dang_rsi(
-    value,
-):
-    value = _so(
-        value,
-        None,
-    )
+def _dinh_dang_rsi(value):
+    value = _so(value)
 
     if value is None:
         return "—"
 
-    return (
-        f"{value:.1f} điểm"
-    )
+    return f"{value:.1f} điểm"
 
 
-# ============================================================
-# ĐỊNH DẠNG MACD
-# ============================================================
-
-def _dinh_dang_macd(
-    value,
-):
-    value = _so(
-        value,
-        None,
-    )
+def _dinh_dang_macd(value):
+    value = _so(value)
 
     if value is None:
         return "—"
 
-    return (
-        f"{value:.3f}"
-    )
+    return f"{value:.3f}"
 
 
-# ============================================================
-# ĐỊNH DẠNG %
-# ============================================================
-
-def _dinh_dang_phan_tram(
-    value,
-):
-    value = _so(
-        value,
-        None,
-    )
+def _dinh_dang_phan_tram(value):
+    value = _so(value)
 
     if value is None:
         return "—"
 
-    return (
-        f"{value:+.2f}%"
-    )
+    return f"{value:+.2f}%"
 
 
 # ============================================================
@@ -229,27 +158,20 @@ def _lay_vn_index():
         du_lieu = load_vnindex_data()
 
     except Exception as loi:
-
         return {
             "loi": str(loi)
         }
 
-    if (
-        du_lieu is None
-        or du_lieu.empty
-    ):
-
+    if du_lieu is None or du_lieu.empty:
         return {
-            "loi": (
-                "Nguồn VN-INDEX trả về dữ liệu rỗng."
-            )
+            "loi": "Nguồn VN-INDEX trả về dữ liệu rỗng."
         }
 
     du_lieu = du_lieu.copy()
 
-    # ========================================================
-    # ĐIỂM
-    # ========================================================
+    # --------------------------------------------------------
+    # Điểm
+    # --------------------------------------------------------
 
     cot_diem = _tim_cot(
         du_lieu,
@@ -265,11 +187,8 @@ def _lay_vn_index():
     )
 
     if cot_diem is None:
-
         return {
-            "loi": (
-                "Không tìm thấy cột điểm VN-INDEX."
-            )
+            "loi": "Không tìm thấy cột điểm VN-INDEX."
         }
 
     du_lieu[cot_diem] = pd.to_numeric(
@@ -278,52 +197,39 @@ def _lay_vn_index():
     )
 
     du_lieu = du_lieu.dropna(
-        subset=[
-            cot_diem
-        ]
+        subset=[cot_diem]
     )
 
     if du_lieu.empty:
-
         return {
-            "loi": (
-                "VN-INDEX không có điểm hợp lệ."
-            )
+            "loi": "VN-INDEX không có điểm hợp lệ."
         }
 
     diem = float(
-        du_lieu[
-            cot_diem
-        ].iloc[-1]
+        du_lieu[cot_diem].iloc[-1]
     )
 
-    # ========================================================
-    # THAY ĐỔI
-    # ========================================================
+    # --------------------------------------------------------
+    # Thay đổi
+    # --------------------------------------------------------
 
     if len(du_lieu) >= 2:
 
         diem_truoc = float(
-            du_lieu[
-                cot_diem
-            ].iloc[-2]
+            du_lieu[cot_diem].iloc[-2]
         )
 
         thay_doi = (
-            diem
-            - diem_truoc
+            diem - diem_truoc
         )
 
         if diem_truoc != 0:
-
             phan_tram = (
                 thay_doi
                 / diem_truoc
                 * 100
             )
-
         else:
-
             phan_tram = 0.0
 
     else:
@@ -331,9 +237,9 @@ def _lay_vn_index():
         thay_doi = None
         phan_tram = None
 
-    # ========================================================
-    # KHỐI LƯỢNG
-    # ========================================================
+    # --------------------------------------------------------
+    # Khối lượng
+    # --------------------------------------------------------
 
     cot_khoi_luong = _tim_cot(
         du_lieu,
@@ -353,25 +259,18 @@ def _lay_vn_index():
 
     if cot_khoi_luong is not None:
 
-        du_lieu[
-            cot_khoi_luong
-        ] = pd.to_numeric(
-            du_lieu[
-                cot_khoi_luong
-            ],
+        du_lieu[cot_khoi_luong] = pd.to_numeric(
+            du_lieu[cot_khoi_luong],
             errors="coerce",
         )
 
         khoi_luong = _so(
-            du_lieu[
-                cot_khoi_luong
-            ].iloc[-1],
-            None,
+            du_lieu[cot_khoi_luong].iloc[-1]
         )
 
-    # ========================================================
-    # GIÁ TRỊ GIAO DỊCH
-    # ========================================================
+    # --------------------------------------------------------
+    # Giá trị giao dịch trong OHLCV nếu có
+    # --------------------------------------------------------
 
     cot_gia_tri = _tim_cot(
         du_lieu,
@@ -395,57 +294,34 @@ def _lay_vn_index():
 
     if cot_gia_tri is not None:
 
-        du_lieu[
-            cot_gia_tri
-        ] = pd.to_numeric(
-            du_lieu[
-                cot_gia_tri
-            ],
+        du_lieu[cot_gia_tri] = pd.to_numeric(
+            du_lieu[cot_gia_tri],
             errors="coerce",
         )
 
         gia_tri = _so(
-            du_lieu[
-                cot_gia_tri
-            ].iloc[-1],
-            None,
+            du_lieu[cot_gia_tri].iloc[-1]
         )
 
-    # ========================================================
-    # FALLBACK: SUMMARY
-    # ========================================================
+    # --------------------------------------------------------
+    # Fallback sang summary
+    # --------------------------------------------------------
 
-    if (
-        gia_tri is None
-        or khoi_luong is None
-    ):
+    if gia_tri is None or khoi_luong is None:
 
         try:
-
-            summary = (
-                load_vnindex_market_summary()
-            )
-
+            summary = load_vnindex_market_summary()
         except Exception:
-
             summary = {}
 
         if gia_tri is None:
-
             gia_tri = _so(
-                summary.get(
-                    "gia_tri"
-                ),
-                None,
+                summary.get("gia_tri")
             )
 
         if khoi_luong is None:
-
             khoi_luong = _so(
-                summary.get(
-                    "khoi_luong"
-                ),
-                None,
+                summary.get("khoi_luong")
             )
 
     return {
@@ -490,9 +366,7 @@ def render_dashboard():
 
     vn_index = _lay_vn_index()
 
-    if vn_index.get(
-        "loi"
-    ):
+    if vn_index.get("loi"):
 
         vn_diem = "—"
         vn_thay_doi = "—"
@@ -503,21 +377,15 @@ def render_dashboard():
     else:
 
         diem = _so(
-            vn_index.get(
-                "diem"
-            )
+            vn_index.get("diem")
         )
 
         thay_doi = _so(
-            vn_index.get(
-                "thay_doi"
-            )
+            vn_index.get("thay_doi")
         )
 
         phan_tram = _so(
-            vn_index.get(
-                "phan_tram"
-            )
+            vn_index.get("phan_tram")
         )
 
         vn_diem = (
@@ -540,17 +408,13 @@ def render_dashboard():
 
         vn_khoi_luong = (
             _dinh_dang_khoi_luong(
-                vn_index.get(
-                    "khoi_luong"
-                )
+                vn_index.get("khoi_luong")
             )
         )
 
         vn_gia_tri = (
             _dinh_dang_gia_tri(
-                vn_index.get(
-                    "gia_tri"
-                )
+                vn_index.get("gia_tri")
             )
         )
 
@@ -562,9 +426,7 @@ def render_dashboard():
         "📌 Theo dõi nhanh"
     )
 
-    c1, c2, c3, c4 = st.columns(
-        4
-    )
+    c1, c2, c3, c4 = st.columns(4)
 
     with c1:
 
@@ -606,9 +468,7 @@ def render_dashboard():
         "📊 VN-INDEX"
     )
 
-    a, b, c, d = st.columns(
-        4
-    )
+    a, b, c, d = st.columns(4)
 
     with a:
 
@@ -638,16 +498,12 @@ def render_dashboard():
             vn_khoi_luong,
         )
 
-    if vn_index.get(
-        "loi"
-    ):
+    if vn_index.get("loi"):
 
         st.warning(
             "VN-INDEX chưa tải được: "
             + str(
-                vn_index[
-                    "loi"
-                ]
+                vn_index["loi"]
             )
         )
 
@@ -659,11 +515,9 @@ def render_dashboard():
         "📈 Theo dõi cổ phiếu"
     )
 
-    ma_mac_dinh = (
-        st.session_state.get(
-            "dashboard_symbol",
-            "HPG",
-        )
+    ma_mac_dinh = st.session_state.get(
+        "dashboard_symbol",
+        "HPG",
     )
 
     ma_nhap = st.text_input(
@@ -739,81 +593,49 @@ def render_dashboard():
         )
 
         gia = _so(
-            anh_chup.get(
-                "price"
-            ),
-            None,
+            anh_chup.get("price")
         )
 
         thay_doi_1d = _so(
-            anh_chup.get(
-                "change_1d"
-            ),
-            None,
+            anh_chup.get("change_1d")
         )
 
         rsi = _so(
-            anh_chup.get(
-                "rsi"
-            ),
-            None,
+            anh_chup.get("rsi")
         )
 
         khoi_luong = _so(
-            anh_chup.get(
-                "volume"
-            ),
-            None,
+            anh_chup.get("volume")
         )
 
         sma20 = _so(
-            anh_chup.get(
-                "sma20"
-            ),
-            None,
+            anh_chup.get("sma20")
         )
 
         sma50 = _so(
-            anh_chup.get(
-                "sma50"
-            ),
-            None,
+            anh_chup.get("sma50")
         )
 
         macd = _so(
-            anh_chup.get(
-                "macd"
-            ),
-            None,
+            anh_chup.get("macd")
         )
 
         bien_dong = _so(
-            anh_chup.get(
-                "volatility20"
-            ),
-            None,
+            anh_chup.get("volatility20")
         )
 
-        dong_cuoi = (
-            du_lieu.iloc[-1]
-        )
+        dong_cuoi = du_lieu.iloc[-1]
 
         atr14 = _so(
-            dong_cuoi.get(
-                "ATR14"
-            ),
-            None,
+            dong_cuoi.get("ATR14")
         )
 
         volume_tb20 = _so(
-            dong_cuoi.get(
-                "Volume_SMA20"
-            ),
-            None,
+            dong_cuoi.get("Volume_SMA20")
         )
 
         # ====================================================
-        # TIÊU ĐỀ MÃ
+        # TIÊU ĐỀ
         # ====================================================
 
         st.subheader(
@@ -824,17 +646,13 @@ def render_dashboard():
         # THÔNG TIN
         # ====================================================
 
-        a, b, c, d = st.columns(
-            4
-        )
+        a, b, c, d = st.columns(4)
 
         with a:
 
             st.metric(
                 "Giá",
-                _dinh_dang_gia(
-                    gia
-                ),
+                _dinh_dang_gia(gia),
             )
 
         with b:
@@ -850,9 +668,7 @@ def render_dashboard():
 
             st.metric(
                 "RSI",
-                _dinh_dang_rsi(
-                    rsi
-                ),
+                _dinh_dang_rsi(rsi),
             )
 
         with d:
@@ -868,35 +684,27 @@ def render_dashboard():
         # CHỈ BÁO
         # ====================================================
 
-        e, f, g, h = st.columns(
-            4
-        )
+        e, f, g, h = st.columns(4)
 
         with e:
 
             st.metric(
                 "Trung bình 20 phiên",
-                _dinh_dang_gia(
-                    sma20
-                ),
+                _dinh_dang_gia(sma20),
             )
 
         with f:
 
             st.metric(
                 "Trung bình 50 phiên",
-                _dinh_dang_gia(
-                    sma50
-                ),
+                _dinh_dang_gia(sma50),
             )
 
         with g:
 
             st.metric(
                 "MACD",
-                _dinh_dang_macd(
-                    macd
-                ),
+                _dinh_dang_macd(macd),
             )
 
         with h:
@@ -914,17 +722,13 @@ def render_dashboard():
         # CHỈ BÁO BỔ SUNG
         # ====================================================
 
-        i, j, k, l = st.columns(
-            4
-        )
+        i, j, k, l = st.columns(4)
 
         with i:
 
             st.metric(
                 "ATR 14 phiên",
-                _dinh_dang_gia(
-                    atr14
-                ),
+                _dinh_dang_gia(atr14),
             )
 
         with j:
@@ -963,17 +767,12 @@ def render_dashboard():
         with l:
 
             gia_mo = _so(
-                dong_cuoi.get(
-                    "Open"
-                ),
-                None,
+                dong_cuoi.get("Open")
             )
 
             st.metric(
                 "Giá mở cửa",
-                _dinh_dang_gia(
-                    gia_mo
-                ),
+                _dinh_dang_gia(gia_mo),
             )
 
         # ====================================================
@@ -1024,9 +823,7 @@ def render_dashboard():
 
     try:
 
-        tin_tuc = fetch_market_news(
-            6
-        )
+        tin_tuc = fetch_market_news(6)
 
     except Exception as loi:
 
@@ -1075,38 +872,30 @@ def render_dashboard():
             ).strip()
 
             with st.container(
-                border=True,
+                border=True
             ):
 
                 st.markdown(
                     f"**{tieu_de}**"
                 )
 
-                if (
-                    nguon
-                    or thoi_gian
-                ):
+                if nguon and thoi_gian:
 
-                    if (
+                    st.caption(
+                        f"{nguon} · {thoi_gian}"
+                    )
+
+                elif nguon:
+
+                    st.caption(
                         nguon
-                        and thoi_gian
-                    ):
+                    )
 
-                        st.caption(
-                            f"{nguon} · {thoi_gian}"
-                        )
+                elif thoi_gian:
 
-                    elif nguon:
-
-                        st.caption(
-                            nguon
-                        )
-
-                    else:
-
-                        st.caption(
-                            thoi_gian
-                        )
+                    st.caption(
+                        thoi_gian
+                    )
 
                 if lien_ket:
 
