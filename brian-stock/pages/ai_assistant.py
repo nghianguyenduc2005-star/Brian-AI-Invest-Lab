@@ -1,605 +1,761 @@
 from __future__ import annotations
 
-import html
-
 import pandas as pd
 import streamlit as st
 
 from data.market import (
-    normalize_symbol,
+    build_quant,
     display_symbol,
     load_market_data,
     market_snapshot,
+    normalize_symbol,
 )
 
-
-# ============================================================
-# CẤU HÌNH AI
-# ============================================================
-
-TEN_MO_HINH = "gemini-3.7-flash"
+from data.news import fetch_market_news
 
 
 # ============================================================
-# LẤY KHÓA AI
+# CẤU HÌNH
 # ============================================================
 
-def _lay_khoa_ai():
+SO_TIN_MAC_DINH = 8
+KY_MAC_DINH = "1y"
 
+
+# ============================================================
+# TIỆN ÍCH
+# ============================================================
+
+def _so(value, mac_dinh=None):
     try:
-        khoa = st.secrets.get(
-            "GEMINI_API_KEY"
-        )
-    except Exception:
-        khoa = None
+        value = float(value)
 
-    if not khoa:
-        khoa = st.session_state.get(
-            "GEMINI_API_KEY"
-        )
-
-    if not khoa:
-        return None
-
-    return str(khoa).strip()
-
-
-# ============================================================
-# TẠO MÁY AI
-# ============================================================
-
-@st.cache_resource(
-    show_spinner=False
-)
-def _tao_ai():
-
-    khoa = _lay_khoa_ai()
-
-    if not khoa:
-        return None
-
-    try:
-
-        from google import genai
-
-        return genai.Client(
-            api_key=khoa
-        )
-
-    except Exception:
-        return None
-
-
-# ============================================================
-# LẤY SỐ AN TOÀN
-# ============================================================
-
-def _so(
-    gia_tri,
-    mac_dinh=None,
-):
-
-    try:
-
-        gia_tri = float(
-            gia_tri
-        )
-
-        if pd.isna(
-            gia_tri
-        ):
+        if pd.isna(value):
             return mac_dinh
 
-        return gia_tri
+        return value
 
     except Exception:
         return mac_dinh
 
 
-# ============================================================
-# ĐỊNH DẠNG KHỐI LƯỢNG
-# ============================================================
+def _fmt_gia(value):
+    value = _so(value)
 
-def _dinh_dang_khoi_luong(
-    gia_tri,
-):
-
-    gia_tri = _so(
-        gia_tri,
-        None,
-    )
-
-    if gia_tri is None:
+    if value is None:
         return "—"
 
-    if gia_tri >= 1_000_000_000:
-        return (
-            f"{gia_tri / 1_000_000_000:.2f} tỷ"
-        )
+    return f"{value:,.0f} đồng"
 
-    if gia_tri >= 1_000_000:
-        return (
-            f"{gia_tri / 1_000_000:.2f} triệu"
-        )
 
-    if gia_tri >= 1_000:
-        return (
-            f"{gia_tri / 1_000:.2f} nghìn"
-        )
+def _fmt_pct(value):
+    value = _so(value)
 
-    return f"{gia_tri:,.0f}"
+    if value is None:
+        return "—"
+
+    return f"{value:+.2f}%"
+
+
+def _fmt_rsi(value):
+    value = _so(value)
+
+    if value is None:
+        return "—"
+
+    return f"{value:.1f}"
+
+
+def _fmt_volume(value):
+    value = _so(value)
+
+    if value is None:
+        return "—"
+
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.2f} tỷ"
+
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.2f} triệu"
+
+    if value >= 1_000:
+        return f"{value / 1_000:.2f} nghìn"
+
+    return f"{value:,.0f}"
+
+
+def _fmt_prediction(value):
+    value = _so(value)
+
+    if value is None:
+        return "—"
+
+    return f"{value * 100:+.2f}%"
 
 
 # ============================================================
-# CHUẨN BỊ DỮ LIỆU CHO AI
+# AI CLIENT
 # ============================================================
 
-def _tao_thong_tin_phan_tich(
-    ma,
-    du_lieu,
+def _lay_gemini_client():
+    try:
+        api_key = st.secrets.get(
+            "GEMINI_API_KEY",
+            "",
+        )
+    except Exception:
+        api_key = ""
+
+    api_key = str(
+        api_key or ""
+    ).strip()
+
+    if not api_key:
+        return None
+
+    try:
+        from google import genai
+
+        return genai.Client(
+            api_key=api_key
+        )
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# GỌI GEMINI
+# ============================================================
+
+def _goi_gemini(
+    prompt,
 ):
+    client = _lay_gemini_client()
 
-    anh_chup = market_snapshot(
-        du_lieu
-    )
-
-    dong_cuoi = (
-        du_lieu.iloc[-1]
-    )
-
-    def _lay(
-        ten_cot,
-        mac_dinh=None,
-    ):
-
-        try:
-
-            gia_tri = dong_cuoi.get(
-                ten_cot
-            )
-
-            if pd.isna(
-                gia_tri
-            ):
-                return mac_dinh
-
-            return float(
-                gia_tri
-            )
-
-        except Exception:
-            return mac_dinh
-
-    gia = _so(
-        anh_chup.get(
-            "price"
-        ),
-        None,
-    )
-
-    thay_doi = _so(
-        anh_chup.get(
-            "change_1d"
-        ),
-        None,
-    )
-
-    rsi = _so(
-        anh_chup.get(
-            "rsi"
-        ),
-        None,
-    )
-
-    macd = _so(
-        anh_chup.get(
-            "macd"
-        ),
-        None,
-    )
-
-    sma20 = _so(
-        anh_chup.get(
-            "sma20"
-        ),
-        None,
-    )
-
-    sma50 = _so(
-        anh_chup.get(
-            "sma50"
-        ),
-        None,
-    )
-
-    bien_dong = _so(
-        anh_chup.get(
-            "volatility20"
-        ),
-        None,
-    )
-
-    khoi_luong = _so(
-        anh_chup.get(
-            "volume"
-        ),
-        None,
-    )
-
-    macd_tin_hieu = _lay(
-        "MACD_Signal"
-    )
-
-    macd_hist = _lay(
-        "MACD_Hist"
-    )
-
-    ema20 = _lay(
-        "EMA20"
-    )
-
-    ema50 = _lay(
-        "EMA50"
-    )
-
-    bollinger_tren = _lay(
-        "Bollinger_Upper"
-    )
-
-    bollinger_duoi = _lay(
-        "Bollinger_Lower"
-    )
-
-    atr14 = _lay(
-        "ATR14"
-    )
-
-    momentum5 = _lay(
-        "Momentum5"
-    )
-
-    momentum20 = _lay(
-        "Momentum20"
-    )
-
-    volume_tb20 = _lay(
-        "Volume_SMA20"
-    )
-
-    high20 = _lay(
-        "High20"
-    )
-
-    low20 = _lay(
-        "Low20"
-    )
-
-    high252 = _lay(
-        "High252"
-    )
-
-    low252 = _lay(
-        "Low252"
-    )
-
-    duong = []
-
-    if (
-        gia is not None
-        and sma20 is not None
-    ):
-
-        duong.append(
-            "Giá trên SMA20"
-            if gia > sma20
-            else "Giá dưới SMA20"
-        )
-
-    if (
-        gia is not None
-        and sma50 is not None
-    ):
-
-        duong.append(
-            "Giá trên SMA50"
-            if gia > sma50
-            else "Giá dưới SMA50"
-        )
-
-    if (
-        gia is not None
-        and ema20 is not None
-    ):
-
-        duong.append(
-            "Giá trên EMA20"
-            if gia > ema20
-            else "Giá dưới EMA20"
-        )
-
-    if (
-        gia is not None
-        and ema50 is not None
-    ):
-
-        duong.append(
-            "Giá trên EMA50"
-            if gia > ema50
-            else "Giá dưới EMA50"
-        )
-
-    if rsi is not None:
-
-        if rsi >= 70:
-            duong.append(
-                "RSI quá mua"
-            )
-
-        elif rsi <= 30:
-            duong.append(
-                "RSI quá bán"
-            )
-
-        elif rsi >= 50:
-            duong.append(
-                "RSI trên 50"
-            )
-
-        else:
-            duong.append(
-                "RSI dưới 50"
-            )
-
-    if (
-        macd is not None
-        and macd_tin_hieu is not None
-    ):
-
-        duong.append(
-            "MACD trên tín hiệu"
-            if macd > macd_tin_hieu
-            else "MACD dưới tín hiệu"
-        )
-
-    if (
-        khoi_luong is not None
-        and volume_tb20 is not None
-        and volume_tb20 > 0
-    ):
-
-        ty_le = (
-            khoi_luong
-            / volume_tb20
-        )
-
-        duong.append(
-            f"Khối lượng bằng {ty_le:.2f} lần trung bình 20 phiên"
-        )
-
-    thong_tin = f"""
-MÃ CỔ PHIẾU: {display_symbol(ma)}
-
-DỮ LIỆU MỚI NHẤT:
-- Giá đóng cửa: {gia}
-- Thay đổi 1 ngày: {thay_doi}%
-- RSI: {rsi}
-- MACD: {macd}
-- Tín hiệu MACD: {macd_tin_hieu}
-- MACD Histogram: {macd_hist}
-
-TRUNG BÌNH:
-- SMA20: {sma20}
-- SMA50: {sma50}
-- EMA20: {ema20}
-- EMA50: {ema50}
-
-BIẾN ĐỘNG:
-- Biến động 20 phiên: {bien_dong}%
-- ATR14: {atr14}
-- Động lượng 5 phiên: {momentum5}
-- Động lượng 20 phiên: {momentum20}
-
-KHỐI LƯỢNG:
-- Khối lượng hiện tại: {khoi_luong}
-- Trung bình 20 phiên: {volume_tb20}
-
-BOLLINGER:
-- Dải trên: {bollinger_tren}
-- Dải dưới: {bollinger_duoi}
-
-ĐỈNH / ĐÁY:
-- Cao nhất 20 phiên: {high20}
-- Thấp nhất 20 phiên: {low20}
-- Cao nhất 252 phiên: {high252}
-- Thấp nhất 252 phiên: {low252}
-
-TÍN HIỆU TỰ ĐỘNG:
-{chr(10).join("- " + x for x in duong)}
-"""
-
-    return thong_tin
-
-
-# ============================================================
-# GỌI AI
-# ============================================================
-
-def _hoi_ai(
-    cau_hoi,
-    thong_tin,
-):
-
-    may_ai = _tao_ai()
-
-    if may_ai is None:
+    if client is None:
 
         return (
+            None,
             "Chưa cấu hình GEMINI_API_KEY "
-            "trong Streamlit Secrets."
+            "hoặc package google-genai."
         )
-
-    chi_dan = f"""
-Bạn là trợ lý nghiên cứu chứng khoán Việt Nam của BRIAN STOCK.
-
-Nhiệm vụ:
-- Phân tích dữ liệu được cung cấp.
-- Không bịa số liệu.
-- Không tự tạo dữ liệu thị trường.
-- Phân biệt rõ dữ liệu quan sát và nhận định.
-- Không cam kết lợi nhuận.
-- Không đưa ra khẳng định chắc chắn về giá tương lai.
-- Trả lời bằng tiếng Việt.
-- Ưu tiên phân tích xu hướng, động lượng,
-  thanh khoản, biến động, vùng hỗ trợ/kháng cự
-  và rủi ro.
-
-DỮ LIỆU:
-{thong_tin}
-
-CÂU HỎI CỦA NHÀ ĐẦU TƯ:
-{cau_hoi}
-
-Hãy trả lời có cấu trúc:
-1. Kết luận chính
-2. Dữ liệu đáng chú ý
-3. Tín hiệu tích cực
-4. Tín hiệu tiêu cực
-5. Rủi ro cần theo dõi
-6. Kịch bản có thể xảy ra
-"""
 
     try:
 
-        phan_hoi = (
-            may_ai.models.generate_content(
-                model=TEN_MO_HINH,
-                contents=chi_dan,
-            )
+        response = client.models.generate_content(
+            model="gemini-3.7-flash",
+            contents=prompt,
         )
 
-        van_ban = getattr(
-            phan_hoi,
+        text = getattr(
+            response,
             "text",
             None,
         )
 
-        if not van_ban:
+        if not text:
 
             return (
-                "AI không trả về nội dung."
+                None,
+                "Gemini không trả về nội dung."
             )
 
-        return str(
-            van_ban
-        ).strip()
+        return text, None
 
-    except Exception as loi:
+    except Exception as error:
 
         return (
-            "Không thể gọi AI: "
-            f"{loi}"
+            None,
+            f"Gemini lỗi: {error}"
         )
 
 
 # ============================================================
-# RENDER
+# LẤY TIN TỨC AN TOÀN
 # ============================================================
 
-def render_ai_assistant():
+def _lay_tin_tuc(
+    symbol,
+    so_tin,
+):
+    try:
 
-    st.markdown(
-        '<div class="section-title">🤖 AI Assistant</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="hero">
-            <div class="eyebrow">
-                BRIAN STOCK · AI RESEARCH
-            </div>
-
-            <h1>
-                Trợ lý phân tích đầu tư
-            </h1>
-
-            <p>
-                AI đọc dữ liệu thị trường thật và
-                hỗ trợ diễn giải các tín hiệu kỹ thuật
-                và định lượng.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # ========================================================
-    # CHỌN MÃ
-    # ========================================================
-
-    ma_mac_dinh = (
-        st.session_state.get(
-            "ai_symbol",
-            "HPG",
-        )
-    )
-
-    ma_nhap = st.text_input(
-        "Mã cổ phiếu",
-        value=ma_mac_dinh,
-        placeholder="Ví dụ HPG, MSR, VNM",
-        key="ai_stock_input",
-    )
-
-    if st.button(
-        "Tải dữ liệu phân tích",
-        type="primary",
-        key="ai_load_data",
-    ):
-
-        ma_sach = normalize_symbol(
-            ma_nhap
+        news = fetch_market_news(
+            so_tin
         )
 
-        st.session_state[
-            "ai_symbol"
-        ] = ma_sach
+        if news is None:
+            return []
 
-        st.rerun()
+        return list(news)
 
-    ma = normalize_symbol(
-        st.session_state.get(
-            "ai_symbol",
-            ma_nhap,
+    except Exception as error:
+
+        st.warning(
+            f"Không lấy được tin tức: {error}"
         )
-    )
 
-    # ========================================================
-    # LẤY DỮ LIỆU
-    # ========================================================
+        return []
+
+
+# ============================================================
+# TẠO CONTEXT CHO AI
+# ============================================================
+
+def _tao_context(
+    symbol,
+    df,
+    news,
+    quant,
+):
+
+    latest = df.iloc[-1]
+
+    context = []
+
+    context.append(
+        f"Mã cổ phiếu: {display_symbol(symbol)}"
+    )
 
     try:
 
-        du_lieu = load_market_data(
-            ma,
-            "1y",
+        ngay_cuoi = df.index[-1]
+
+        context.append(
+            "Ngày dữ liệu cuối: "
+            + ngay_cuoi.strftime(
+                "%d/%m/%Y"
+            )
         )
 
-    except Exception as loi:
+    except Exception:
+        pass
 
-        st.error(
-            f"Không tải được dữ liệu {display_symbol(ma)}: {loi}"
+    close = _so(
+        latest.get("Close")
+    )
+
+    ret = _so(
+        latest.get("Return")
+    )
+
+    rsi = _so(
+        latest.get("RSI")
+    )
+
+    macd = _so(
+        latest.get("MACD")
+    )
+
+    macd_signal = _so(
+        latest.get("MACD_Signal")
+    )
+
+    volatility = _so(
+        latest.get("Volatility20")
+    )
+
+    sma20 = _so(
+        latest.get("SMA20")
+    )
+
+    sma50 = _so(
+        latest.get("SMA50")
+    )
+
+    volume = _so(
+        latest.get("Volume")
+    )
+
+    atr14 = _so(
+        latest.get("ATR14")
+    )
+
+    context.append(
+        f"Giá đóng cửa: {close}"
+    )
+
+    context.append(
+        f"Thay đổi 1D: "
+        f"{ret * 100:.2f}%"
+        if ret is not None
+        else "Thay đổi 1D: không có dữ liệu"
+    )
+
+    context.append(
+        f"RSI: {rsi:.2f}"
+        if rsi is not None
+        else "RSI: không có dữ liệu"
+    )
+
+    context.append(
+        f"MACD: {macd:.4f}"
+        if macd is not None
+        else "MACD: không có dữ liệu"
+    )
+
+    context.append(
+        f"MACD Signal: {macd_signal:.4f}"
+        if macd_signal is not None
+        else "MACD Signal: không có dữ liệu"
+    )
+
+    context.append(
+        f"Volatility 20: {volatility:.2f}%"
+        if volatility is not None
+        else "Volatility 20: không có dữ liệu"
+    )
+
+    context.append(
+        f"SMA20: {sma20}"
+        if sma20 is not None
+        else "SMA20: không có dữ liệu"
+    )
+
+    context.append(
+        f"SMA50: {sma50}"
+        if sma50 is not None
+        else "SMA50: không có dữ liệu"
+    )
+
+    context.append(
+        f"Khối lượng: {volume}"
+        if volume is not None
+        else "Khối lượng: không có dữ liệu"
+    )
+
+    context.append(
+        f"ATR14: {atr14}"
+        if atr14 is not None
+        else "ATR14: không có dữ liệu"
+    )
+
+    # --------------------------------------------------------
+    # Quant
+    # --------------------------------------------------------
+
+    if quant is not None:
+
+        try:
+
+            ols, rf, metrics, next_return, importance = quant
+
+            context.append(
+                f"Random Forest dự báo return "
+                f"phiên kế tiếp: "
+                f"{next_return * 100:.2f}%"
+            )
+
+            context.append(
+                f"RF MAE: "
+                f"{metrics.get('MAE', float('nan')) * 100:.3f}%"
+            )
+
+            context.append(
+                f"RF R2: "
+                f"{metrics.get('R2', float('nan')):.3f}"
+            )
+
+            try:
+
+                context.append(
+                    f"OLS R2: "
+                    f"{ols.rsquared:.3f}"
+                )
+
+            except Exception:
+                pass
+
+            try:
+
+                top_features = (
+                    importance
+                    .head(5)
+                    .to_dict()
+                )
+
+                context.append(
+                    f"Feature importance: "
+                    f"{top_features}"
+                )
+
+            except Exception:
+                pass
+
+        except Exception:
+            pass
+
+    # --------------------------------------------------------
+    # Tin tức
+    # --------------------------------------------------------
+
+    context.append("")
+    context.append(
+        "TIN TỨC THỰC TẾ ĐÃ THU THẬP:"
+    )
+
+    if not news:
+
+        context.append(
+            "Không có tin tức."
+        )
+
+    else:
+
+        for item in news:
+
+            title = str(
+                item.get(
+                    "title",
+                    ""
+                )
+            ).strip()
+
+            source = str(
+                item.get(
+                    "source",
+                    ""
+                )
+            ).strip()
+
+            published = str(
+                item.get(
+                    "published",
+                    ""
+                )
+            ).strip()
+
+            if title:
+
+                context.append(
+                    f"- {title} | "
+                    f"{source} | "
+                    f"{published}"
+                )
+
+    return "\n".join(
+        context
+    )
+
+
+# ============================================================
+# PROMPT
+# ============================================================
+
+def _tao_prompt(
+    hanh_dong,
+    symbol,
+    context,
+    cau_hoi="",
+):
+
+    yeu_cau = {
+        "xu_huong": """
+Phân tích xu hướng hiện tại.
+Tập trung vào giá, SMA20, SMA50, RSI, MACD,
+động lượng, volatility và thanh khoản.
+Chỉ kết luận dựa trên dữ liệu được cung cấp.
+""",
+        "rui_ro": """
+Phân tích rủi ro.
+Tập trung vào RSI, volatility, MACD,
+drawdown nếu có dữ liệu, thanh khoản,
+tin tức tiêu cực và các yếu tố cần theo dõi.
+Không bịa dữ liệu.
+""",
+        "tong_hop": """
+Phân tích tổng hợp toàn bộ.
+Kết hợp dữ liệu giá, chỉ báo kỹ thuật,
+Quant/ML và tin tức.
+Nêu rõ điểm tích cực, rủi ro,
+độ tin cậy của dữ liệu và kết luận.
+""",
+    }.get(
+        hanh_dong,
+        """
+Phân tích cổ phiếu dựa trên dữ liệu được cung cấp.
+""",
+    )
+
+    prompt = f"""
+Bạn là BRIAN AI INVEST LAB,
+trợ lý nghiên cứu thị trường chứng khoán Việt Nam.
+
+Hãy trả lời hoàn toàn bằng TIẾNG VIỆT.
+
+Mã cổ phiếu:
+{display_symbol(symbol)}
+
+{yeu_cau}
+
+Câu hỏi bổ sung của người dùng:
+{cau_hoi or "Không có câu hỏi bổ sung."}
+
+========================
+DỮ LIỆU THỰC TẾ
+========================
+
+{context}
+
+========================
+QUY TẮC
+========================
+
+1. Chỉ sử dụng dữ liệu được cung cấp.
+2. Không bịa số liệu.
+3. Không bịa tin tức.
+4. Phân biệt dữ liệu thực tế và nhận định.
+5. Nếu thiếu dữ liệu, nói rõ "Chưa đủ dữ liệu để kết luận."
+6. Không biến dự báo ML thành cam kết.
+7. Không đưa khuyến nghị mua/bán tuyệt đối.
+8. Đây là thông tin hỗ trợ nghiên cứu,
+   không phải khuyến nghị đầu tư cá nhân.
+
+Hãy viết rõ ràng, thực dụng, dễ đọc.
+"""
+
+    return prompt
+
+
+# ============================================================
+# HIỂN THỊ TIN
+# ============================================================
+
+def _hien_thi_tin(
+    news,
+):
+
+    if not news:
+
+        st.info(
+            "Chưa có tin tức phù hợp."
         )
 
         return
 
-    if (
-        du_lieu is None
-        or du_lieu.empty
+    for item in news:
+
+        title = str(
+            item.get(
+                "title",
+                "Không có tiêu đề",
+            )
+        ).strip()
+
+        source = str(
+            item.get(
+                "source",
+                "Nguồn không xác định",
+            )
+        ).strip()
+
+        published = str(
+            item.get(
+                "published",
+                "",
+            )
+        ).strip()
+
+        link = str(
+            item.get(
+                "link",
+                "",
+            )
+        ).strip()
+
+        with st.container(
+            border=True
+        ):
+
+            st.markdown(
+                f"**{title}**"
+            )
+
+            if source and published:
+
+                st.caption(
+                    f"{source} · {published}"
+                )
+
+            elif source:
+
+                st.caption(
+                    source
+                )
+
+            elif published:
+
+                st.caption(
+                    published
+                )
+
+            if link:
+
+                st.markdown(
+                    f"[Đọc bài ↗]({link})"
+                )
+
+
+# ============================================================
+# PAGE
+# ============================================================
+
+def render_ai_assistant():
+
+    # ========================================================
+    # HEADER
+    # ========================================================
+
+    st.subheader(
+        "🤖 AI Assistant"
+    )
+
+    st.caption(
+        "Brian Stock · AI Research"
+    )
+
+    st.title(
+        "Trợ lý phân tích đầu tư"
+    )
+
+    st.write(
+        "AI đọc dữ liệu thị trường thật, "
+        "chỉ báo kỹ thuật, Quant/ML và tin tức "
+        "để hỗ trợ nghiên cứu cổ phiếu."
+    )
+
+    # ========================================================
+    # INPUT
+    # ========================================================
+
+    symbol_default = st.session_state.get(
+        "ai_assistant_symbol",
+        "HPG",
+    )
+
+    symbol_input = st.text_input(
+        "Mã cổ phiếu",
+        value=symbol_default,
+        placeholder="Ví dụ HPG, FPT, VCB...",
+        key="ai_assistant_symbol_input",
+    )
+
+    a, b = st.columns(
+        [
+            1,
+            3,
+        ]
+    )
+
+    with a:
+
+        so_tin = st.number_input(
+            "Số tin",
+            min_value=3,
+            max_value=15,
+            value=SO_TIN_MAC_DINH,
+            step=1,
+            key="ai_assistant_news_limit",
+        )
+
+    with b:
+
+        period = st.selectbox(
+            "Khoảng dữ liệu",
+            [
+                "3mo",
+                "6mo",
+                "1y",
+                "2y",
+                "5y",
+            ],
+            index=2,
+            key="ai_assistant_period",
+        )
+
+    # ========================================================
+    # LOAD
+    # ========================================================
+
+    if st.button(
+        "Tải dữ liệu phân tích",
+        type="primary",
+        key="ai_assistant_load_button",
     ):
 
+        clean_symbol = normalize_symbol(
+            symbol_input
+        )
+
+        if not clean_symbol:
+
+            st.warning(
+                "Vui lòng nhập mã cổ phiếu."
+            )
+
+        else:
+
+            st.session_state[
+                "ai_assistant_symbol"
+            ] = clean_symbol
+
+            st.rerun()
+
+    symbol = normalize_symbol(
+        st.session_state.get(
+            "ai_assistant_symbol",
+            symbol_input,
+        )
+    )
+
+    # ========================================================
+    # CHỈ TẢI DỮ LIỆU KHI NGƯỜI DÙNG ĐÃ YÊU CẦU
+    # ========================================================
+
+    if not st.session_state.get(
+        "ai_assistant_symbol"
+    ):
+
+        st.info(
+            "Nhập mã cổ phiếu rồi bấm "
+            "«Tải dữ liệu phân tích»."
+        )
+
+        return
+
+    # ========================================================
+    # LOAD DATA
+    # ========================================================
+
+    try:
+
+        with st.spinner(
+            f"Đang tải dữ liệu {display_symbol(symbol)}..."
+        ):
+
+            df = load_market_data(
+                symbol,
+                period,
+            )
+
+    except Exception as error:
+
         st.error(
-            "Không có dữ liệu để phân tích."
+            f"Không thể tải dữ liệu "
+            f"{display_symbol(symbol)}."
+        )
+
+        st.code(
+            str(error)
+        )
+
+        return
+
+    if df is None or df.empty:
+
+        st.warning(
+            "Không có dữ liệu thị trường."
         )
 
         return
@@ -608,246 +764,291 @@ def render_ai_assistant():
     # SNAPSHOT
     # ========================================================
 
-    anh_chup = market_snapshot(
-        du_lieu
+    snapshot = market_snapshot(
+        df
     )
 
-    st.markdown(
-        f"""
-        <div class="section-title">
-            📈 {html.escape(display_symbol(ma))}
-        </div>
-        """,
-        unsafe_allow_html=True,
+    price = _so(
+        snapshot.get("price")
     )
 
-    a, b, c, d = st.columns(4)
+    change = _so(
+        snapshot.get("change_1d")
+    )
 
-    with a:
+    rsi = _so(
+        snapshot.get("rsi")
+    )
 
-        gia = _so(
-            anh_chup.get(
-                "price"
-            ),
-            None,
-        )
+    volume = _so(
+        snapshot.get("volume")
+    )
+
+    # ========================================================
+    # STOCK
+    # ========================================================
+
+    st.subheader(
+        f"📈 {display_symbol(symbol)}"
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
+
+    with m1:
 
         st.metric(
             "Giá",
-            (
-                f"{gia:,.0f}"
-                if gia is not None
-                else "—"
-            ),
+            _fmt_gia(price),
         )
 
-    with b:
-
-        thay_doi = _so(
-            anh_chup.get(
-                "change_1d"
-            ),
-            None,
-        )
+    with m2:
 
         st.metric(
             "1D",
-            (
-                f"{thay_doi:+.2f}%"
-                if thay_doi is not None
-                else "—"
-            ),
+            _fmt_pct(change),
         )
 
-    with c:
-
-        gia_tri_rsi = _so(
-            anh_chup.get(
-                "rsi"
-            ),
-            None,
-        )
+    with m3:
 
         st.metric(
             "RSI",
-            (
-                f"{gia_tri_rsi:.1f}"
-                if gia_tri_rsi is not None
-                else "—"
-            ),
+            _fmt_rsi(rsi),
         )
 
-    with d:
-
-        khoi_luong = _so(
-            anh_chup.get(
-                "volume"
-            ),
-            None,
-        )
+    with m4:
 
         st.metric(
             "Khối lượng",
-            _dinh_dang_khoi_luong(
-                khoi_luong
-            ),
+            _fmt_volume(volume),
         )
 
     # ========================================================
     # CÂU HỎI
     # ========================================================
 
-    cau_hoi = st.text_area(
+    st.text_area(
         "Câu hỏi cho AI",
         placeholder=(
             "Ví dụ: Hãy đánh giá xu hướng hiện tại "
-            "của MSR và những rủi ro cần chú ý."
+            "của HPG và những rủi ro cần chú ý."
         ),
-        height=130,
-        key="ai_question",
+        key="ai_assistant_question",
+        height=100,
     )
 
     # ========================================================
-    # PHÂN TÍCH NHANH
+    # ACTION BUTTONS
     # ========================================================
 
-    col_1, col_2, col_3 = st.columns(3)
-
-    with col_1:
-
-        if st.button(
-            "Phân tích xu hướng",
-            key="ai_trend",
-            width="stretch",
-        ):
-
-            cau_hoi_hien_tai = (
-                "Hãy phân tích xu hướng "
-                "ngắn hạn và trung hạn."
-            )
-
-            thong_tin = (
-                _tao_thong_tin_phan_tich(
-                    ma,
-                    du_lieu,
-                )
-            )
-
-            with st.spinner(
-                "AI đang phân tích..."
-            ):
-
-                ket_qua = _hoi_ai(
-                    cau_hoi_hien_tai,
-                    thong_tin,
-                )
-
-            st.session_state[
-                "ai_result"
-            ] = ket_qua
-
-    with col_2:
-
-        if st.button(
-            "Phân tích rủi ro",
-            key="ai_risk",
-            width="stretch",
-        ):
-
-            cau_hoi_hien_tai = (
-                "Hãy phân tích các rủi ro "
-                "kỹ thuật và biến động cần chú ý."
-            )
-
-            thong_tin = (
-                _tao_thong_tin_phan_tich(
-                    ma,
-                    du_lieu,
-                )
-            )
-
-            with st.spinner(
-                "AI đang phân tích..."
-            ):
-
-                ket_qua = _hoi_ai(
-                    cau_hoi_hien_tai,
-                    thong_tin,
-                )
-
-            st.session_state[
-                "ai_result"
-            ] = ket_qua
-
-    with col_3:
-
-        if st.button(
-            "Phân tích tổng hợp",
-            key="ai_full",
-            width="stretch",
-        ):
-
-            cau_hoi_hien_tai = (
-                cau_hoi.strip()
-                if cau_hoi.strip()
-                else (
-                    "Hãy phân tích tổng hợp "
-                    "cổ phiếu này."
-                )
-            )
-
-            thong_tin = (
-                _tao_thong_tin_phan_tich(
-                    ma,
-                    du_lieu,
-                )
-            )
-
-            with st.spinner(
-                "AI đang phân tích..."
-            ):
-
-                ket_qua = _hoi_ai(
-                    cau_hoi_hien_tai,
-                    thong_tin,
-                )
-
-            st.session_state[
-                "ai_result"
-            ] = ket_qua
-
-    # ========================================================
-    # KẾT QUẢ
-    # ========================================================
-
-    ket_qua = st.session_state.get(
-        "ai_result"
+    st.subheader(
+        "🧠 Phân tích"
     )
 
-    if ket_qua:
+    b1, b2, b3 = st.columns(3)
 
-        st.markdown(
-            '<div class="section-title">🧠 Kết quả AI</div>',
-            unsafe_allow_html=True,
+    with b1:
+
+        ask_trend = st.button(
+            "📈 Phân tích xu hướng",
+            key="ai_action_trend",
+            use_container_width=True,
         )
 
-        st.markdown(
-            ket_qua
+    with b2:
+
+        ask_risk = st.button(
+            "⚠️ Phân tích rủi ro",
+            key="ai_action_risk",
+            use_container_width=True,
+        )
+
+    with b3:
+
+        ask_total = st.button(
+            "📊 Phân tích tổng hợp",
+            key="ai_action_total",
+            use_container_width=True,
         )
 
     # ========================================================
-    # DỮ LIỆU DÙNG ĐỂ PHÂN TÍCH
+    # NEWS
+    # ========================================================
+
+    need_analysis = (
+        ask_trend
+        or ask_risk
+        or ask_total
+    )
+
+    news = []
+
+    quant = None
+
+    if need_analysis:
+
+        with st.spinner(
+            "Đang thu thập tin tức và chạy Quant/ML..."
+        ):
+
+            news = _lay_tin_tuc(
+                symbol,
+                int(so_tin),
+            )
+
+            try:
+
+                quant = build_quant(
+                    df
+                )
+
+            except Exception:
+
+                quant = None
+
+        # ----------------------------------------------------
+        # Context
+        # ----------------------------------------------------
+
+        context = _tao_context(
+            symbol,
+            df,
+            news,
+            quant,
+        )
+
+        question = st.session_state.get(
+            "ai_assistant_question",
+            "",
+        )
+
+        if ask_trend:
+
+            action = "xu_huong"
+
+        elif ask_risk:
+
+            action = "rui_ro"
+
+        else:
+
+            action = "tong_hop"
+
+        prompt = _tao_prompt(
+            action,
+            symbol,
+            context,
+            question,
+        )
+
+        with st.spinner(
+            "AI đang phân tích..."
+        ):
+
+            answer, error = _goi_gemini(
+                prompt
+            )
+
+        # ----------------------------------------------------
+        # Kết quả
+        # ----------------------------------------------------
+
+        st.subheader(
+            "🧠 Kết quả phân tích"
+        )
+
+        if error:
+
+            st.warning(
+                error
+            )
+
+        else:
+
+            st.markdown(
+                answer
+            )
+
+    else:
+
+        st.caption(
+            "Chọn một kiểu phân tích để AI xử lý dữ liệu."
+        )
+
+    # ========================================================
+    # DỮ LIỆU AI ĐANG SỬ DỤNG
     # ========================================================
 
     with st.expander(
-        "📊 Xem dữ liệu AI đang sử dụng",
-        expanded=False,
+        "🔎 Xem dữ liệu AI đang sử dụng"
     ):
 
-        st.code(
-            _tao_thong_tin_phan_tich(
-                ma,
-                du_lieu,
-            ),
-            language="text",
+        latest = df.iloc[-1]
+
+        data_preview = pd.DataFrame(
+            {
+                "Chỉ báo": [
+                    "Giá đóng cửa",
+                    "1D",
+                    "RSI",
+                    "MACD",
+                    "SMA20",
+                    "SMA50",
+                    "Volatility20",
+                    "Khối lượng",
+                ],
+                "Giá trị": [
+                    latest.get("Close"),
+                    (
+                        latest.get("Return") * 100
+                        if pd.notna(
+                            latest.get("Return")
+                        )
+                        else None
+                    ),
+                    latest.get("RSI"),
+                    latest.get("MACD"),
+                    latest.get("SMA20"),
+                    latest.get("SMA50"),
+                    latest.get("Volatility20"),
+                    latest.get("Volume"),
+                ],
+            }
         )
+
+        st.dataframe(
+            data_preview,
+            width="stretch",
+            hide_index=True,
+        )
+
+    # ========================================================
+    # TIN TỨC
+    # ========================================================
+
+    if need_analysis:
+
+        st.subheader(
+            f"📰 Tin tức {display_symbol(symbol)}"
+        )
+
+        _hien_thi_tin(
+            news
+        )
+
+    # ========================================================
+    # FOOTER
+    # ========================================================
+
+    st.caption(
+        "BRIAN AI INVEST LAB · "
+        "Dữ liệu dùng để hỗ trợ nghiên cứu, "
+        "không phải khuyến nghị mua/bán."
+    )
+
+
+# ============================================================
+# TÊN HÀM TƯƠNG THÍCH
+# ============================================================
+
+def render_ai():
+    render_ai_assistant()
