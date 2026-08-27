@@ -1,12 +1,8 @@
+streamlit
+pandas
+numpy
+statsmodels
+scikit-learn
 fastapi
 uvicorn
 requests
-pandas
-numpy
-pyreadstat
-google-genai
-python-multipart
-streamlit
-statsmodels
-scikit-learn
-vnstock
