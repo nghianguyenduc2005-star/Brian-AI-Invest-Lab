@@ -1,6 +1,4 @@
 import streamlit as st
-import pandas as pd
-import yfinance as yf
 
 from components.cards import metric_card
 from data.market import normalize_symbol, load_market_data
@@ -9,83 +7,213 @@ from data.news import fetch_market_news
 
 
 # =========================================================
-# VN-INDEX DATA
+# VN-INDEX + THANH KHOẢN
 # =========================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_vnindex_data():
+def load_vnindex():
     """
-    Lấy dữ liệu VN-INDEX từ Yahoo Finance.
+    Lấy VN-INDEX và thanh khoản thị trường Việt Nam.
 
-    Thử nhiều symbol vì Yahoo có thể thay đổi cách đặt mã.
+    Ưu tiên vnstock.
+    Nếu nguồn không trả được volume thì thử các field
+    thanh khoản khác.
     """
 
-    symbols = [
-        "^VNINDEX.VN",
-        "^VNINDEX",
-        "VNINDEX.VN",
-    ]
+    try:
+        from vnstock import Vnstock
 
-    for symbol in symbols:
-        try:
-            df = yf.download(
-                symbol,
-                period="10d",
-                interval="1d",
-                auto_adjust=False,
-                progress=False,
-                threads=False,
+        stock = Vnstock().stock(
+            symbol="VNINDEX",
+            source="VCI"
+        )
+
+        df = stock.quote.history(
+            start="2026-01-01",
+            end=None,
+            interval="1D"
+        )
+
+        if df is None or df.empty:
+            raise ValueError("vnstock không trả dữ liệu VN-INDEX")
+
+        # Chuẩn hóa tên cột
+        df.columns = [
+            str(c).strip().lower()
+            for c in df.columns
+        ]
+
+        last = df.iloc[-1]
+
+        # -------------------------------------------------
+        # Điểm VN-INDEX
+        # -------------------------------------------------
+
+        price = None
+
+        for col in [
+            "close",
+            "close_price",
+            "index_value",
+        ]:
+            if col in df.columns:
+                value = last[col]
+
+                if value is not None:
+                    try:
+                        price = float(value)
+                        break
+                    except Exception:
+                        pass
+
+        if price is None:
+            raise ValueError(
+                f"Không tìm thấy giá VN-INDEX. "
+                f"Cột nhận được: {list(df.columns)}"
             )
 
-            if df is None or df.empty:
-                continue
+        # -------------------------------------------------
+        # Thay đổi
+        # -------------------------------------------------
 
-            # yfinance đôi khi trả MultiIndex
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+        change = 0.0
 
-            df.columns = [
-                str(col).strip().title()
-                for col in df.columns
-            ]
+        for col in [
+            "change",
+            "price_change",
+            "change_value",
+        ]:
+            if col in df.columns:
+                try:
+                    change = float(last[col])
+                    break
+                except Exception:
+                    pass
 
-            if "Close" not in df.columns:
-                continue
+        # -------------------------------------------------
+        # Volume
+        # -------------------------------------------------
 
-            df["Close"] = pd.to_numeric(
-                df["Close"],
-                errors="coerce"
-            )
+        volume = 0.0
 
-            if "Volume" in df.columns:
-                df["Volume"] = pd.to_numeric(
-                    df["Volume"],
-                    errors="coerce"
+        for col in [
+            "volume",
+            "total_match_volume",
+            "total_volume",
+            "totalmatchvolume",
+        ]:
+            if col in df.columns:
+                try:
+                    value = last[col]
+
+                    if value is not None:
+                        volume = float(value)
+
+                        if volume > 0:
+                            break
+                except Exception:
+                    pass
+
+        # -------------------------------------------------
+        # Value / GTGD
+        # -------------------------------------------------
+
+        value = 0.0
+
+        for col in [
+            "value",
+            "total_match_value",
+            "total_value",
+            "totalmatchvalue",
+        ]:
+            if col in df.columns:
+                try:
+                    v = last[col]
+
+                    if v is not None:
+                        value = float(v)
+
+                        if value > 0:
+                            break
+                except Exception:
+                    pass
+
+        # -------------------------------------------------
+        # Nếu có close nhưng không có change,
+        # tự tính từ phiên trước.
+        # -------------------------------------------------
+
+        if len(df) >= 2:
+
+            try:
+                previous = float(
+                    df.iloc[-2]["close"]
                 )
 
-            df = df.dropna(subset=["Close"])
+                if change == 0 and previous != 0:
+                    change = price - previous
 
-            if not df.empty:
-                return df
+            except Exception:
+                pass
 
-        except Exception:
-            continue
+        # -------------------------------------------------
+        # % thay đổi
+        # -------------------------------------------------
 
-    return None
+        change_pct = 0.0
+
+        if len(df) >= 2:
+
+            try:
+                previous = float(
+                    df.iloc[-2]["close"]
+                )
+
+                if previous != 0:
+                    change_pct = (
+                        (price - previous)
+                        / previous
+                        * 100
+                    )
+
+            except Exception:
+                pass
+
+        return {
+            "price": price,
+            "change": change,
+            "change_pct": change_pct,
+            "volume": volume,
+            "value": value,
+            "columns": list(df.columns),
+        }
+
+    except Exception as e:
+
+        return {
+            "price": None,
+            "change": None,
+            "change_pct": None,
+            "volume": None,
+            "value": None,
+            "error": str(e),
+        }
 
 
-# =========================================================
-# FORMAT LIQUIDITY
-# =========================================================
+def format_number(value):
+
+    if value is None:
+        return "—"
+
+    try:
+        return f"{float(value):,.0f}"
+    except Exception:
+        return "—"
+
 
 def format_volume(value):
-    """
-    Format volume:
-    19,500,000 -> 19.50M
-    1,200,000,000 -> 1.20B
-    """
 
-    if value is None or pd.isna(value):
+    if value is None or value == 0:
         return "—"
 
     value = float(value)
@@ -97,7 +225,26 @@ def format_volume(value):
         return f"{value / 1_000_000:.2f}M"
 
     if value >= 1_000:
-        return f"{value / 1_000:.1f}K"
+        return f"{value / 1_000:.2f}K"
+
+    return f"{value:,.0f}"
+
+
+def format_value(value):
+
+    if value is None or value == 0:
+        return "—"
+
+    value = float(value)
+
+    if value >= 1_000_000_000_000:
+        return f"{value / 1_000_000_000_000:.2f} nghìn tỷ"
+
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.2f} tỷ"
+
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.2f} triệu"
 
     return f"{value:,.0f}"
 
@@ -124,13 +271,20 @@ def render_dashboard():
           </h1>
 
           <p>
-            Dashboard nghiên cứu thị trường, cổ phiếu, tin tức và AI.
-            Dữ liệu được tải khi cần, không dùng dữ liệu random.
+            Dashboard nghiên cứu thị trường, cổ phiếu,
+            tin tức và AI. Dữ liệu được tải khi cần,
+            không dùng dữ liệu random.
           </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+    # =====================================================
+    # LOAD VN-INDEX
+    # =====================================================
+
+    vn = load_vnindex()
 
     # =====================================================
     # QUICK OVERVIEW
@@ -141,213 +295,181 @@ def render_dashboard():
         unsafe_allow_html=True,
     )
 
-    # Lấy VN-INDEX
-    vnindex_df = load_vnindex_data()
-
     c1, c2, c3, c4 = st.columns(4)
 
-    # -----------------------------------------------------
     # VN-INDEX
-    # -----------------------------------------------------
+
+    if vn.get("price") is not None:
+
+        vn_value = format_number(
+            vn["price"]
+        )
+
+        vn_sub = (
+            f"{vn['change']:+.2f} điểm · "
+            f"{vn['change_pct']:+.2f}%"
+        )
+
+    else:
+
+        vn_value = "—"
+        vn_sub = "Chưa lấy được dữ liệu"
+
+    # Thanh khoản
+
+    if vn.get("value"):
+        liquidity_value = format_value(
+            vn["value"]
+        )
+
+        liquidity_sub = "GTGD thị trường"
+
+    elif vn.get("volume"):
+        liquidity_value = format_volume(
+            vn["volume"]
+        )
+
+        liquidity_sub = "Khối lượng thị trường"
+
+    else:
+
+        liquidity_value = "—"
+        liquidity_sub = "Chưa có dữ liệu"
 
     with c1:
-
-        if vnindex_df is not None and not vnindex_df.empty:
-
-            latest = vnindex_df.iloc[-1]
-
-            current = float(latest["Close"])
-
-            # Tính thay đổi so với phiên trước
-            if len(vnindex_df) >= 2:
-
-                previous = float(
-                    vnindex_df.iloc[-2]["Close"]
-                )
-
-                change = current - previous
-
-                change_pct = (
-                    change / previous * 100
-                    if previous != 0
-                    else 0
-                )
-
-                st.metric(
-                    "VN-INDEX",
-                    f"{current:,.2f}",
-                    f"{change:+,.2f} ({change_pct:+.2f}%)",
-                )
-
-            else:
-
-                st.metric(
-                    "VN-INDEX",
-                    f"{current:,.2f}",
-                )
-
-        else:
-
-            metric_card(
-                "VN-INDEX",
-                "—",
-                "Chưa kết nối được nguồn chỉ số",
-            )
-
-    # -----------------------------------------------------
-    # THANH KHOẢN
-    # -----------------------------------------------------
+        metric_card(
+            "VN-INDEX",
+            vn_value,
+            vn_sub
+        )
 
     with c2:
-
-        if vnindex_df is not None and not vnindex_df.empty:
-
-            latest = vnindex_df.iloc[-1]
-
-            volume = latest.get("Volume")
-
-            if (
-                volume is not None
-                and not pd.isna(volume)
-                and float(volume) > 0
-            ):
-
-                volume_value = float(volume)
-
-                # So với phiên trước
-                delta_text = None
-
-                if len(vnindex_df) >= 2:
-
-                    previous_volume = vnindex_df.iloc[-2].get(
-                        "Volume"
-                    )
-
-                    if (
-                        previous_volume is not None
-                        and not pd.isna(previous_volume)
-                        and float(previous_volume) > 0
-                    ):
-
-                        volume_change = (
-                            volume_value / float(previous_volume) - 1
-                        ) * 100
-
-                        delta_text = (
-                            f"{volume_change:+.1f}% so với phiên trước"
-                        )
-
-                st.metric(
-                    "Thanh khoản",
-                    format_volume(volume_value),
-                    delta_text,
-                )
-
-            else:
-
-                metric_card(
-                    "Thanh khoản",
-                    "—",
-                    "Nguồn chỉ số không trả Volume",
-                )
-
-        else:
-
-            metric_card(
-                "Thanh khoản",
-                "—",
-                "Chưa có dữ liệu thị trường",
-            )
-
-    # -----------------------------------------------------
-    # NEWS
-    # -----------------------------------------------------
+        metric_card(
+            "Thanh khoản",
+            liquidity_value,
+            liquidity_sub
+        )
 
     with c3:
-
         metric_card(
             "Tin tức",
             "LIVE",
-            "Google News + nguồn Việt Nam",
+            "Google News + nguồn Việt Nam"
         )
 
-    # -----------------------------------------------------
-    # AI
-    # -----------------------------------------------------
-
     with c4:
-
         metric_card(
             "AI",
             "READY",
-            "Chỉ gọi khi yêu cầu",
+            "Chỉ gọi khi yêu cầu"
         )
 
     # =====================================================
     # VN-INDEX DETAIL
     # =====================================================
 
-    if vnindex_df is not None and not vnindex_df.empty:
+    st.markdown(
+        '<div class="section-title">📊 VN-INDEX</div>',
+        unsafe_allow_html=True,
+    )
 
-        st.markdown(
-            '<div class="section-title">📊 VN-INDEX</div>',
-            unsafe_allow_html=True,
+    i1, i2, i3, i4 = st.columns(4)
+
+    with i1:
+
+        st.metric(
+            "Điểm",
+            vn_value
         )
 
-        latest = vnindex_df.iloc[-1]
+    with i2:
 
-        index_col1, index_col2, index_col3, index_col4 = st.columns(4)
+        if vn.get("change") is not None:
 
-        current = float(latest["Close"])
-
-        if len(vnindex_df) >= 2:
-
-            previous = float(
-                vnindex_df.iloc[-2]["Close"]
-            )
-
-            change = current - previous
-
-            change_pct = (
-                change / previous * 100
-                if previous != 0
-                else 0
+            st.metric(
+                "Thay đổi",
+                f"{vn['change']:+.2f}"
             )
 
         else:
 
-            change = 0
-            change_pct = 0
-
-        with index_col1:
-
-            st.metric(
-                "Điểm",
-                f"{current:,.2f}",
-            )
-
-        with index_col2:
-
             st.metric(
                 "Thay đổi",
-                f"{change:+,.2f}",
+                "—"
             )
 
-        with index_col3:
+    with i3:
+
+        if vn.get("change_pct") is not None:
 
             st.metric(
                 "1D",
-                f"{change_pct:+.2f}%",
+                f"{vn['change_pct']:+.2f}%"
             )
 
-        with index_col4:
+        else:
 
-            volume = latest.get("Volume")
+            st.metric(
+                "1D",
+                "—"
+            )
+
+    with i4:
+
+        if vn.get("value"):
+
+            st.metric(
+                "GTGD",
+                format_value(vn["value"])
+            )
+
+        elif vn.get("volume"):
 
             st.metric(
                 "Volume",
-                format_volume(volume),
+                format_volume(vn["volume"])
             )
+
+        else:
+
+            st.metric(
+                "Thanh khoản",
+                "—"
+            )
+
+    # =====================================================
+    # DEBUG NHẸ NẾU CHƯA CÓ THANH KHOẢN
+    # =====================================================
+
+    if (
+        vn.get("price") is not None
+        and not vn.get("value")
+        and not vn.get("volume")
+    ):
+
+        with st.expander(
+            "Thông tin nguồn dữ liệu"
+        ):
+
+            st.write(
+                "VN-INDEX đã lấy được nhưng "
+                "nguồn hiện tại không trả trường "
+                "thanh khoản."
+            )
+
+            if vn.get("columns"):
+                st.write(
+                    "Các cột nhận được:"
+                )
+
+                st.code(
+                    ", ".join(vn["columns"])
+                )
+
+            if vn.get("error"):
+                st.code(
+                    vn["error"]
+                )
 
     # =====================================================
     # STOCK DATA
@@ -370,14 +492,18 @@ def render_dashboard():
 
     if st.button(
         "Tải dữ liệu",
-        type="primary",
+        type="primary"
     ):
 
-        clean_symbol = normalize_symbol(symbol)
+        clean_symbol = normalize_symbol(
+            symbol
+        )
 
         if clean_symbol:
 
-            st.session_state.dashboard_symbol = clean_symbol
+            st.session_state.dashboard_symbol = (
+                clean_symbol
+            )
 
             st.session_state.dashboard_input = (
                 symbol.upper().strip()
@@ -387,18 +513,14 @@ def render_dashboard():
 
     active = st.session_state.get(
         "dashboard_symbol",
-        "HPG.VN",
+        "HPG.VN"
     )
-
-    # =====================================================
-    # LOAD STOCK
-    # =====================================================
 
     try:
 
         df = load_market_data(
             active,
-            "1y",
+            "1y"
         )
 
         if df is None or df.empty:
@@ -413,89 +535,33 @@ def render_dashboard():
 
             a, b, c, d = st.columns(4)
 
-            # -------------------------------------------------
-            # PRICE
-            # -------------------------------------------------
-
             with a:
 
-                if "Close" in df.columns:
-
-                    st.metric(
-                        "Giá",
-                        f"{float(last['Close']):,.0f}",
-                    )
-
-                else:
-
-                    st.metric(
-                        "Giá",
-                        "—",
-                    )
-
-            # -------------------------------------------------
-            # 1D
-            # -------------------------------------------------
+                st.metric(
+                    "Giá",
+                    f"{float(last['Close']):,.0f}"
+                )
 
             with b:
 
-                if "Return" in df.columns:
-
-                    st.metric(
-                        "1D",
-                        f"{float(last['Return']) * 100:+.2f}%",
-                    )
-
-                else:
-
-                    st.metric(
-                        "1D",
-                        "—",
-                    )
-
-            # -------------------------------------------------
-            # RSI
-            # -------------------------------------------------
+                st.metric(
+                    "1D",
+                    f"{float(last['Return']) * 100:+.2f}%"
+                )
 
             with c:
 
-                if "RSI" in df.columns:
-
-                    st.metric(
-                        "RSI",
-                        f"{float(last['RSI']):.1f}",
-                    )
-
-                else:
-
-                    st.metric(
-                        "RSI",
-                        "—",
-                    )
-
-            # -------------------------------------------------
-            # VOLUME
-            # -------------------------------------------------
+                st.metric(
+                    "RSI",
+                    f"{float(last['RSI']):.1f}"
+                )
 
             with d:
 
-                if "Volume" in df.columns:
-
-                    st.metric(
-                        "Volume",
-                        f"{float(last['Volume']):,.0f}",
-                    )
-
-                else:
-
-                    st.metric(
-                        "Volume",
-                        "—",
-                    )
-
-            # -------------------------------------------------
-            # STOCK CHART
-            # -------------------------------------------------
+                st.metric(
+                    "Volume",
+                    f"{float(last['Volume']):,.0f}"
+                )
 
             try:
 
@@ -507,7 +573,7 @@ def render_dashboard():
                         fig,
                         width="stretch",
                         config={
-                            "displaylogo": False,
+                            "displaylogo": False
                         },
                     )
 
@@ -550,28 +616,22 @@ def render_dashboard():
 
                 title = n.get(
                     "title",
-                    "Không có tiêu đề",
+                    "Không có tiêu đề"
                 )
 
                 source = n.get(
                     "source",
-                    "Nguồn không xác định",
+                    "Nguồn không xác định"
                 )
 
                 published = n.get(
                     "published",
-                    "",
-                )
-
-                link = n.get(
-                    "link",
-                    "",
+                    ""
                 )
 
                 st.markdown(
                     f"""
                     <div class="news-card">
-
                       <div class="news-title">
                         {title}
                       </div>
@@ -579,17 +639,10 @@ def render_dashboard():
                       <div class="news-meta">
                         {source} · {published}
                       </div>
-
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
-
-                if link:
-
-                    st.markdown(
-                        f"[Đọc bài ↗]({link})"
-                    )
 
     except Exception as e:
 
