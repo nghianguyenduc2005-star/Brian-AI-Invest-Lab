@@ -819,3 +819,35 @@ def render_dashboard():
                     st.markdown(
                         f"[Đọc bài ↗]({link})"
                     )
+# ============================================================
+# AI DASHBOARD
+# ============================================================
+
+prompt = dashboard_prompt(
+    vn_index={
+        "diem": vn_diem,
+        "thay_doi": vn_thay_doi,
+        "thay_doi_1d": vn_1d,
+        "khoi_luong": vn_khoi_luong,
+        "gia_tri": vn_gia_tri,
+    },
+
+    stock_symbol=display_symbol(
+        ma_dang_xem
+    ),
+
+    stock_snapshot=anh_chup,
+
+    news=tin_tuc,
+)
+
+render_ai_panel(
+    title="🤖 AI Market Brief",
+    description=(
+        "AI tổng hợp VN-INDEX, cổ phiếu đang theo dõi "
+        "và tin tức mới nhất."
+    ),
+    prompt=prompt,
+    button_label="🤖 Phân tích dashboard",
+    key="dashboard_ai_analysis",
+)
