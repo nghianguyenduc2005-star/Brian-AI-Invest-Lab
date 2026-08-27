@@ -1,742 +1,428 @@
-import os
-import re
-import html
-import requests
-import numpy as np
+import streamlit as st
 import pandas as pd
-import streamlit as st
+import numpy as np
 import yfinance as yf
+import feedparser
+import html
+import re
+from datetime import datetime, timedelta
+
 import statsmodels.api as sm
+from sklearn.ensemble import RandomForestRegressor
 import streamlit as st
+
 gemini_key = st.secrets["GEMINI_API_KEY"]
 
-from datetime import datetime, timedelta
-from urllib.parse import quote
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, r2_score
+# Gemini
+from google import genai
 
 
 # =========================================================
-# 1. CẤU HÌNH APP
+# CONFIG
 # =========================================================
 
 st.set_page_config(
-    page_title="Brian AI Invest Lab",
-    page_icon="⚡",
+    page_title="BRIAN AI — Investment Research Lab",
+    page_icon="🅱️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
 # =========================================================
-# 2. CSS — DARK LUXURY
+# CUSTOM CSS
 # =========================================================
 
 st.markdown(
     """
-    <style>
+<style>
 
-    /* ---------- GLOBAL ---------- */
+    /* ===== GLOBAL ===== */
 
     .stApp {
         background:
-            radial-gradient(
-                circle at 80% 0%,
-                rgba(37, 56, 88, 0.20),
-                transparent 35%
-            ),
-            #080b10;
-        color: #F4F7FA;
+            radial-gradient(circle at 80% 0%, rgba(212,175,55,0.08), transparent 28%),
+            linear-gradient(180deg, #070a0f 0%, #0a0d12 100%);
+        color: #f4f4f5;
     }
 
-    .main .block-container {
-        max-width: 1500px;
+    section[data-testid="stSidebar"] {
+        background: #080b10;
+        border-right: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .block-container {
+        max-width: 1450px;
         padding-top: 2rem;
         padding-bottom: 4rem;
     }
 
-    /* ---------- SIDEBAR ---------- */
-
-    section[data-testid="stSidebar"] {
-        background: #0a0e14;
-        border-right: 1px solid rgba(255,255,255,0.07);
-    }
-
-    section[data-testid="stSidebar"] .block-container {
-        padding-top: 1.5rem;
-    }
-
-    /* ---------- TYPOGRAPHY ---------- */
-
-    h1, h2, h3 {
-        letter-spacing: -0.5px;
-    }
-
-    .muted {
-        color: #8D98A8;
-        font-size: 0.85rem;
-    }
-
-    .gold {
-        color: #D6B36A;
-    }
-
-    /* ---------- BRAND ---------- */
+    /* ===== SIDEBAR BRAND ===== */
 
     .brand {
         display: flex;
         align-items: center;
-        gap: 14px;
-        padding: 4px 0 20px 0;
+        gap: 13px;
+        padding: 8px 0 25px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        margin-bottom: 25px;
     }
 
-    .brand-mark {
+    .brand-logo {
         width: 48px;
         height: 48px;
         border-radius: 14px;
-        background:
-            linear-gradient(
-                135deg,
-                #D6B36A,
-                #8E6B32
-            );
+        background: linear-gradient(135deg, #d8b45a, #8e6a25);
         display: flex;
         align-items: center;
         justify-content: center;
-        color: #080b10;
-        font-size: 23px;
+        color: #080a0e;
+        font-size: 25px;
         font-weight: 900;
-        box-shadow:
-            0 10px 30px rgba(214,179,106,0.18);
+        box-shadow: 0 8px 30px rgba(212,175,55,0.18);
     }
 
-    .brand-title {
-        font-size: 1.35rem;
+    .brand-name {
+        font-size: 20px;
         font-weight: 800;
-        line-height: 1.1;
+        letter-spacing: 0.4px;
     }
 
-    .brand-subtitle {
-        color: #8994A4;
-        font-size: 0.78rem;
-        margin-top: 4px;
+    .brand-sub {
+        font-size: 10px;
+        color: #9ca3af;
+        letter-spacing: 1.2px;
+        margin-top: 2px;
     }
 
-    /* ---------- HERO ---------- */
+    /* ===== HERO ===== */
 
     .hero {
-        padding: 28px 32px;
+        padding: 34px 38px;
         border-radius: 22px;
         background:
             linear-gradient(
                 135deg,
-                rgba(20,28,40,0.98),
-                rgba(10,14,20,0.98)
+                rgba(22,30,42,0.95),
+                rgba(10,13,18,0.95)
             );
-        border: 1px solid rgba(214,179,106,0.16);
-        box-shadow:
-            0 25px 70px rgba(0,0,0,0.28);
-        margin-bottom: 25px;
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 25px 70px rgba(0,0,0,0.28);
+        margin-bottom: 28px;
     }
 
     .hero-label {
-        color: #D6B36A;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 2px;
+        color: #d8b45a;
+        font-size: 12px;
         font-weight: 700;
-        margin-bottom: 8px;
-    }
-
-    .hero-title {
-        font-size: 2.2rem;
-        font-weight: 850;
-        margin-bottom: 8px;
-    }
-
-    .hero-text {
-        color: #9BA6B6;
-        font-size: 0.95rem;
-        max-width: 900px;
-        line-height: 1.6;
-    }
-
-    /* ---------- KPI CARDS ---------- */
-
-    .kpi-card {
-        background: #0E131B;
-        border: 1px solid rgba(255,255,255,0.065);
-        border-radius: 16px;
-        padding: 18px 20px;
-        min-height: 115px;
-    }
-
-    .kpi-label {
-        color: #8F9AAA;
-        font-size: 0.78rem;
+        letter-spacing: 2px;
+        text-transform: uppercase;
         margin-bottom: 10px;
     }
 
-    .kpi-value {
-        color: #F5F7FA;
-        font-size: 1.65rem;
+    .hero-title {
+        font-size: 38px;
+        font-weight: 850;
+        line-height: 1.1;
+        margin-bottom: 12px;
+    }
+
+    .hero-text {
+        color: #aeb7c5;
+        font-size: 15px;
+        line-height: 1.7;
+        max-width: 850px;
+    }
+
+    /* ===== SECTION ===== */
+
+    .section-title {
+        font-size: 22px;
+        font-weight: 800;
+        margin: 30px 0 16px 0;
+    }
+
+    /* ===== METRICS ===== */
+
+    .metric-card {
+        background: linear-gradient(145deg, #121821, #0d1118);
+        border: 1px solid rgba(255,255,255,0.07);
+        border-radius: 16px;
+        padding: 18px 20px;
+        min-height: 105px;
+    }
+
+    .metric-label {
+        color: #8993a2;
+        font-size: 12px;
+        margin-bottom: 7px;
+    }
+
+    .metric-value {
+        color: #f5f5f5;
+        font-size: 27px;
         font-weight: 800;
     }
 
-    .kpi-sub {
-        color: #727E8E;
-        font-size: 0.75rem;
+    .metric-sub {
+        color: #7f8998;
+        font-size: 11px;
         margin-top: 5px;
     }
 
-    /* ---------- SECTION ---------- */
-
-    .section-title {
-        font-size: 1.25rem;
-        font-weight: 800;
-        margin: 30px 0 12px 0;
-    }
-
-    .section-desc {
-        color: #7F8B9B;
-        font-size: 0.84rem;
-        margin-bottom: 15px;
-    }
-
-    /* ---------- AI REPORT ---------- */
+    /* ===== AI REPORT ===== */
 
     .ai-box {
         background:
             linear-gradient(
                 145deg,
-                rgba(20,29,43,0.98),
-                rgba(11,15,22,0.98)
+                rgba(26,33,45,0.96),
+                rgba(12,16,23,0.96)
             );
-        border: 1px solid rgba(91,141,214,0.20);
-        border-radius: 20px;
-        padding: 26px 30px;
-        box-shadow:
-            0 20px 60px rgba(0,0,0,0.20);
+        border: 1px solid rgba(216,180,90,0.20);
+        border-radius: 18px;
+        padding: 25px 28px;
+        line-height: 1.75;
+        box-shadow: 0 20px 50px rgba(0,0,0,0.20);
     }
 
-    .ai-badge {
-        display: inline-block;
-        padding: 5px 10px;
-        border-radius: 999px;
-        background: rgba(91,141,214,0.12);
-        color: #75A8EA;
-        font-size: 0.72rem;
-        font-weight: 700;
+    .ai-title {
+        color: #d8b45a;
+        font-size: 17px;
+        font-weight: 800;
         margin-bottom: 12px;
     }
 
-    /* ---------- NEWS ---------- */
+    /* ===== NEWS ===== */
 
     .news-card {
+        background: #10151d;
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 14px;
         padding: 16px 18px;
         margin-bottom: 10px;
-        border-radius: 14px;
-        background: #0D1219;
-        border: 1px solid rgba(255,255,255,0.055);
     }
 
     .news-title {
-        color: #E9EDF2;
+        font-size: 14px;
         font-weight: 700;
         line-height: 1.45;
     }
 
     .news-meta {
-        color: #6F7B8B;
-        font-size: 0.72rem;
+        color: #7f8998;
+        font-size: 11px;
         margin-top: 7px;
     }
 
-    /* ---------- SIGNAL ---------- */
+    /* ===== TABLE ===== */
 
-    .signal {
-        border-radius: 16px;
-        padding: 20px;
-        background: #0E131B;
-        border: 1px solid rgba(255,255,255,0.06);
+    div[data-testid="stDataFrame"] {
+        border-radius: 14px;
+        overflow: hidden;
     }
 
-    .signal-title {
-        color: #8994A4;
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-
-    .signal-value {
-        font-size: 1.45rem;
-        font-weight: 850;
-        margin-top: 7px;
-    }
-
-    /* ---------- FOOTER ---------- */
-
-    .footer {
-        text-align: center;
-        color: #596575;
-        font-size: 0.72rem;
-        padding-top: 35px;
-        border-top: 1px solid rgba(255,255,255,0.05);
-        margin-top: 45px;
-    }
-
-    /* ---------- BUTTON ---------- */
+    /* ===== BUTTON ===== */
 
     .stButton > button {
-        border-radius: 10px;
-        border: 1px solid rgba(214,179,106,0.28);
-        background: #151B24;
-        color: #F2F4F7;
+        width: 100%;
+        border-radius: 12px;
+        border: 1px solid rgba(216,180,90,0.35);
+        background: linear-gradient(135deg, #171d26, #10151c);
+        color: #f4f4f5;
         font-weight: 700;
+        min-height: 45px;
     }
 
     .stButton > button:hover {
-        border-color: #D6B36A;
-        color: #D6B36A;
+        border-color: #d8b45a;
+        color: #d8b45a;
     }
 
-    </style>
-    """,
+    /* ===== DIVIDER ===== */
+
+    hr {
+        border-color: rgba(255,255,255,0.07);
+    }
+
+</style>
+""",
     unsafe_allow_html=True,
 )
 
 
 # =========================================================
-# 3. HÀM TIỆN ÍCH
+# HELPERS
 # =========================================================
 
-def get_secret(name):
-    """Lấy secret từ Streamlit hoặc environment."""
-    try:
-        value = st.secrets.get(name)
-        if value:
-            return value
-    except Exception:
-        pass
+def normalize_symbol(symbol: str) -> str:
+    """
+    Người dùng nhập:
+        HPG
+        FPT
+        VCB
 
-    return os.getenv(name)
+    Yahoo Finance:
+        HPG.VN
+        FPT.VN
+        VCB.VN
+    """
+
+    symbol = symbol.strip().upper()
+
+    if "." in symbol:
+        return symbol
+
+    return f"{symbol}.VN"
 
 
-def fmt_number(value, decimals=2):
+def format_vnd(value):
     if value is None or pd.isna(value):
-        return "N/A"
+        return "—"
 
-    return f"{value:,.{decimals}f}"
+    return f"{value:,.0f} ₫"
 
 
-def fmt_percent(value, decimals=2):
+def format_percent(value):
     if value is None or pd.isna(value):
-        return "N/A"
+        return "—"
 
-    return f"{value:.{decimals}f}%"
-
-
-def clean_symbol(symbol):
-    symbol = symbol.upper().strip()
-    symbol = re.sub(r"[^A-Z0-9.\-]", "", symbol)
-    return symbol
+    return f"{value:.2f}%"
 
 
-# =========================================================
-# 4. LOGO THƯƠNG HIỆU
-# =========================================================
+def calculate_rsi(series, period=14):
+    delta = series.diff()
 
-def render_brand():
-    logo_path = "logo.png"
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    if os.path.exists(logo_path):
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
 
-        st.sidebar.image(
-            logo_path,
-            width=180
-        )
+    rs = avg_gain / avg_loss.replace(0, np.nan)
 
-    else:
+    rsi = 100 - (100 / (1 + rs))
 
-        st.sidebar.markdown(
-            """
-            <div class="brand">
-                <div class="brand-mark">B</div>
-                <div>
-                    <div class="brand-title">
-                        BRIAN AI
-                    </div>
-                    <div class="brand-subtitle">
-                        INVESTMENT RESEARCH LAB
-                    </div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+    return rsi
 
 
-render_brand()
+def calculate_macd(series):
+    ema12 = series.ewm(span=12, adjust=False).mean()
+    ema26 = series.ewm(span=26, adjust=False).mean()
+
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+
+    return macd, signal
 
 
 # =========================================================
-# 5. SIDEBAR
-# =========================================================
-
-st.sidebar.markdown(
-    "### ⚙️ Thiết lập phân tích"
-)
-
-ticker = st.sidebar.text_input(
-    "Mã cổ phiếu",
-    value="HPG",
-    help="Ví dụ: HPG, FPT, VCB, VIC..."
-)
-
-ticker = clean_symbol(ticker)
-
-period = st.sidebar.selectbox(
-    "Khoảng dữ liệu",
-    [
-        "3 tháng",
-        "6 tháng",
-        "1 năm",
-        "2 năm",
-        "5 năm",
-    ],
-    index=2
-)
-
-news_days = st.sidebar.slider(
-    "Tin tức gần nhất",
-    min_value=3,
-    max_value=14,
-    value=7
-)
-
-st.sidebar.markdown("---")
-
-run_analysis = st.sidebar.button(
-    "🚀 Chạy phân tích",
-    use_container_width=True
-)
-
-st.sidebar.markdown("---")
-
-st.sidebar.caption(
-    "Brian AI Invest Lab"
-)
-
-st.sidebar.caption(
-    "Quant • Machine Learning • News Intelligence"
-)
-
-
-# =========================================================
-# 6. MAPPING PERIOD
-# =========================================================
-
-period_map = {
-    "3 tháng": "3mo",
-    "6 tháng": "6mo",
-    "1 năm": "1y",
-    "2 năm": "2y",
-    "5 năm": "5y",
-}
-
-
-# =========================================================
-# 7. TÍNH CHỈ BÁO KỸ THUẬT
-# =========================================================
-
-def calculate_indicators(df):
-
-    df = df.copy()
-
-    close = df["Close"]
-
-    # Return
-    df["Return"] = close.pct_change()
-
-    # SMA
-    df["SMA20"] = close.rolling(20).mean()
-    df["SMA50"] = close.rolling(50).mean()
-
-    # EMA
-    ema12 = close.ewm(
-        span=12,
-        adjust=False
-    ).mean()
-
-    ema26 = close.ewm(
-        span=26,
-        adjust=False
-    ).mean()
-
-    # MACD
-    df["MACD"] = ema12 - ema26
-
-    df["MACD_Signal"] = (
-        df["MACD"]
-        .ewm(
-            span=9,
-            adjust=False
-        )
-        .mean()
-    )
-
-    # RSI
-    delta = close.diff()
-
-    gain = delta.clip(
-        lower=0
-    )
-
-    loss = -delta.clip(
-        upper=0
-    )
-
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-
-    rs = avg_gain / avg_loss.replace(
-        0,
-        np.nan
-    )
-
-    df["RSI"] = 100 - (
-        100 / (1 + rs)
-    )
-
-    # Volatility annualized
-    df["Volatility"] = (
-        df["Return"]
-        .rolling(20)
-        .std()
-        * np.sqrt(252)
-        * 100
-    )
-
-    return df
-
-
-# =========================================================
-# 8. LẤY DỮ LIỆU THỊ TRƯỜNG
+# MARKET DATA
 # =========================================================
 
 @st.cache_data(ttl=900)
-def load_market_data(symbol, selected_period):
+def get_market_data(symbol, period):
 
-    stock = yf.Ticker(symbol)
-
-    df = stock.history(
-        period=selected_period,
-        auto_adjust=False
-    )
-
-    if df is None or df.empty:
-        raise ValueError(
-            f"Không tìm thấy dữ liệu cho mã {symbol}."
-        )
-
-    df = df.reset_index()
-
-    if "Date" not in df.columns:
-        df.rename(
-            columns={
-                df.columns[0]: "Date"
-            },
-            inplace=True
-        )
-
-    df["Date"] = pd.to_datetime(
-        df["Date"]
-    )
-
-    df = df.set_index(
-        "Date"
-    )
-
-    required = [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume"
-    ]
-
-    df = df[
-        [
-            c for c in required
-            if c in df.columns
-        ]
-    ].copy()
-
-    df = calculate_indicators(
-        df
-    )
-
-    return df
-
-
-# =========================================================
-# 9. THÔNG TIN CƠ BẢN CÔNG TY
-# =========================================================
-
-@st.cache_data(ttl=3600)
-def load_company_info(symbol):
+    yahoo_symbol = normalize_symbol(symbol)
 
     try:
 
-        info = yf.Ticker(
-            symbol
-        ).info
+        ticker = yf.Ticker(yahoo_symbol)
 
-        return {
-            "name": info.get(
-                "longName",
-                symbol
-            ),
-            "sector": info.get(
-                "sector",
-                "N/A"
-            ),
-            "industry": info.get(
-                "industry",
-                "N/A"
-            ),
-            "market_cap": info.get(
-                "marketCap"
-            ),
-            "pe": info.get(
-                "trailingPE"
-            ),
-            "pb": info.get(
-                "priceToBook"
-            ),
-            "dividend": info.get(
-                "dividendYield"
-            ),
-        }
+        data = ticker.history(
+            period=period,
+            interval="1d",
+            auto_adjust=False
+        )
 
-    except Exception:
+        if data is None or data.empty:
+            return None, yahoo_symbol, "Không tìm thấy dữ liệu."
 
-        return {
-            "name": symbol,
-            "sector": "N/A",
-            "industry": "N/A",
-            "market_cap": None,
-            "pe": None,
-            "pb": None,
-            "dividend": None,
-        }
+        data = data.copy()
+
+        # Clean columns
+        data = data[[
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume"
+        ]]
+
+        # Remove timezone
+        if getattr(data.index, "tz", None) is not None:
+            data.index = data.index.tz_localize(None)
+
+        # Indicators
+        data["Return"] = data["Close"].pct_change() * 100
+
+        data["RSI"] = calculate_rsi(data["Close"])
+
+        data["MACD"], data["MACD_Signal"] = calculate_macd(
+            data["Close"]
+        )
+
+        data["Volatility"] = (
+            data["Return"]
+            .rolling(20)
+            .std()
+            * np.sqrt(252)
+        )
+
+        data["MA20"] = data["Close"].rolling(20).mean()
+        data["MA50"] = data["Close"].rolling(50).mean()
+
+        data.dropna(subset=["Close"], inplace=True)
+
+        return data, yahoo_symbol, None
+
+    except Exception as e:
+
+        return None, yahoo_symbol, str(e)
 
 
 # =========================================================
-# 10. LẤY TIN TỨC
+# NEWS
 # =========================================================
 
 @st.cache_data(ttl=900)
-def load_news(symbol, days=7):
+def get_news(symbol, limit=7):
 
-    query = quote(
-        f"{symbol} cổ phiếu"
+    clean_symbol = symbol.upper().replace(".VN", "")
+
+    query = f"{clean_symbol} chứng khoán"
+
+    rss_url = (
+        "https://news.google.com/rss/search?"
+        f"q={query}&hl=vi&gl=VN&ceid=VN:vi"
     )
-
-    url = (
-        "https://news.google.com/rss/search"
-        f"?q={query}"
-        "&hl=vi"
-        "&gl=VN"
-        "&ceid=VN:vi"
-    )
-
-    headers = {
-        "User-Agent":
-            "Mozilla/5.0 "
-            "(Windows NT 10.0; Win64; x64)"
-    }
 
     try:
 
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=10
-        )
+        feed = feedparser.parse(rss_url)
 
-        response.raise_for_status()
+        news = []
 
-        from xml.etree import ElementTree
+        for entry in feed.entries[:limit]:
 
-        root = ElementTree.fromstring(
-            response.content
-        )
-
-        items = []
-
-        cutoff = datetime.utcnow() - timedelta(
-            days=days
-        )
-
-        for item in root.findall(
-            ".//item"
-        ):
-
-            title = item.findtext(
-                "title",
-                default=""
+            title = html.unescape(
+                re.sub("<.*?>", "", entry.get("title", ""))
             )
 
-            link = item.findtext(
-                "link",
-                default=""
+            link = entry.get("link", "")
+
+            published = entry.get(
+                "published",
+                ""
             )
 
-            pub_date = item.findtext(
-                "pubDate",
-                default=""
-            )
+            news.append({
+                "title": title,
+                "link": link,
+                "published": published
+            })
 
-            source_node = item.find(
-                "source"
-            )
-
-            source = (
-                source_node.text
-                if source_node is not None
-                else "Google News"
-            )
-
-            try:
-
-                published = pd.to_datetime(
-                    pub_date,
-                    utc=True
-                ).tz_convert(None)
-
-            except Exception:
-
-                published = pd.Timestamp.now()
-
-            if published.to_pydatetime() < cutoff:
-                continue
-
-            items.append(
-                {
-                    "title": title,
-                    "link": link,
-                    "source": source,
-                    "published": published.strftime(
-                        "%d/%m/%Y %H:%M"
-                    ),
-                }
-            )
-
-            if len(items) >= 15:
-                break
-
-        return items
+        return news
 
     except Exception:
 
@@ -744,351 +430,228 @@ def load_news(symbol, days=7):
 
 
 # =========================================================
-# 11. OLS REGRESSION
+# QUANT ANALYSIS
 # =========================================================
 
-def run_ols(df):
+def run_quant_analysis(data):
 
-    data = df[
-        [
-            "Return",
-            "Volume",
-            "RSI",
-            "MACD",
-            "Volatility",
-        ]
-    ].replace(
-        [np.inf, -np.inf],
-        np.nan
-    ).dropna()
-
-    if len(data) < 40:
-        return None
-
-    y = data["Return"]
-
-    x = data[
-        [
-            "Volume",
-            "RSI",
-            "MACD",
-            "Volatility",
-        ]
-    ]
-
-    x = sm.add_constant(x)
-
-    model = sm.OLS(
-        y,
-        x
-    ).fit()
-
-    return model
-
-
-# =========================================================
-# 12. RANDOM FOREST
-# =========================================================
-
-def run_random_forest(df):
-
-    data = df[
-        [
-            "Return",
-            "Volume",
-            "RSI",
-            "MACD",
-            "Volatility",
-        ]
-    ].replace(
-        [np.inf, -np.inf],
-        np.nan
-    ).dropna()
-
-    if len(data) < 50:
-        return None
+    df = data.copy()
 
     features = [
         "Volume",
         "RSI",
         "MACD",
         "Volatility",
+        "MA20",
+        "MA50"
     ]
 
-    X = data[features]
-    y = data["Return"]
+    available = [
+        x for x in features
+        if x in df.columns
+    ]
 
-    split = int(
-        len(data) * 0.8
-    )
+    model_df = df[
+        ["Return"] + available
+    ].dropna()
 
-    X_train = X.iloc[:split]
-    X_test = X.iloc[split:]
+    if len(model_df) < 30:
 
-    y_train = y.iloc[:split]
-    y_test = y.iloc[split:]
+        return {
+            "ols": None,
+            "importance": {},
+            "r2": None
+        }
 
-    model = RandomForestRegressor(
-        n_estimators=250,
-        max_depth=8,
-        random_state=42,
-        min_samples_leaf=3,
-        n_jobs=-1,
-    )
+    y = model_df["Return"]
 
-    model.fit(
-        X_train,
-        y_train
-    )
+    X = model_df[available]
 
-    predictions = model.predict(
-        X_test
-    )
+    X = sm.add_constant(X)
 
-    mae = mean_absolute_error(
-        y_test,
-        predictions
-    )
+    try:
 
-    r2 = r2_score(
-        y_test,
-        predictions
-    )
+        ols = sm.OLS(
+            y,
+            X
+        ).fit()
 
-    importance = pd.Series(
-        model.feature_importances_,
-        index=features
-    ).sort_values(
-        ascending=False
-    )
+        r2 = float(ols.rsquared)
+
+    except Exception:
+
+        ols = None
+        r2 = None
+
+    importance = {}
+
+    try:
+
+        rf = RandomForestRegressor(
+            n_estimators=150,
+            random_state=42,
+            min_samples_leaf=3
+        )
+
+        rf.fit(
+            model_df[available],
+            y
+        )
+
+        importance = dict(
+            zip(
+                available,
+                rf.feature_importances_
+            )
+        )
+
+    except Exception:
+        importance = {}
 
     return {
-        "model": model,
+        "ols": ols,
         "importance": importance,
-        "mae": mae,
-        "r2": r2,
-        "actual": y_test,
-        "predicted": predictions,
+        "r2": r2
     }
 
 
 # =========================================================
-# 13. XÁC ĐỊNH TÍN HIỆU
-# =========================================================
-
-def determine_signal(df):
-
-    last = df.iloc[-1]
-
-    score = 0
-    reasons = []
-
-    # RSI
-    rsi = last["RSI"]
-
-    if rsi < 30:
-        score += 1
-        reasons.append(
-            "RSI đang ở vùng quá bán."
-        )
-
-    elif rsi > 70:
-        score -= 1
-        reasons.append(
-            "RSI đang ở vùng quá mua."
-        )
-
-    # MACD
-    if last["MACD"] > last["MACD_Signal"]:
-        score += 1
-        reasons.append(
-            "MACD nằm trên đường tín hiệu."
-        )
-
-    else:
-        score -= 1
-        reasons.append(
-            "MACD nằm dưới đường tín hiệu."
-        )
-
-    # SMA
-    if last["Close"] > last["SMA20"]:
-        score += 1
-        reasons.append(
-            "Giá nằm trên SMA20."
-        )
-
-    else:
-        score -= 1
-        reasons.append(
-            "Giá nằm dưới SMA20."
-        )
-
-    if last["SMA20"] > last["SMA50"]:
-        score += 1
-        reasons.append(
-            "SMA20 nằm trên SMA50."
-        )
-
-    else:
-        score -= 1
-        reasons.append(
-            "SMA20 nằm dưới SMA50."
-        )
-
-    if score >= 2:
-        label = "TÍCH CỰC"
-    elif score <= -2:
-        label = "TIÊU CỰC"
-    else:
-        label = "TRUNG LẬP"
-
-    return label, score, reasons
-
-
-# =========================================================
-# 14. TẠO DATA SUMMARY CHO GEMINI
-# =========================================================
-
-def build_market_summary(
-    symbol,
-    df,
-    company,
-    ols,
-    rf
-):
-
-    last = df.iloc[-1]
-
-    price = last["Close"]
-
-    first_price = df["Close"].iloc[0]
-
-    period_return = (
-        (price / first_price) - 1
-    ) * 100
-
-    signal, score, reasons = (
-        determine_signal(df)
-    )
-
-    summary = f"""
-MÃ CỔ PHIẾU: {symbol}
-
-TÊN CÔNG TY:
-{company.get("name", "N/A")}
-
-NGÀNH:
-{company.get("sector", "N/A")}
-
-GIÁ HIỆN TẠI:
-{price:.2f}
-
-THAY ĐỔI TRONG KHOẢNG DỮ LIỆU:
-{period_return:.2f}%
-
-RSI:
-{last["RSI"]:.2f}
-
-MACD:
-{last["MACD"]:.4f}
-
-MACD SIGNAL:
-{last["MACD_Signal"]:.4f}
-
-SMA20:
-{last["SMA20"]:.2f}
-
-SMA50:
-{last["SMA50"]:.2f}
-
-VOLATILITY 20 NGÀY:
-{last["Volatility"]:.2f}%
-
-TÍN HIỆU KỸ THUẬT:
-{signal}
-
-ĐIỂM TÍN HIỆU:
-{score}
-
-LÝ DO:
-{"; ".join(reasons)}
-"""
-
-    if ols is not None:
-
-        summary += f"""
-
-OLS R-SQUARED:
-{ols.rsquared:.4f}
-
-OLS P-VALUE F-STATISTIC:
-{ols.f_pvalue:.4f}
-"""
-
-        for name, value in ols.params.items():
-
-            summary += (
-                f"\nOLS COEFFICIENT "
-                f"{name}: {value:.6f}"
-            )
-
-    if rf is not None:
-
-        summary += f"""
-
-RANDOM FOREST R2 TEST:
-{rf["r2"]:.4f}
-
-RANDOM FOREST MAE TEST:
-{rf["mae"]:.6f}
-
-FEATURE IMPORTANCE:
-"""
-
-        for feature, value in (
-            rf["importance"].items()
-        ):
-
-            summary += (
-                f"\n{feature}: "
-                f"{value:.4f}"
-            )
-
-    return summary
-
-
-# =========================================================
-# 15. GEMINI
+# GEMINI
 # =========================================================
 
 def ask_gemini(
-    prompt,
-    model_name="gemini-2.5-flash"
+    symbol,
+    data,
+    news,
+    quant
 ):
-
-    api_key = get_secret(
-        "GEMINI_API_KEY"
-    )
-
-    if not api_key:
-        return (
-            "⚠️ Chưa cấu hình `GEMINI_API_KEY`."
-        )
 
     try:
 
-        from google import genai
+        if "GEMINI_API_KEY" not in st.secrets:
+
+            return (
+                "⚠️ Chưa cấu hình GEMINI_API_KEY trong "
+                "Streamlit Secrets."
+            )
+
+        api_key = st.secrets["GEMINI_API_KEY"]
 
         client = genai.Client(
             api_key=api_key
         )
 
-        response = (
-            client.models.generate_content(
-                model=model_name,
-                contents=prompt,
+        latest = data.iloc[-1]
+
+        price = float(latest["Close"])
+
+        rsi = float(latest["RSI"])
+
+        macd = float(latest["MACD"])
+
+        volatility = float(
+            latest["Volatility"]
+        ) if not pd.isna(
+            latest["Volatility"]
+        ) else None
+
+        return_1d = float(
+            latest["Return"]
+        ) if not pd.isna(
+            latest["Return"]
+        ) else 0
+
+        return_1m = (
+            data["Close"].iloc[-1]
+            /
+            data["Close"].iloc[-22]
+            - 1
+        ) * 100 if len(data) >= 22 else None
+
+        return_3m = (
+            data["Close"].iloc[-1]
+            /
+            data["Close"].iloc[-64]
+            - 1
+        ) * 100 if len(data) >= 64 else None
+
+        news_text = ""
+
+        for item in news:
+
+            news_text += (
+                f"- {item['title']}\n"
             )
+
+        if not news_text:
+
+            news_text = "Không lấy được tin tức."
+
+        importance_text = ""
+
+        for key, value in sorted(
+            quant["importance"].items(),
+            key=lambda x: x[1],
+            reverse=True
+        ):
+
+            importance_text += (
+                f"{key}: {value:.4f}\n"
+            )
+
+        prompt = f"""
+Bạn là Brian AI, một trợ lý nghiên cứu đầu tư chuyên nghiệp.
+
+Hãy viết một báo cáo phân tích chứng khoán bằng TIẾNG VIỆT,
+ngắn gọn nhưng có chiều sâu.
+
+Mã cổ phiếu: {symbol}
+
+DỮ LIỆU THỊ TRƯỜNG:
+- Giá hiện tại: {price:,.0f}
+- Return 1 ngày: {return_1d:.2f}%
+- Return khoảng 1 tháng: {return_1m:.2f}% nếu có
+- Return khoảng 3 tháng: {return_3m:.2f}% nếu có
+- RSI: {rsi:.2f}
+- MACD: {macd:.4f}
+- Volatility năm hóa: {volatility:.2f}% nếu có
+
+OLS:
+- R-squared: {quant["r2"] if quant["r2"] is not None else "N/A"}
+
+RANDOM FOREST FEATURE IMPORTANCE:
+{importance_text}
+
+TIN TỨC GẦN ĐÂY:
+{news_text}
+
+YÊU CẦU BÁO CÁO:
+
+1. Tóm tắt tình hình hiện tại.
+2. Phân tích xu hướng giá.
+3. Phân tích RSI và MACD.
+4. Phân tích biến động/rủi ro.
+5. Tổng hợp các tin tức đáng chú ý.
+6. Đánh giá yếu tố nào đang ảnh hưởng mạnh nhất.
+7. Nêu các điểm tích cực.
+8. Nêu các rủi ro/cảnh báo.
+9. Đưa ra kịch bản:
+   - Tích cực
+   - Cơ sở
+   - Tiêu cực
+10. Kết luận cuối cùng thật rõ ràng.
+
+Không được bịa số liệu hoặc tin tức.
+Nếu dữ liệu không đủ để kết luận thì nói rõ.
+Không khẳng định chắc chắn giá sẽ tăng/giảm.
+Đây là báo cáo nghiên cứu, không phải lời khuyên đầu tư cá nhân.
+
+Định dạng đẹp bằng Markdown.
+"""
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
         )
 
         return response.text
@@ -1096,178 +659,92 @@ def ask_gemini(
     except Exception as e:
 
         return (
-            "❌ Gemini gặp lỗi khi xử lý.\n\n"
-            f"`{str(e)}`"
+            "⚠️ Gemini chưa thể tạo báo cáo.\n\n"
+            f"Chi tiết lỗi: `{str(e)}`"
         )
 
 
 # =========================================================
-# 16. AI INVESTMENT REPORT
+# SIDEBAR
 # =========================================================
 
-def generate_investment_report(
-    symbol,
-    days,
-    market_summary,
-    news
-):
+with st.sidebar:
 
-    news_text = "\n".join(
+    st.markdown(
+        """
+        <div class="brand">
+            <div class="brand-logo">B</div>
+            <div>
+                <div class="brand-name">BRIAN AI</div>
+                <div class="brand-sub">
+                    INVESTMENT RESEARCH LAB
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        "### ⚙️ Thiết lập phân tích"
+    )
+
+    symbol = st.text_input(
+        "Mã cổ phiếu",
+        value="HPG",
+        max_chars=10
+    )
+
+    period_label = st.selectbox(
+        "Khoảng dữ liệu",
         [
-            (
-                f"- {n['title']} | "
-                f"{n['source']} | "
-                f"{n['published']} | "
-                f"{n['link']}"
-            )
-            for n in news
-        ]
+            "6 tháng",
+            "1 năm",
+            "2 năm",
+            "5 năm"
+        ],
+        index=1
     )
 
-    if not news_text:
-        news_text = (
-            "Không thu thập được tin tức "
-            "trong khoảng thời gian yêu cầu."
-        )
+    period_map = {
+        "6 tháng": "6mo",
+        "1 năm": "1y",
+        "2 năm": "2y",
+        "5 năm": "5y"
+    }
 
-    prompt = f"""
-Bạn là Brian AI — chuyên gia phân tích
-đầu tư định lượng.
+    news_limit = st.slider(
+        "Tin tức gần nhất",
+        min_value=3,
+        max_value=15,
+        value=7
+    )
 
-Hãy lập một báo cáo nghiên cứu bằng
-TIẾNG VIỆT dựa trên dữ liệu bên dưới.
+    st.markdown("---")
 
-=========================
-DỮ LIỆU THỊ TRƯỜNG
-=========================
+    run_analysis = st.button(
+        "🚀 Chạy phân tích",
+        use_container_width=True
+    )
 
-{market_summary}
+    st.markdown("---")
 
-=========================
-TIN TỨC {days} NGÀY GẦN NHẤT
-=========================
+    st.caption(
+        "Brian AI Invest Lab"
+    )
 
-{news_text}
-
-=========================
-CẤU TRÚC BÁO CÁO
-=========================
-
-# 🧠 Investment Intelligence — {symbol}
-
-## 1. Tóm tắt điều hành
-
-Tóm tắt tình hình cổ phiếu trong
-5-7 câu dễ hiểu.
-
-## 2. Diễn biến giá
-
-Phân tích:
-- Giá hiện tại
-- Xu hướng
-- Return
-- SMA20
-- SMA50
-
-## 3. Phân tích kỹ thuật
-
-Phân tích:
-- RSI
-- MACD
-- Volatility
-
-Giải thích ý nghĩa của từng chỉ báo.
-
-## 4. Phân tích định lượng
-
-Giải thích kết quả OLS.
-
-Đặc biệt:
-- R-squared
-- F-test
-- coefficient
-- ý nghĩa thống kê
-
-Nếu p-value không đủ mạnh,
-hãy nói rõ rằng chưa có bằng chứng
-thống kê đủ thuyết phục.
-
-## 5. Machine Learning
-
-Phân tích:
-- Random Forest R²
-- MAE
-- Feature importance
-
-Không được biến feature importance
-thành kết luận nhân quả.
-
-## 6. Tin tức
-
-Tổng hợp các tin quan trọng nhất.
-
-Với mỗi tin:
-- Nội dung chính
-- Tác động có thể có
-- Tích cực / tiêu cực / trung lập
-
-Không được bịa tin.
-
-## 7. Catalyst
-
-Các yếu tố có thể hỗ trợ giá.
-
-## 8. Risk
-
-Các rủi ro chính.
-
-## 9. Góc nhìn tổng hợp
-
-Đưa ra:
-- Tích cực
-- Trung lập
-- Tiêu cực
-
-Dựa trên toàn bộ dữ liệu.
-
-## 10. Kết luận
-
-Tóm tắt trong 5 dòng.
-
-=========================
-QUY TẮC
-=========================
-
-1. Chỉ sử dụng dữ liệu được cung cấp.
-2. Không bịa số liệu.
-3. Không bịa tin tức.
-4. Không nói "chắc chắn tăng" hoặc
-   "chắc chắn giảm".
-5. Không biến tương quan thành nhân quả.
-6. Phân biệt dữ liệu thực tế và
-   nhận định của AI.
-7. Nếu thiếu dữ liệu phải nói:
-   "Chưa đủ dữ liệu để kết luận."
-8. Không đưa ra lời khuyên mua/bán
-   cá nhân hóa.
-9. Viết hoàn toàn bằng tiếng Việt.
-10. Viết theo phong cách research desk
-    chuyên nghiệp, súc tích.
-"""
-
-    return ask_gemini(
-        prompt
+    st.caption(
+        "Quant • Machine Learning • News Intelligence"
     )
 
 
 # =========================================================
-# 17. HEADER
+# HERO
 # =========================================================
 
 st.markdown(
     """
     <div class="hero">
-
         <div class="hero-label">
             BRIAN AI INVEST LAB
         </div>
@@ -1277,12 +754,10 @@ st.markdown(
         </div>
 
         <div class="hero-text">
-            Nền tảng tổng hợp dữ liệu thị trường,
-            phân tích định lượng, Machine Learning
-            và tin tức thành một báo cáo nghiên cứu
-            đầu tư duy nhất.
+            Tổng hợp dữ liệu thị trường, phân tích định lượng,
+            Machine Learning và tin tức thành một báo cáo
+            nghiên cứu đầu tư thống nhất.
         </div>
-
     </div>
     """,
     unsafe_allow_html=True
@@ -1290,770 +765,475 @@ st.markdown(
 
 
 # =========================================================
-# 18. LOAD DATA
+# INITIAL STATE
 # =========================================================
 
-try:
-
-    df = load_market_data(
-        ticker,
-        period_map[period]
-    )
-
-    company = load_company_info(
-        ticker
-    )
-
-except Exception as e:
-
-    st.error(
-        f"Không thể tải dữ liệu cho {ticker}: {e}"
-    )
-
-    st.stop()
+if "analysis_done" not in st.session_state:
+    st.session_state.analysis_done = False
 
 
 # =========================================================
-# 19. CALCULATIONS
+# RUN
 # =========================================================
 
-last = df.iloc[-1]
+if run_analysis:
 
-current_price = last["Close"]
+    if not symbol.strip():
 
-previous_price = (
-    df["Close"].iloc[-2]
-    if len(df) > 1
-    else current_price
-)
-
-daily_return = (
-    (current_price / previous_price) - 1
-) * 100
-
-period_return = (
-    (current_price / df["Close"].iloc[0]) - 1
-) * 100
-
-rsi = last["RSI"]
-
-macd = last["MACD"]
-
-volatility = last["Volatility"]
-
-signal, signal_score, signal_reasons = (
-    determine_signal(df)
-)
-
-
-# =========================================================
-# 20. COMPANY HEADER
-# =========================================================
-
-st.markdown(
-    f"""
-    <div style="
-        display:flex;
-        justify-content:space-between;
-        align-items:end;
-        margin-bottom:18px;
-    ">
-
-        <div>
-            <div class="muted">
-                ĐANG PHÂN TÍCH
-            </div>
-
-            <div style="
-                font-size:2rem;
-                font-weight:850;
-            ">
-                {ticker}
-            </div>
-
-            <div class="muted">
-                {html.escape(
-                    company.get("name", ticker)
-                )}
-            </div>
-        </div>
-
-        <div style="
-            text-align:right;
-        ">
-            <div class="muted">
-                Cập nhật
-            </div>
-
-            <div>
-                {datetime.now().strftime(
-                    "%d/%m/%Y %H:%M"
-                )}
-            </div>
-        </div>
-
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-
-# =========================================================
-# 21. KPI
-# =========================================================
-
-k1, k2, k3, k4, k5 = st.columns(5)
-
-with k1:
-
-    st.markdown(
-        f"""
-        <div class="kpi-card">
-            <div class="kpi-label">
-                GIÁ HIỆN TẠI
-            </div>
-            <div class="kpi-value">
-                {fmt_number(current_price)}
-            </div>
-            <div class="kpi-sub">
-                {ticker}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with k2:
-
-    st.markdown(
-        f"""
-        <div class="kpi-card">
-            <div class="kpi-label">
-                1D RETURN
-            </div>
-            <div class="kpi-value">
-                {fmt_percent(daily_return)}
-            </div>
-            <div class="kpi-sub">
-                So với phiên trước
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with k3:
-
-    st.markdown(
-        f"""
-        <div class="kpi-card">
-            <div class="kpi-label">
-                RSI 14
-            </div>
-            <div class="kpi-value">
-                {fmt_number(rsi, 1)}
-            </div>
-            <div class="kpi-sub">
-                Động lượng
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with k4:
-
-    st.markdown(
-        f"""
-        <div class="kpi-card">
-            <div class="kpi-label">
-                MACD
-            </div>
-            <div class="kpi-value">
-                {fmt_number(macd, 3)}
-            </div>
-            <div class="kpi-sub">
-                MACD 12/26/9
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with k5:
-
-    st.markdown(
-        f"""
-        <div class="kpi-card">
-            <div class="kpi-label">
-                VOLATILITY
-            </div>
-            <div class="kpi-value">
-                {fmt_percent(volatility)}
-            </div>
-            <div class="kpi-sub">
-                Annualized 20D
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-# =========================================================
-# 22. SIGNAL
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">🎯 Tín hiệu tổng hợp</div>',
-    unsafe_allow_html=True
-)
-
-s1, s2, s3 = st.columns(3)
-
-with s1:
-
-    st.markdown(
-        f"""
-        <div class="signal">
-            <div class="signal-title">
-                Technical Signal
-            </div>
-            <div class="signal-value">
-                {signal}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with s2:
-
-    st.markdown(
-        f"""
-        <div class="signal">
-            <div class="signal-title">
-                Return {period}
-            </div>
-            <div class="signal-value">
-                {period_return:.2f}%
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with s3:
-
-    st.markdown(
-        f"""
-        <div class="signal">
-            <div class="signal-title">
-                Signal Score
-            </div>
-            <div class="signal-value">
-                {signal_score:+d}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-# =========================================================
-# 23. PRICE CHART
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">📈 Diễn biến giá</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    f"""
-    <div class="section-desc">
-        Giá đóng cửa và đường trung bình động
-        của {ticker} trong {period}.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-chart_df = df[
-    [
-        "Close",
-        "SMA20",
-        "SMA50",
-    ]
-].rename(
-    columns={
-        "Close": "Giá",
-        "SMA20": "SMA 20",
-        "SMA50": "SMA 50",
-    }
-)
-
-st.line_chart(
-    chart_df,
-    height=420
-)
-
-
-# =========================================================
-# 24. TECHNICAL DATA
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">📐 Phân tích kỹ thuật</div>',
-    unsafe_allow_html=True
-)
-
-t1, t2 = st.columns(2)
-
-with t1:
-
-    technical_df = pd.DataFrame(
-        {
-            "Chỉ báo": [
-                "RSI 14",
-                "MACD",
-                "MACD Signal",
-                "SMA20",
-                "SMA50",
-                "Volatility",
-            ],
-            "Giá trị": [
-                fmt_number(rsi),
-                fmt_number(macd, 4),
-                fmt_number(
-                    last["MACD_Signal"],
-                    4
-                ),
-                fmt_number(
-                    last["SMA20"]
-                ),
-                fmt_number(
-                    last["SMA50"]
-                ),
-                fmt_percent(
-                    volatility
-                ),
-            ],
-        }
-    )
-
-    st.dataframe(
-        technical_df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-with t2:
-
-    st.markdown(
-        '<div class="signal">',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        "#### Nhận định kỹ thuật"
-    )
-
-    for reason in signal_reasons:
-
-        st.write(
-            f"• {reason}"
+        st.error(
+            "Vui lòng nhập mã cổ phiếu."
         )
 
-    st.markdown(
-        "</div>",
-        unsafe_allow_html=True
-    )
+        st.stop()
 
+    with st.spinner(
+        f"Đang thu thập dữ liệu {symbol.upper()}..."
+    ):
 
-# =========================================================
-# 25. QUANT + ML
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">🤖 Quant & Machine Learning</div>',
-    unsafe_allow_html=True
-)
-
-ols_model = run_ols(df)
-
-rf_result = run_random_forest(df)
-
-q1, q2 = st.columns(2)
-
-
-with q1:
-
-    st.markdown(
-        '<div class="ai-box">',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        '<div class="ai-badge">'
-        'QUANTITATIVE MODEL'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        "### OLS Regression"
-    )
-
-    if ols_model is not None:
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-            st.metric(
-                "R²",
-                f"{ols_model.rsquared:.4f}"
-            )
-
-        with c2:
-            st.metric(
-                "F-test p-value",
-                f"{ols_model.f_pvalue:.4f}"
-            )
-
-        coef_df = pd.DataFrame(
-            {
-                "Biến": ols_model.params.index,
-                "Coefficient": ols_model.params.values,
-                "P-value": ols_model.pvalues.values,
-            }
+        data, yahoo_symbol, error = get_market_data(
+            symbol,
+            period_map[period_label]
         )
 
-        st.dataframe(
-            coef_df,
-            use_container_width=True,
-            hide_index=True
-        )
+    if data is None or data.empty:
 
-    else:
+        st.error(
+            f"Không thể tải dữ liệu cho "
+            f"{symbol.upper()} ({yahoo_symbol})."
+        )
 
         st.warning(
-            "Chưa đủ dữ liệu để chạy OLS."
+            "Kiểm tra lại mã cổ phiếu hoặc thử lại sau."
         )
 
-    st.markdown(
-        "</div>",
-        unsafe_allow_html=True
-    )
+        st.stop()
 
+    # News
 
-with q2:
+    with st.spinner("Đang thu thập tin tức..."):
 
-    st.markdown(
-        '<div class="ai-box">',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        '<div class="ai-badge">'
-        'MACHINE LEARNING'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        "### Random Forest"
-    )
-
-    if rf_result is not None:
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            st.metric(
-                "Test R²",
-                f"{rf_result['r2']:.4f}"
-            )
-
-        with c2:
-
-            st.metric(
-                "MAE",
-                f"{rf_result['mae']:.6f}"
-            )
-
-        importance_df = (
-            rf_result["importance"]
-            .rename("Importance")
-            .reset_index()
-            .rename(
-                columns={
-                    "index": "Biến"
-                }
-            )
+        news = get_news(
+            symbol,
+            news_limit
         )
 
-        st.bar_chart(
-            importance_df.set_index(
-                "Biến"
-            ),
-            height=220
+    # Quant
+
+    with st.spinner(
+        "Đang chạy mô hình định lượng..."
+    ):
+
+        quant = run_quant_analysis(
+            data
         )
 
-        st.dataframe(
-            importance_df,
-            use_container_width=True,
-            hide_index=True
+    # Gemini
+
+    with st.spinner(
+        "Gemini đang tổng hợp báo cáo..."
+    ):
+
+        ai_report = ask_gemini(
+            symbol.upper(),
+            data,
+            news,
+            quant
         )
 
-    else:
+    st.session_state.analysis_done = True
 
-        st.warning(
-            "Chưa đủ dữ liệu để huấn luyện ML."
-        )
+    st.session_state.data = data
 
-    st.markdown(
-        "</div>",
-        unsafe_allow_html=True
-    )
+    st.session_state.news = news
+
+    st.session_state.quant = quant
+
+    st.session_state.ai_report = ai_report
+
+    st.session_state.symbol = symbol.upper()
+
+    st.session_state.yahoo_symbol = yahoo_symbol
 
 
 # =========================================================
-# 26. NEWS
+# DISPLAY RESULTS
 # =========================================================
 
-news = load_news(
-    ticker,
-    news_days
-)
+if st.session_state.analysis_done:
 
-st.markdown(
-    '<div class="section-title">📰 Tin tức & Market Intelligence</div>',
-    unsafe_allow_html=True
-)
+    data = st.session_state.data
 
-st.markdown(
-    f"""
-    <div class="section-desc">
-        Các tin tức được thu thập trong
-        {news_days} ngày gần nhất.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+    news = st.session_state.news
 
-if news:
+    quant = st.session_state.quant
 
-    for item in news:
+    ai_report = st.session_state.ai_report
+
+    display_symbol = st.session_state.symbol
+
+    latest = data.iloc[-1]
+
+    price = float(latest["Close"])
+
+    day_return = float(
+        latest["Return"]
+    )
+
+    rsi = float(
+        latest["RSI"]
+    )
+
+    macd = float(
+        latest["MACD"]
+    )
+
+    volatility = float(
+        latest["Volatility"]
+    ) if not pd.isna(
+        latest["Volatility"]
+    ) else np.nan
+
+    # =====================================================
+    # HEADER
+    # =====================================================
+
+    st.markdown(
+        f"""
+        <div class="section-title">
+            📊 {display_symbol} — Market Intelligence
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.caption(
+        f"Dữ liệu: {st.session_state.yahoo_symbol} • "
+        f"{len(data)} phiên • Cập nhật {data.index[-1].strftime('%d/%m/%Y')}"
+    )
+
+    # =====================================================
+    # METRICS
+    # =====================================================
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    with c1:
 
         st.markdown(
             f"""
-            <div class="news-card">
-
-                <div class="news-title">
-                    {html.escape(
-                        item["title"]
-                    )}
+            <div class="metric-card">
+                <div class="metric-label">
+                    GIÁ HIỆN TẠI
                 </div>
-
-                <div class="news-meta">
-                    {html.escape(
-                        item["source"]
-                    )}
-                    &nbsp; • &nbsp;
-                    {item["published"]}
+                <div class="metric-value">
+                    {format_vnd(price)}
                 </div>
-
+                <div class="metric-sub">
+                    Close
+                </div>
             </div>
             """,
             unsafe_allow_html=True
         )
 
-        st.markdown(
-            f"[Đọc nguồn →]({item['link']})"
-        )
-
-else:
-
-    st.info(
-        "Không tìm thấy tin tức phù hợp "
-        "trong khoảng thời gian đã chọn."
-    )
-
-
-# =========================================================
-# 27. AI REPORT
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">🧠 AI Investment Research</div>',
-    unsafe_allow_html=True
-)
-
-market_summary = build_market_summary(
-    ticker,
-    df,
-    company,
-    ols_model,
-    rf_result
-)
-
-if run_analysis:
-
-    with st.spinner(
-        "Gemini đang tổng hợp dữ liệu và viết báo cáo..."
-    ):
-
-        report = generate_investment_report(
-            ticker,
-            news_days,
-            market_summary,
-            news
-        )
-
-    st.markdown(
-        '<div class="ai-box">',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        '<div class="ai-badge">'
-        'BRIAN AI RESEARCH ENGINE'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        report
-    )
-
-    st.markdown(
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-else:
-
-    st.info(
-        "Bấm **🚀 Chạy phân tích** ở thanh bên "
-        "để Gemini tổng hợp dữ liệu thị trường, "
-        "Quant, Machine Learning và tin tức."
-    )
-
-
-# =========================================================
-# 28. CHAT VỚI GEMINI
-# =========================================================
-
-st.markdown(
-    '<div class="section-title">💬 Hỏi Brian AI</div>',
-    unsafe_allow_html=True
-)
-
-if "chat_history" not in st.session_state:
-
-    st.session_state.chat_history = []
-
-
-for message in st.session_state.chat_history:
-
-    with st.chat_message(
-        message["role"]
-    ):
+    with c2:
 
         st.markdown(
-            message["content"]
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">
+                    1D RETURN
+                </div>
+                <div class="metric-value">
+                    {format_percent(day_return)}
+                </div>
+                <div class="metric-sub">
+                    Phiên gần nhất
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
         )
 
+    with c3:
 
-question = st.chat_input(
-    f"Hỏi Brian AI về {ticker}..."
-)
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">
+                    RSI
+                </div>
+                <div class="metric-value">
+                    {rsi:.1f}
+                </div>
+                <div class="metric-sub">
+                    14-period
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-if question:
+    with c4:
 
-    st.session_state.chat_history.append(
-        {
-            "role": "user",
-            "content": question,
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">
+                    MACD
+                </div>
+                <div class="metric-value">
+                    {macd:.2f}
+                </div>
+                <div class="metric-sub">
+                    Momentum
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with c5:
+
+        volatility_text = (
+            f"{volatility:.1f}%"
+            if not pd.isna(volatility)
+            else "—"
+        )
+
+        st.markdown(
+            f"""
+            <div class="metric-card">
+                <div class="metric-label">
+                    VOLATILITY
+                </div>
+                <div class="metric-value">
+                    {volatility_text}
+                </div>
+                <div class="metric-sub">
+                    Annualized
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    # =====================================================
+    # PRICE CHART
+    # =====================================================
+
+    st.markdown(
+        '<div class="section-title">📈 Giá & xu hướng</div>',
+        unsafe_allow_html=True
+    )
+
+    chart_df = data[
+        ["Close", "MA20", "MA50"]
+    ].rename(
+        columns={
+            "Close": "Giá",
+            "MA20": "MA20",
+            "MA50": "MA50"
         }
     )
 
-    st.chat_message(
-        "user"
-    ).markdown(
-        question
+    st.line_chart(
+        chart_df,
+        height=420
     )
 
-    context = f"""
-Bạn đang phân tích mã {ticker}.
+    # =====================================================
+    # INDICATORS
+    # =====================================================
 
-DỮ LIỆU:
-{market_summary}
+    col_a, col_b = st.columns(2)
 
-TIN TỨC:
-{chr(10).join(
-    [
-        n["title"]
-        for n in news
-    ]
-)}
+    with col_a:
 
-CÂU HỎI:
-{question}
+        st.markdown(
+            '<div class="section-title">📐 RSI</div>',
+            unsafe_allow_html=True
+        )
 
-Hãy trả lời bằng tiếng Việt.
+        st.line_chart(
+            data[["RSI"]],
+            height=260
+        )
 
-Chỉ sử dụng dữ liệu ở trên.
-Nếu dữ liệu không đủ thì nói rõ.
+    with col_b:
 
-Không đưa ra lời khuyên mua bán
-cá nhân hóa.
-"""
+        st.markdown(
+            '<div class="section-title">〽️ MACD</div>',
+            unsafe_allow_html=True
+        )
 
-    with st.chat_message(
-        "assistant"
-    ):
+        st.line_chart(
+            data[
+                ["MACD", "MACD_Signal"]
+            ],
+            height=260
+        )
 
-        with st.spinner(
-            "Brian AI đang phân tích..."
-        ):
+    # =====================================================
+    # AI REPORT
+    # =====================================================
 
-            answer = ask_gemini(
-                context
+    st.markdown(
+        '<div class="section-title">🧠 Brian AI Research Report</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        f"""
+        <div class="ai-box">
+            <div class="ai-title">
+                AI INVESTMENT INTELLIGENCE
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(ai_report)
+
+    # =====================================================
+    # NEWS
+    # =====================================================
+
+    st.markdown(
+        '<div class="section-title">📰 Tin tức gần đây</div>',
+        unsafe_allow_html=True
+    )
+
+    if news:
+
+        for item in news:
+
+            title = html.escape(
+                item["title"]
             )
 
-        st.markdown(
-            answer
+            published = html.escape(
+                item["published"]
+            )
+
+            link = item["link"]
+
+            st.markdown(
+                f"""
+                <div class="news-card">
+                    <div class="news-title">
+                        {title}
+                    </div>
+                    <div class="news-meta">
+                        {published}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            st.markdown(
+                f"[Đọc bài viết ↗]({link})"
+            )
+
+    else:
+
+        st.info(
+            "Chưa lấy được tin tức từ nguồn RSS."
         )
 
-    st.session_state.chat_history.append(
-        {
-            "role": "assistant",
-            "content": answer,
-        }
+    # =====================================================
+    # QUANT
+    # =====================================================
+
+    st.markdown(
+        '<div class="section-title">🔬 Phân tích định lượng</div>',
+        unsafe_allow_html=True
     )
 
+    q1, q2 = st.columns(2)
 
-# =========================================================
-# 29. FOOTER
-# =========================================================
+    with q1:
 
-st.markdown(
-    """
-    <div class="footer">
-        BRIAN AI INVEST LAB
-        &nbsp;•&nbsp;
-        Quantitative Research
-        &nbsp;•&nbsp;
-        Machine Learning
-        &nbsp;•&nbsp;
-        Market Intelligence
-        <br><br>
-        Dữ liệu mang tính nghiên cứu.
-        Không phải khuyến nghị đầu tư cá nhân.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+        st.markdown("#### OLS Regression")
+
+        if quant["ols"] is not None:
+
+            ols = quant["ols"]
+
+            ols_table = pd.DataFrame({
+                "Biến": ols.params.index,
+                "Coefficient": ols.params.values,
+                "P-value": ols.pvalues.values
+            })
+
+            st.dataframe(
+                ols_table,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.caption(
+                f"R² = {ols.rsquared:.4f} • "
+                f"Adj. R² = {ols.rsquared_adj:.4f}"
+            )
+
+        else:
+
+            st.info(
+                "Không đủ dữ liệu để chạy OLS."
+            )
+
+    with q2:
+
+        st.markdown(
+            "#### Random Forest — Feature Importance"
+        )
+
+        if quant["importance"]:
+
+            importance_df = pd.DataFrame(
+                list(
+                    quant["importance"].items()
+                ),
+                columns=[
+                    "Biến",
+                    "Importance"
+                ]
+            ).sort_values(
+                "Importance",
+                ascending=False
+            )
+
+            st.bar_chart(
+                importance_df.set_index("Biến")
+            )
+
+        else:
+
+            st.info(
+                "Không đủ dữ liệu để chạy Random Forest."
+            )
+
+    # =====================================================
+    # RAW DATA
+    # =====================================================
+
+    with st.expander(
+        "📋 Xem dữ liệu thị trường"
+    ):
+
+        st.dataframe(
+            data.tail(100).sort_index(
+                ascending=False
+            ),
+            use_container_width=True
+        )
+
+else:
+
+    st.info(
+        "👈 Nhập mã cổ phiếu bên trái rồi bấm "
+        "**🚀 Chạy phân tích** để bắt đầu."
+    )
