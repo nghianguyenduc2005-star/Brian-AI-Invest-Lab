@@ -16,21 +16,13 @@ AI_CACHE_TTL = 1800
 
 DEFAULT_NEWS_COUNT = 15
 
-# Ưu tiên model nhanh và rẻ.
-#
-# Nếu gặp lỗi 503 / unavailable:
-#   3.5 Flash-Lite
-#       ↓
-#   3.6 Flash
-#       ↓
-#   3.7 Flash
-#
-# Mỗi model chỉ gọi 1 lần.
+# Ưu tiên model Flash.
 GEMINI_MODELS = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
     "gemini-3.7-flash",
+    "gemini-3.6-flash",
 ]
+
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 # ============================================================
@@ -46,9 +38,7 @@ def _text(
         return default
 
     try:
-        value = str(
-            value
-        ).strip()
+        value = str(value).strip()
 
     except Exception:
         return default
@@ -67,12 +57,7 @@ def normalize_news(
     news,
 ):
     """
-    Chuẩn hóa tin về cùng một cấu trúc.
-
-    Đồng thời:
-    - bỏ phần tử không hợp lệ
-    - bỏ tin không có tiêu đề
-    - loại trùng tiêu đề
+    Chuẩn hóa toàn bộ tin về format thống nhất.
     """
 
     if not isinstance(
@@ -102,19 +87,15 @@ def normalize_news(
         if not title:
             continue
 
-        dedupe_key = (
-            " ".join(
-                title
-                .lower()
-                .split()
-            )
+        key = " ".join(
+            title.lower().split()
         )
 
-        if dedupe_key in seen:
+        if key in seen:
             continue
 
         seen.add(
-            dedupe_key
+            key
         )
 
         result.append(
@@ -130,27 +111,30 @@ def normalize_news(
 
                 "published": _text(
                     item.get(
-                        "published"
+                        "published",
+                        item.get(
+                            "date",
+                            "",
+                        ),
                     ),
-                    item.get(
-                        "date",
-                        "",
-                    ),
+                    "",
                 ),
 
                 "summary": _text(
                     item.get(
-                        "summary"
+                        "summary",
+                        item.get(
+                            "description",
+                            "",
+                        ),
                     ),
-                    item.get(
-                        "description",
-                        "",
-                    ),
+                    "",
                 ),
 
                 "link": _text(
                     item.get(
-                        "link"
+                        "link",
+                        "",
                     ),
                     "",
                 ),
@@ -172,19 +156,17 @@ def load_news_cached(
     limit: int,
 ):
     """
-    Cache dữ liệu tin tức.
-
-    Không reload API mỗi lần Streamlit rerun.
+    Chỉ gọi news API khi cache hết hạn.
     """
 
     try:
 
-        raw_news = fetch_market_news(
+        data = fetch_market_news(
             limit
         )
 
         return normalize_news(
-            raw_news
+            data
         )
 
     except Exception as error:
@@ -197,7 +179,7 @@ def load_news_cached(
 
 
 # ============================================================
-# GEMINI API KEY
+# GEMINI KEY
 # ============================================================
 
 def get_gemini_api_key():
@@ -228,15 +210,7 @@ def build_news_context(
     news,
 ):
     """
-    Chuyển tin thành context cho Gemini.
-
-    Chỉ gửi:
-    - tiêu đề
-    - nguồn
-    - thời gian
-    - nội dung/tóm tắt
-
-    Không gửi link để giảm token.
+    Chuyển tin nguồn thành context cho AI.
     """
 
     blocks = []
@@ -310,15 +284,12 @@ def build_news_context(
 def build_ai_prompt(
     news_context,
     user_question="",
+    has_image=False,
 ):
     """
-    Có 2 mode:
-
-    1. Không có câu hỏi:
-       AI tự tóm tắt thị trường.
-
-    2. Có câu hỏi:
-       AI trả lời đúng câu hỏi người dùng.
+    Prompt dùng cho:
+    - text only
+    - text + ảnh
     """
 
     user_question = _text(
@@ -329,29 +300,53 @@ def build_ai_prompt(
     if user_question:
 
         task = f"""
-NGƯỜI DÙNG ĐANG HỎI:
+Người dùng đang yêu cầu:
 
 "{user_question}"
 
-Hãy trả lời TRỰC TIẾP câu hỏi trên.
+Hãy trả lời trực tiếp yêu cầu này.
+Chỉ sử dụng thông tin từ tin tức và hình ảnh được cung cấp.
+Nếu câu hỏi không liên quan đến dữ liệu được cung cấp,
+hãy nói rõ là chưa đủ dữ liệu.
+""".strip()
 
-Chỉ sử dụng những tin có liên quan đến câu hỏi.
-Không cố nhét những tin không liên quan.
+    elif has_image:
+
+        task = """
+Hãy phân tích hình ảnh được người dùng gửi.
+
+Xác định:
+- hình ảnh đang thể hiện điều gì
+- các con số/thông tin quan trọng
+- tín hiệu đáng chú ý
+- mối liên hệ với các tin tức đang có
+
+Không đoán những chi tiết không nhìn thấy rõ.
 """.strip()
 
     else:
 
         task = """
-Hãy tự chọn những thông tin quan trọng nhất
-và tạo một bản tóm tắt thị trường.
+Hãy tự tổng hợp những tin quan trọng nhất
+thành một bản Market Brief ngắn gọn.
+""".strip()
 
-Chỉ giữ lại những câu chuyện thực sự đáng chú ý.
-Không cố đưa tất cả tin vào bài.
+    image_instruction = ""
+
+    if has_image:
+
+        image_instruction = """
+ẢNH ĐƯỢC GỬI KÈM:
+
+Bạn PHẢI quan sát hình ảnh và sử dụng các thông tin
+nhìn thấy trong ảnh khi chúng liên quan đến yêu cầu.
+
+Không được giả vờ nhìn thấy thông tin mà ảnh không thể hiện.
 """.strip()
 
     return f"""
-Bạn là BRIAN AI, trợ lý phân tích tin tức
-thị trường chứng khoán Việt Nam.
+Bạn là BRIAN AI — trợ lý phân tích thị trường
+chứng khoán Việt Nam.
 
 ==================================================
 NHIỆM VỤ
@@ -359,40 +354,39 @@ NHIỆM VỤ
 
 {task}
 
-==================================================
-NGUYÊN TẮC BẮT BUỘC
-==================================================
-
-1. Chỉ sử dụng dữ liệu được cung cấp.
-2. Không bịa số liệu.
-3. Không bịa sự kiện.
-4. Không sử dụng thông tin ngoài dữ liệu.
-5. Không lặp lại một ý nhiều lần.
-6. Gom các tin cùng nói về một câu chuyện.
-7. Bỏ qua các tin ít quan trọng.
-8. Viết như một chuyên viên phân tích đang nói với
-   nhà đầu tư.
-9. Câu ngắn, rõ, tự nhiên.
-10. Không viết kiểu báo cáo học thuật.
-11. Không khuyến nghị mua/bán.
-12. Không khẳng định chắc chắn giá sẽ tăng/giảm.
-13. Nếu dữ liệu không đủ:
-   "Chưa đủ dữ liệu để kết luận."
-14. Phân biệt thông tin và nhận định.
-15. Không suy diễn quá xa từ một tiêu đề báo.
+{image_instruction}
 
 ==================================================
-MỨC ĐỘ ƯU TIÊN
+NGUYÊN TẮC
 ==================================================
 
-Ưu tiên:
+- Chỉ sử dụng dữ liệu được cung cấp.
+- Không bịa số liệu.
+- Không bịa sự kiện.
+- Không tự bổ sung dữ liệu ngoài nguồn.
+- Không lặp lại cùng một ý.
+- Bỏ qua thông tin không liên quan.
+- Gộp những tin nói về cùng một câu chuyện.
+- Viết tự nhiên như chuyên viên phân tích.
+- Không viết quá dài.
+- Không viết kiểu báo cáo học thuật.
+- Không đưa khuyến nghị mua/bán cá nhân hóa.
+- Không khẳng định chắc chắn thị trường sẽ tăng hoặc giảm.
+- Phân biệt rõ dữ liệu và nhận định.
+- Nếu không đủ dữ liệu, nói:
+  "Chưa đủ dữ liệu để kết luận."
+
+==================================================
+ƯU TIÊN
+==================================================
 
 1. Yếu tố ảnh hưởng rộng tới thị trường.
 2. VN-INDEX / VN30.
 3. Dòng tiền.
-4. Chính sách / vĩ mô.
-5. Quốc tế có tác động trực tiếp.
+4. Chính sách và vĩ mô.
+5. Tin quốc tế quan trọng.
 6. Ngành / doanh nghiệp nổi bật.
+7. Thông tin xuất hiện trong hình ảnh nếu có.
 
 ==================================================
 FORMAT
@@ -402,24 +396,20 @@ FORMAT
 
 ## Thị trường đang chú ý gì?
 
-Viết 2–3 câu.
-Nói đúng câu chuyện chính.
+2–3 câu.
 
 ## 🔥 Điểm đáng chú ý
 
-Chỉ chọn tối đa 3 ý.
+Chỉ tối đa 3 ý.
 
 ### 1. [Ý chính]
-
-Viết 1–2 câu.
+1–2 câu.
 
 ### 2. [Ý chính]
-
-Viết 1–2 câu.
+1–2 câu.
 
 ### 3. [Ý chính]
-
-Viết 1–2 câu.
+1–2 câu.
 
 ## 🟢 Hỗ trợ
 
@@ -431,24 +421,17 @@ Tối đa 2 ý.
 
 ## 🎯 Cần theo dõi
 
-Viết 2–3 câu.
+2–3 câu.
 
 ## Kết luận
 
-Đúng 3 câu.
-
-Câu 1:
-Thị trường hiện tại đang tích cực,
-trung tính hay thận trọng.
-
-Câu 2:
-Lý do chính.
-
-Câu 3:
-Điều quan trọng nhất cần tiếp tục theo dõi.
+Đúng 3 câu:
+- trạng thái thị trường
+- nguyên nhân chính
+- điều cần theo dõi nhất
 
 ==================================================
-DỮ LIỆU TIN TỨC
+TIN TỨC NGUỒN
 ==================================================
 
 {news_context}
@@ -459,14 +442,14 @@ DỮ LIỆU TIN TỨC
 # ERROR CLASSIFICATION
 # ============================================================
 
-def _is_temporary_model_error(
+def _is_temporary_error(
     error,
 ):
     text = str(
         error
     ).lower()
 
-    temporary_tokens = [
+    tokens = [
         "503",
         "unavailable",
         "service unavailable",
@@ -479,18 +462,18 @@ def _is_temporary_model_error(
 
     return any(
         token in text
-        for token in temporary_tokens
+        for token in tokens
     )
 
 
-def _is_fatal_model_error(
+def _is_fatal_error(
     error,
 ):
     text = str(
         error
     ).lower()
 
-    fatal_tokens = [
+    tokens = [
         "401",
         "403",
         "invalid api key",
@@ -503,31 +486,61 @@ def _is_fatal_model_error(
 
     return any(
         token in text
-        for token in fatal_tokens
+        for token in tokens
     )
 
 
 # ============================================================
-# GEMINI ONE REQUEST
+# GEMINI SINGLE REQUEST
 # ============================================================
 
 def _call_gemini_once(
     api_key,
     model,
     prompt,
+    image_bytes=None,
+    image_mime=None,
 ):
     """
-    Một request Gemini.
+    Một request duy nhất.
 
-    Không retry.
-    Không AFC.
     Không function calling.
+    Không tools.
     """
 
     from google import genai
+    from google.genai import types
 
     client = genai.Client(
         api_key=api_key
+    )
+
+    contents = []
+
+    # --------------------------------------------------------
+    # IMAGE
+    # --------------------------------------------------------
+
+    if (
+        image_bytes
+        and image_mime
+    ):
+
+        image_part = types.Part.from_bytes(
+            data=image_bytes,
+            mime_type=image_mime,
+        )
+
+        contents.append(
+            image_part
+        )
+
+    # --------------------------------------------------------
+    # TEXT
+    # --------------------------------------------------------
+
+    contents.append(
+        prompt
     )
 
     response = (
@@ -535,7 +548,7 @@ def _call_gemini_once(
         .models
         .generate_content(
             model=model,
-            contents=prompt,
+            contents=contents,
         )
     )
 
@@ -558,17 +571,19 @@ def _call_gemini_once(
 
 
 # ============================================================
-# GENERATE AI
+# AI GENERATION
 # ============================================================
 
 def generate_market_ai(
     news_context,
     user_question="",
+    image_bytes=None,
+    image_mime=None,
 ):
     """
-    Fallback theo model.
+    Gửi text và có thể kèm ảnh.
 
-    Mỗi model chỉ thử một lần.
+    Mỗi model chỉ gọi 1 lần.
     """
 
     api_key = get_gemini_api_key()
@@ -603,7 +618,10 @@ def generate_market_ai(
 
     prompt = build_ai_prompt(
         news_context,
-        user_question,
+        user_question=user_question,
+        has_image=bool(
+            image_bytes
+        ),
     )
 
     errors = []
@@ -616,6 +634,8 @@ def generate_market_ai(
                 api_key=api_key,
                 model=model,
                 prompt=prompt,
+                image_bytes=image_bytes,
+                image_mime=image_mime,
             )
 
             return {
@@ -636,10 +656,10 @@ def generate_market_ai(
             )
 
             # ------------------------------------------------
-            # API key / quota / permission
+            # API KEY / QUOTA
             # ------------------------------------------------
 
-            if _is_fatal_model_error(
+            if _is_fatal_error(
                 error_text
             ):
 
@@ -651,10 +671,10 @@ def generate_market_ai(
                 }
 
             # ------------------------------------------------
-            # Lỗi không phải lỗi tạm thời
+            # Không phải lỗi temporary
             # ------------------------------------------------
 
-            if not _is_temporary_model_error(
+            if not _is_temporary_error(
                 error_text
             ):
 
@@ -666,8 +686,7 @@ def generate_market_ai(
                 }
 
             # ------------------------------------------------
-            # 503 -> model tiếp theo.
-            # Không retry model hiện tại.
+            # 503 -> model tiếp
             # ------------------------------------------------
 
     return {
@@ -675,8 +694,7 @@ def generate_market_ai(
         "text": "",
         "model": None,
         "error": (
-            "Không có model Gemini nào khả dụng "
-            "ở thời điểm hiện tại.\n\n"
+            "Các model Gemini hiện không khả dụng.\n\n"
             + "\n".join(
                 errors
             )
@@ -685,32 +703,24 @@ def generate_market_ai(
 
 
 # ============================================================
-# AI CACHE
+# AI CACHE — TEXT ONLY
 # ============================================================
 
 @st.cache_data(
     ttl=AI_CACHE_TTL,
     show_spinner=False,
 )
-def generate_market_ai_cached(
+def generate_market_ai_text_cached(
     news_context,
     user_question,
 ):
     """
-    Cache theo:
-        news_context
-        user_question
-
-    Vì vậy:
-
-        cùng tin + cùng câu hỏi
-              ↓
-        không gọi Gemini lại
+    Cache cho trường hợp không có ảnh.
     """
 
     return generate_market_ai(
-        news_context,
-        user_question,
+        news_context=news_context,
+        user_question=user_question,
     )
 
 
@@ -799,17 +809,17 @@ def render_ai_panel(
 ):
 
     st.subheader(
-        "✨ Tổng hợp bằng AI"
+        "✨ BRIAN AI"
     )
 
     st.caption(
-        f"Brian AI đang có {len(news)} tin nguồn."
+        f"AI đang có {len(news)} tin nguồn."
     )
 
     if not news:
 
         st.info(
-            "Chưa có tin để AI phân tích."
+            "Chưa có tin để phân tích."
         )
 
         return
@@ -823,49 +833,35 @@ def render_ai_panel(
         [
             "⚡ Tóm tắt nhanh",
             "✍️ Hỏi AI",
+            "📷 Phân tích ảnh",
         ],
         horizontal=True,
         key="market_news_ai_mode",
     )
 
     # ========================================================
-    # AUTO SUMMARY
+    # QUESTION
     # ========================================================
 
-    if mode == "⚡ Tóm tắt nhanh":
+    user_question = ""
 
-        user_question = ""
-
-        st.info(
-            "AI sẽ tự lọc những câu chuyện quan trọng "
-            "nhất trong các tin hiện có."
-        )
-
-        button_text = (
-            "🤖 Tóm tắt thị trường"
-        )
-
-    # ========================================================
-    # CUSTOM QUESTION
-    # ========================================================
-
-    else:
+    if mode == "✍️ Hỏi AI":
 
         st.markdown(
-            "#### ✍️ Nhập câu hỏi cho AI"
+            "#### ✍️ Nhập câu hỏi"
         )
 
         user_question = st.text_area(
             "Prompt",
             placeholder=(
-                "Ví dụ:\n\n"
-                "Hôm nay thị trường đang quan tâm điều gì nhất?\n\n"
-                "Tin nào ảnh hưởng tới nhóm ngân hàng?\n\n"
-                "Tóm tắt riêng câu chuyện nâng hạng MSCI.\n\n"
-                "Lọc những tin tiêu cực trong hôm nay.\n\n"
-                "VN-Index tăng nhưng thanh khoản giảm nói lên điều gì?"
+                "Ví dụ:\n"
+                "Hôm nay thị trường đang quan tâm điều gì nhất?\n"
+                "Tin nào ảnh hưởng nhóm ngân hàng?\n"
+                "Tóm tắt riêng câu chuyện nâng hạng MSCI.\n"
+                "Lọc các tin tiêu cực.\n"
+                "VN-Index tăng nhưng thanh khoản nói lên điều gì?"
             ),
-            height=150,
+            height=140,
             label_visibility="collapsed",
             key="market_news_ai_question",
         ).strip()
@@ -874,11 +870,77 @@ def render_ai_panel(
             "🤖 Phân tích câu hỏi"
         )
 
-        if not user_question:
+    elif mode == "📷 Phân tích ảnh":
 
-            st.caption(
-                "Nhập câu hỏi rồi bấm nút."
+        st.markdown(
+            "#### 📷 Gửi ảnh cho AI"
+        )
+
+        image_file = st.file_uploader(
+            "Chọn ảnh",
+            type=[
+                "png",
+                "jpg",
+                "jpeg",
+                "webp",
+            ],
+            key="market_news_ai_image",
+            help=(
+                "Upload screenshot bảng giá, biểu đồ, "
+                "báo cáo hoặc hình ảnh tin tức."
+            ),
+        )
+
+        if image_file is not None:
+
+            image_size = len(
+                image_file.getvalue()
             )
+
+            if image_size > MAX_IMAGE_BYTES:
+
+                st.error(
+                    "Ảnh quá lớn. Vui lòng dùng ảnh dưới 10 MB."
+                )
+
+                return
+
+            st.image(
+                image_file,
+                caption="Ảnh đã chọn",
+                width="stretch",
+            )
+
+        user_question = st.text_area(
+            "Prompt cho ảnh",
+            placeholder=(
+                "Ví dụ:\n"
+                "Phân tích biểu đồ này.\n"
+                "Đọc các số liệu trong ảnh.\n"
+                "Tín hiệu kỹ thuật đáng chú ý là gì?\n"
+                "Kết hợp ảnh này với tin tức hôm nay."
+            ),
+            height=120,
+            label_visibility="collapsed",
+            key="market_news_ai_image_question",
+        ).strip()
+
+        button_text = (
+            "📷 Phân tích ảnh"
+        )
+
+    else:
+
+        button_text = (
+            "🤖 Tóm tắt thị trường"
+        )
+
+        st.info(
+            "AI sẽ tự chọn những câu chuyện quan trọng nhất "
+            "từ các tin hiện có."
+        )
+
+        image_file = None
 
     # ========================================================
     # RUN
@@ -888,8 +950,12 @@ def render_ai_panel(
         button_text,
         type="primary",
         width="stretch",
-        key="market_news_ai_run_button",
+        key="market_news_ai_run",
     ):
+
+        # ----------------------------------------------------
+        # Validate question
+        # ----------------------------------------------------
 
         if (
             mode == "✍️ Hỏi AI"
@@ -897,25 +963,92 @@ def render_ai_panel(
         ):
 
             st.warning(
-                "Mày chưa nhập câu hỏi."
+                "Nhập câu hỏi trước."
             )
 
             return
+
+        # ----------------------------------------------------
+        # Validate image
+        # ----------------------------------------------------
+
+        if (
+            mode == "📷 Phân tích ảnh"
+            and image_file is None
+        ):
+
+            st.warning(
+                "Hãy upload một ảnh trước."
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # Context
+        # ----------------------------------------------------
 
         context = build_news_context(
             news
         )
 
-        with st.spinner(
-            "Brian AI đang đọc tin..."
+        # ----------------------------------------------------
+        # IMAGE BYTES
+        # ----------------------------------------------------
+
+        image_bytes = None
+        image_mime = None
+
+        if (
+            mode == "📷 Phân tích ảnh"
+            and image_file is not None
         ):
 
-            result = (
-                generate_market_ai_cached(
-                    context,
-                    user_question,
-                )
+            image_bytes = (
+                image_file.getvalue()
             )
+
+            image_mime = _text(
+                image_file.type,
+                "image/jpeg",
+            )
+
+        # ----------------------------------------------------
+        # AI
+        # ----------------------------------------------------
+
+        with st.spinner(
+            "Brian AI đang đọc dữ liệu..."
+        ):
+
+            # ------------------------------------------------
+            # TEXT ONLY
+            # Cache.
+            # ------------------------------------------------
+
+            if image_bytes is None:
+
+                result = (
+                    generate_market_ai_text_cached(
+                        context,
+                        user_question,
+                    )
+                )
+
+            # ------------------------------------------------
+            # IMAGE
+            #
+            # Không cache bytes phức tạp.
+            # Chỉ gọi một request.
+            # ------------------------------------------------
+
+            else:
+
+                result = generate_market_ai(
+                    news_context=context,
+                    user_question=user_question,
+                    image_bytes=image_bytes,
+                    image_mime=image_mime,
+                )
 
         st.session_state[
             "market_news_ai_result"
@@ -924,6 +1057,12 @@ def render_ai_panel(
         st.session_state[
             "market_news_ai_question_used"
         ] = user_question
+
+        st.session_state[
+            "market_news_ai_has_image"
+        ] = bool(
+            image_bytes
+        )
 
     # ========================================================
     # RESULT
@@ -976,7 +1115,7 @@ def render_ai_panel(
         )
 
     # ========================================================
-    # QUESTION USED
+    # QUESTION
     # ========================================================
 
     question_used = st.session_state.get(
@@ -991,12 +1130,27 @@ def render_ai_panel(
         ):
 
             st.caption(
-                "Câu hỏi đã gửi"
+                "Câu hỏi"
             )
 
             st.write(
                 question_used
             )
+
+    # ========================================================
+    # IMAGE STATUS
+    # ========================================================
+
+    has_image = st.session_state.get(
+        "market_news_ai_has_image",
+        False,
+    )
+
+    if has_image:
+
+        st.caption(
+            "📷 AI đã phân tích ảnh được upload."
+        )
 
     # ========================================================
     # OUTPUT
@@ -1011,9 +1165,13 @@ def render_ai_panel(
 
     if output:
 
-        st.markdown(
-            output
-        )
+        with st.container(
+            border=True
+        ):
+
+            st.markdown(
+                output
+            )
 
 
 # ============================================================
@@ -1035,8 +1193,9 @@ def render_market_news():
     )
 
     st.write(
-        "Tổng hợp tin tức thị trường và dùng Brian AI "
-        "để lọc ra những thông tin thực sự đáng chú ý."
+        "Tin tức thị trường được thu thập từ nguồn thật. "
+        "Brian AI có thể tự tổng hợp, trả lời câu hỏi "
+        "hoặc phân tích trực tiếp ảnh bạn gửi."
     )
 
     # ========================================================
@@ -1077,21 +1236,9 @@ def render_market_news():
 
     if refresh:
 
-        # ----------------------------------------------------
-        # Clear news cache
-        # ----------------------------------------------------
-
         load_news_cached.clear()
 
-        # ----------------------------------------------------
-        # Clear AI cache
-        # ----------------------------------------------------
-
-        generate_market_ai_cached.clear()
-
-        # ----------------------------------------------------
-        # Clear old AI result
-        # ----------------------------------------------------
+        generate_market_ai_text_cached.clear()
 
         st.session_state.pop(
             "market_news_ai_result",
@@ -1100,6 +1247,11 @@ def render_market_news():
 
         st.session_state.pop(
             "market_news_ai_question_used",
+            None,
+        )
+
+        st.session_state.pop(
+            "market_news_ai_has_image",
             None,
         )
 
@@ -1114,7 +1266,7 @@ def render_market_news():
     )
 
     # ========================================================
-    # NEWS LOADING ERROR
+    # ERROR
     # ========================================================
 
     if (
@@ -1145,10 +1297,6 @@ def render_market_news():
         loaded
     )
 
-    # ========================================================
-    # EMPTY
-    # ========================================================
-
     if not news:
 
         st.warning(
@@ -1174,7 +1322,7 @@ def render_market_news():
     )
 
     # ========================================================
-    # NEWS SOURCE
+    # SOURCE NEWS
     # ========================================================
 
     st.divider()
@@ -1196,9 +1344,8 @@ def render_market_news():
     st.divider()
 
     st.caption(
-        "Brian AI chỉ sử dụng các tin đã được hệ thống "
-        "thu thập. Hãy kiểm tra bài viết gốc trước khi "
-        "sử dụng thông tin cho quyết định đầu tư."
+        "Brian AI chỉ phân tích dữ liệu được cung cấp "
+        "và không thay thế việc kiểm tra nguồn gốc bài viết."
     )
 
 
