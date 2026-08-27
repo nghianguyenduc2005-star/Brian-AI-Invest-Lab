@@ -1,5 +1,6 @@
 import re
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -7,27 +8,6 @@ import requests
 import streamlit as st
 
 from config.settings import VIETNAM_TICKERS
-
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-DNSE_BASE_URL = "https://api.dnse.com.vn"
-
-DNSE_HEADERS = {
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-    "Origin": "https://banggia.dnse.com.vn",
-    "Referer": "https://banggia.dnse.com.vn/",
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/151.0.0.0 Safari/537.36"
-    ),
-}
-
-TIMEOUT = 20
 
 
 # ============================================================
@@ -40,17 +20,44 @@ def normalize_symbol(s):
     if not s:
         return "HPG"
 
-    # Không dùng .VN cho DNSE
-    s = s.replace(".VN", "")
+    # Cho phép người dùng nhập HPG hoặc HPG.VN
+    if s.endswith(".VN"):
+        s = s[:-3]
 
-    if re.fullmatch(r"[A-Z0-9]{2,10}", s):
+    if re.fullmatch(r"[A-Z0-9]{2,5}", s):
         return s
 
-    return "HPG"
+    return s
 
 
 def display_symbol(s):
-    return str(s).upper().replace(".VN", "")
+    return normalize_symbol(s)
+
+
+# ============================================================
+# DNSE
+# ============================================================
+
+DNSE_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "vi,en-US;q=0.9,en;q=0.8",
+    "Origin": "https://banggia.dnse.com.vn",
+    "Referer": "https://banggia.dnse.com.vn/",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/151.0.0.0 Safari/537.36"
+    ),
+}
+
+
+# Endpoint chart data của DNSE/Entrade.
+# Không dùng /price-api/query vì endpoint đó đang trả 422
+# với payload hiện tại của project.
+DNSE_OHLC_URLS = [
+    "https://api.dnse.com.vn/chart-api/v2/ohlcs/stock",
+    "https://services.entrade.com.vn/chart-api/v2/ohlcs/stock",
+]
 
 
 # ============================================================
@@ -75,9 +82,7 @@ def rsi(series, period=14):
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
 
-    result = 100 - (100 / (1 + rs))
-
-    return result
+    return 100 - (100 / (1 + rs))
 
 
 # ============================================================
@@ -85,43 +90,17 @@ def rsi(series, period=14):
 # ============================================================
 
 def add_indicators(df):
+
     df = df.copy()
 
     if df.empty:
         raise ValueError("DataFrame rỗng.")
 
-    # MultiIndex
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [
-            str(c[0]) if isinstance(c, tuple) else str(c)
-            for c in df.columns
-        ]
-
     # Chuẩn hóa tên cột
-    rename_map = {}
-
-    for col in df.columns:
-        c = str(col).strip().lower()
-
-        if c in ["open", "openprice", "open_price"]:
-            rename_map[col] = "Open"
-
-        elif c in ["high", "highprice", "high_price"]:
-            rename_map[col] = "High"
-
-        elif c in ["low", "lowprice", "low_price"]:
-            rename_map[col] = "Low"
-
-        elif c in ["close", "closeprice", "close_price", "lastprice"]:
-            rename_map[col] = "Close"
-
-        elif c in ["volume", "totalvolume", "total_volume"]:
-            rename_map[col] = "Volume"
-
-        elif c in ["date", "datetime", "time", "tradingdate"]:
-            rename_map[col] = "Date"
-
-    df = df.rename(columns=rename_map)
+    df.columns = [
+        str(c).strip().title()
+        for c in df.columns
+    ]
 
     required = [
         "Open",
@@ -131,41 +110,65 @@ def add_indicators(df):
         "Volume",
     ]
 
-    missing = [
-        col for col in required
-        if col not in df.columns
-    ]
+    for col in required:
 
-    if missing:
-        raise ValueError(
-            "DNSE trả về thiếu cột: "
-            + ", ".join(missing)
-            + f". Cột hiện có: {list(df.columns)}"
-        )
+        if col not in df.columns:
+
+            # Một số response có volume viết khác
+            if col == "Volume":
+
+                alternatives = [
+                    "Vol",
+                    "Totalvolume",
+                    "Total Volume",
+                ]
+
+                found = next(
+                    (
+                        x
+                        for x in alternatives
+                        if x in df.columns
+                    ),
+                    None,
+                )
+
+                if found:
+                    df["Volume"] = df[found]
+                    continue
+
+            raise ValueError(
+                f"DNSE thiếu cột {col}. "
+                f"Các cột nhận được: {list(df.columns)}"
+            )
 
     # Numeric
     for col in required:
+
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce"
         )
 
     # Date
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(
-            df["Date"],
-            errors="coerce"
-        )
+    if not isinstance(df.index, pd.DatetimeIndex):
 
-        df = df.set_index("Date")
+        if "Date" in df.columns:
 
-    elif not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(
-            df.index,
-            errors="coerce"
-        )
+            df["Date"] = pd.to_datetime(
+                df["Date"],
+                errors="coerce"
+            )
 
-    df = df.sort_index()
+            df = df.set_index("Date")
+
+        elif "Time" in df.columns:
+
+            df["Time"] = pd.to_datetime(
+                df["Time"],
+                errors="coerce"
+            )
+
+            df = df.set_index("Time")
 
     df = df.dropna(
         subset=[
@@ -176,26 +179,33 @@ def add_indicators(df):
         ]
     )
 
-    if df.empty:
+    df = df.sort_index()
+
+    if len(df) < 20:
+
         raise ValueError(
-            "DNSE trả về dữ liệu nhưng không có OHLC hợp lệ."
+            f"DNSE chỉ trả {len(df)} phiên, "
+            "không đủ dữ liệu để tính chỉ báo."
         )
 
-    # ========================================================
+    # --------------------------------------------------------
     # RETURN
-    # ========================================================
+    # --------------------------------------------------------
 
     df["Return"] = df["Close"].pct_change()
 
-    # ========================================================
+    # --------------------------------------------------------
     # RSI
-    # ========================================================
+    # --------------------------------------------------------
 
-    df["RSI"] = rsi(df["Close"])
+    df["RSI"] = rsi(
+        df["Close"],
+        period=14
+    )
 
-    # ========================================================
-    # MACD
-    # ========================================================
+    # --------------------------------------------------------
+    # EMA / MACD
+    # --------------------------------------------------------
 
     ema12 = df["Close"].ewm(
         span=12,
@@ -214,9 +224,9 @@ def add_indicators(df):
         adjust=False
     ).mean()
 
-    # ========================================================
-    # MOVING AVERAGES
-    # ========================================================
+    # --------------------------------------------------------
+    # SMA
+    # --------------------------------------------------------
 
     df["SMA20"] = (
         df["Close"]
@@ -230,9 +240,9 @@ def add_indicators(df):
         .mean()
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # VOLATILITY
-    # ========================================================
+    # --------------------------------------------------------
 
     df["Volatility20"] = (
         df["Return"]
@@ -242,12 +252,6 @@ def add_indicators(df):
         * 100
     )
 
-    # Không bắt buộc drop hết indicator
-    # để tránh mất dữ liệu nếu DNSE trả ít phiên.
-    df = df.dropna(
-        subset=["Close"]
-    )
-
     return df
 
 
@@ -255,187 +259,328 @@ def add_indicators(df):
 # DNSE RESPONSE PARSER
 # ============================================================
 
-def _find_records(obj):
-    """
-    Tìm list record trong response DNSE.
-    DNSE có thể thay đổi wrapper JSON,
-    nên không hard-code một key duy nhất.
-    """
+def _parse_dnse_response(payload):
 
-    if isinstance(obj, list):
-        return obj
+    if payload is None:
+        return None
 
-    if isinstance(obj, dict):
+    # --------------------------------------------------------
+    # Case 1:
+    # {
+    #   "t": [...],
+    #   "o": [...],
+    #   "h": [...],
+    #   "l": [...],
+    #   "c": [...],
+    #   "v": [...]
+    # }
+    # --------------------------------------------------------
 
-        preferred_keys = [
-            "data",
-            "items",
-            "results",
-            "content",
-            "rows",
-            "candles",
-            "ohlc",
-            "dataList",
-        ]
+    if isinstance(payload, dict):
 
-        for key in preferred_keys:
-            value = obj.get(key)
+        keys = {
+            str(k).lower(): k
+            for k in payload.keys()
+        }
 
-            if isinstance(value, list):
-                return value
+        if all(
+            x in keys
+            for x in ["t", "o", "h", "l", "c"]
+        ):
 
-        # Tìm sâu hơn
-        for value in obj.values():
-            result = _find_records(value)
+            t = payload[keys["t"]]
+            o = payload[keys["o"]]
+            h = payload[keys["h"]]
+            l = payload[keys["l"]]
+            c = payload[keys["c"]]
 
-            if result:
-                return result
-
-    return []
-
-
-def _records_to_dataframe(records):
-    if not records:
-        return pd.DataFrame()
-
-    # Record dạng dict
-    if isinstance(records[0], dict):
-        return pd.DataFrame(records)
-
-    # Record dạng array
-    if isinstance(records[0], (list, tuple)):
-
-        if len(records[0]) >= 6:
-
-            columns = [
-                "Date",
-                "Open",
-                "High",
-                "Low",
-                "Close",
-                "Volume",
-            ]
-
-            return pd.DataFrame(
-                records,
-                columns=columns[:len(records[0])]
+            v = payload.get(
+                keys.get("v"),
+                [0] * len(c)
             )
 
-    return pd.DataFrame()
+            df = pd.DataFrame(
+                {
+                    "Timestamp": t,
+                    "Open": o,
+                    "High": h,
+                    "Low": l,
+                    "Close": c,
+                    "Volume": v,
+                }
+            )
+
+            return df
+
+        # ----------------------------------------------------
+        # Một số response bọc trong data
+        # ----------------------------------------------------
+
+        for key in [
+            "data",
+            "result",
+            "results",
+            "candles",
+            "items",
+        ]:
+
+            if key in payload:
+
+                result = _parse_dnse_response(
+                    payload[key]
+                )
+
+                if result is not None:
+                    return result
+
+    # --------------------------------------------------------
+    # Case 2:
+    # list of candles
+    # --------------------------------------------------------
+
+    if isinstance(payload, list):
+
+        if not payload:
+            return None
+
+        # list dict
+        if isinstance(payload[0], dict):
+
+            rows = []
+
+            for item in payload:
+
+                lower = {
+                    str(k).lower(): v
+                    for k, v in item.items()
+                }
+
+                rows.append(
+                    {
+                        "Timestamp": (
+                            lower.get("t")
+                            or lower.get("time")
+                            or lower.get("timestamp")
+                            or lower.get("date")
+                        ),
+                        "Open": (
+                            lower.get("o")
+                            or lower.get("open")
+                        ),
+                        "High": (
+                            lower.get("h")
+                            or lower.get("high")
+                        ),
+                        "Low": (
+                            lower.get("l")
+                            or lower.get("low")
+                        ),
+                        "Close": (
+                            lower.get("c")
+                            or lower.get("close")
+                        ),
+                        "Volume": (
+                            lower.get("v")
+                            or lower.get("volume")
+                            or 0
+                        ),
+                    }
+                )
+
+            return pd.DataFrame(rows)
+
+        # list arrays
+        if isinstance(payload[0], (list, tuple)):
+
+            rows = []
+
+            for item in payload:
+
+                if len(item) >= 5:
+
+                    rows.append(
+                        {
+                            "Timestamp": item[0],
+                            "Open": item[1],
+                            "High": item[2],
+                            "Low": item[3],
+                            "Close": item[4],
+                            "Volume": (
+                                item[5]
+                                if len(item) > 5
+                                else 0
+                            ),
+                        }
+                    )
+
+            if rows:
+                return pd.DataFrame(rows)
+
+    return None
 
 
 # ============================================================
 # DNSE HISTORY
 # ============================================================
 
-def _request_dnse_history(
+def _fetch_dnse_history(
     symbol,
-    start_date,
-    end_date,
+    period="1y",
 ):
-    """
-    Thử các endpoint market-data hiện có.
-
-    Không dùng vnstock.
-    Không dùng yfinance.
-    """
 
     symbol = normalize_symbol(symbol)
 
-    # Endpoint REST cũ của bảng giá DNSE.
-    # Một số hệ thống DNSE dùng POST /price-api/query.
-    url = (
-        f"{DNSE_BASE_URL}"
-        "/price-api/query"
+    now = int(time.time())
+
+    period_seconds = {
+        "1mo": 35 * 86400,
+        "3mo": 100 * 86400,
+        "6mo": 190 * 86400,
+        "1y": 380 * 86400,
+        "2y": 760 * 86400,
+        "5y": 1900 * 86400,
+    }
+
+    seconds = period_seconds.get(
+        period,
+        period_seconds["1y"]
     )
 
-    payloads = [
+    start = now - seconds
 
-        # Query OHLC
-        {
-            "symbol": symbol,
-            "from": start_date,
-            "to": end_date,
-            "resolution": "1D",
-        },
-
-        {
-            "symbol": symbol,
-            "fromDate": start_date,
-            "toDate": end_date,
-            "resolution": "1D",
-        },
-
-        {
-            "symbols": [symbol],
-            "from": start_date,
-            "to": end_date,
-            "resolution": "1D",
-        },
-
-    ]
+    params = {
+        "from": start,
+        "to": now,
+        "symbol": symbol,
+        "resolution": "1D",
+    }
 
     last_error = None
 
-    for payload in payloads:
+    for url in DNSE_OHLC_URLS:
 
         try:
 
-            response = requests.post(
+            response = requests.get(
                 url,
+                params=params,
                 headers=DNSE_HEADERS,
-                json=payload,
-                timeout=TIMEOUT,
+                timeout=20,
             )
 
-            if response.status_code == 404:
+            if response.status_code != 200:
+
                 last_error = (
-                    f"DNSE 404: {url}"
+                    f"HTTP {response.status_code}: "
+                    f"{response.text[:500]}"
                 )
+
                 continue
 
-            if response.status_code >= 400:
+            payload = response.json()
+
+            df = _parse_dnse_response(
+                payload
+            )
+
+            if df is None or df.empty:
+
                 last_error = (
-                    f"DNSE HTTP {response.status_code}: "
-                    f"{response.text[:300]}"
+                    "DNSE trả response nhưng "
+                    "không tìm thấy OHLC."
                 )
+
                 continue
 
-            body = response.json()
+            return df
 
-            records = _find_records(body)
+        except Exception as e:
 
-            if records:
-
-                df = _records_to_dataframe(
-                    records
-                )
-
-                if not df.empty:
-                    return df
-
-        except requests.RequestException as e:
             last_error = str(e)
 
-        except ValueError as e:
-            last_error = (
-                f"JSON không hợp lệ: {e}"
-            )
-
     raise ValueError(
-        "DNSE không trả dữ liệu OHLC cho "
-        f"{symbol}. "
-        f"Endpoint hiện tại: {url}. "
+        f"Không lấy được dữ liệu DNSE cho {symbol}. "
         f"Lỗi cuối: {last_error}"
     )
 
 
 # ============================================================
-# PUBLIC LOAD FUNCTION
+# NORMALIZE HISTORY
+# ============================================================
+
+def _normalize_history(df):
+
+    df = df.copy()
+
+    if "Timestamp" in df.columns:
+
+        ts = pd.to_numeric(
+            df["Timestamp"],
+            errors="coerce"
+        )
+
+        # milliseconds
+        if ts.dropna().max() > 10_000_000_000:
+
+            df["Timestamp"] = pd.to_datetime(
+                ts,
+                unit="ms",
+                errors="coerce"
+            )
+
+        else:
+
+            df["Timestamp"] = pd.to_datetime(
+                ts,
+                unit="s",
+                errors="coerce"
+            )
+
+        df = df.set_index(
+            "Timestamp"
+        )
+
+    elif "Date" in df.columns:
+
+        df["Date"] = pd.to_datetime(
+            df["Date"],
+            errors="coerce"
+        )
+
+        df = df.set_index("Date")
+
+    df.index = pd.to_datetime(
+        df.index,
+        errors="coerce"
+    )
+
+    df = df[
+        ~df.index.isna()
+    ]
+
+    # Remove timezone
+    try:
+
+        if df.index.tz is not None:
+
+            df.index = (
+                df.index
+                .tz_convert("Asia/Ho_Chi_Minh")
+                .tz_localize(None)
+            )
+
+    except Exception:
+        pass
+
+    return df.sort_index()
+
+
+# ============================================================
+# MAIN MARKET DATA
 # ============================================================
 
 @st.cache_data(
-    ttl=300,
+    ttl=900,
     show_spinner=False
 )
 def load_market_data(
@@ -445,52 +590,142 @@ def load_market_data(
 
     symbol = normalize_symbol(symbol)
 
-    # ========================================================
-    # PERIOD
-    # ========================================================
-
-    period_days = {
-        "1mo": 31,
-        "3mo": 93,
-        "6mo": 186,
-        "1y": 366,
-        "2y": 732,
-        "5y": 1825,
-    }
-
-    days = period_days.get(
-        period,
-        366
-    )
-
-    end_date = datetime.now()
-
-    start_date = (
-        end_date
-        - timedelta(days=days)
-    )
-
-    start_str = start_date.strftime(
-        "%Y-%m-%d"
-    )
-
-    end_str = end_date.strftime(
-        "%Y-%m-%d"
-    )
-
-    # ========================================================
-    # DNSE
-    # ========================================================
-
-    df = _request_dnse_history(
+    df = _fetch_dnse_history(
         symbol,
-        start_str,
-        end_str,
+        period
     )
 
-    if df is None or df.empty:
+    df = _normalize_history(df)
+
+    df = add_indicators(df)
+
+    if df.empty:
+
         raise ValueError(
-            f"DNSE không có dữ liệu cho {symbol}."
+            f"Không có dữ liệu sau khi xử lý {symbol}."
         )
 
-    return add_indicators(df)
+    return df
+
+
+# ============================================================
+# LATEST QUOTE
+# ============================================================
+
+def get_latest_price(symbol):
+
+    df = load_market_data(
+        symbol,
+        "1mo"
+    )
+
+    if df.empty:
+        return None
+
+    last = df.iloc[-1]
+
+    close = float(last["Close"])
+
+    previous = (
+        float(df.iloc[-2]["Close"])
+        if len(df) >= 2
+        else close
+    )
+
+    change = close - previous
+
+    change_pct = (
+        change / previous * 100
+        if previous
+        else 0
+    )
+
+    volume = float(
+        last.get("Volume", 0)
+    )
+
+    return {
+        "symbol": normalize_symbol(symbol),
+        "price": close,
+        "change": change,
+        "change_pct": change_pct,
+        "volume": volume,
+        "date": df.index[-1],
+    }
+
+
+# ============================================================
+# VN-INDEX
+# ============================================================
+
+def get_vn_index():
+
+    candidates = [
+        "VNINDEX",
+        "VN-INDEX",
+        "VNINDEX.VN",
+    ]
+
+    errors = []
+
+    for symbol in candidates:
+
+        try:
+
+            df = _fetch_dnse_history(
+                symbol,
+                "1mo"
+            )
+
+            df = _normalize_history(df)
+
+            if df.empty:
+                continue
+
+            df = add_indicators(df)
+
+            last = df.iloc[-1]
+
+            close = float(
+                last["Close"]
+            )
+
+            previous = (
+                float(
+                    df.iloc[-2]["Close"]
+                )
+                if len(df) >= 2
+                else close
+            )
+
+            change = close - previous
+
+            change_pct = (
+                change / previous * 100
+                if previous
+                else 0
+            )
+
+            volume = float(
+                last.get("Volume", 0)
+            )
+
+            return {
+                "symbol": "VN-INDEX",
+                "price": close,
+                "change": change,
+                "change_pct": change_pct,
+                "volume": volume,
+                "date": df.index[-1],
+            }
+
+        except Exception as e:
+
+            errors.append(
+                f"{symbol}: {e}"
+            )
+
+    raise ValueError(
+        "DNSE chưa trả được VN-INDEX. "
+        + " | ".join(errors)
+    )
