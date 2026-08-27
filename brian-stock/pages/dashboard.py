@@ -17,170 +17,274 @@ from data.news import fetch_market_news
 # HÀM TIỆN ÍCH
 # ============================================================
 
-def _so(value, mac_dinh=None):
+def _so(gia_tri, mac_dinh=None):
     try:
-        value = float(value)
+        gia_tri = float(gia_tri)
 
-        if pd.isna(value):
+        if pd.isna(gia_tri):
             return mac_dinh
 
-        return value
+        return gia_tri
 
     except Exception:
         return mac_dinh
 
 
-def _tim_cot(df, cac_ten):
-    if df is None or df.empty:
+def _tim_cot(
+    du_lieu,
+    danh_sach_ten,
+):
+    if (
+        du_lieu is None
+        or du_lieu.empty
+    ):
         return None
 
-    ban_do = {
-        str(cot).strip().lower(): cot
-        for cot in df.columns
-    }
+    for cot in du_lieu.columns:
 
-    for ten in cac_ten:
-        cot = ban_do.get(
-            str(ten).strip().lower()
-        )
+        ten_cot = str(
+            cot
+        ).strip().lower()
 
-        if cot is not None:
-            return cot
+        for ten_tim in danh_sach_ten:
+
+            if ten_cot == str(
+                ten_tim
+            ).strip().lower():
+
+                return cot
 
     return None
 
 
-def _dinh_dang_khoi_luong(value):
-    value = _so(value, 0)
+def _dinh_dang_khoi_luong(
+    gia_tri,
+):
+    gia_tri = _so(
+        gia_tri,
+        0,
+    )
 
-    if value >= 1_000_000_000:
-        return f"{value / 1_000_000_000:.2f} tỷ"
+    if gia_tri >= 1_000_000_000:
+        return (
+            f"{gia_tri / 1_000_000_000:.2f} tỷ"
+        )
 
-    if value >= 1_000_000:
-        return f"{value / 1_000_000:.2f} triệu"
+    if gia_tri >= 1_000_000:
+        return (
+            f"{gia_tri / 1_000_000:.2f} triệu"
+        )
 
-    if value >= 1_000:
-        return f"{value / 1_000:.2f} nghìn"
+    if gia_tri >= 1_000:
+        return (
+            f"{gia_tri / 1_000:.2f} nghìn"
+        )
 
-    return f"{value:,.0f}"
+    return f"{gia_tri:,.0f}"
 
 
 # ============================================================
-# VN-INDEX
+# LẤY VN-INDEX
 # ============================================================
 
 def _lay_vn_index():
+
     try:
+
         du_lieu = load_vnindex_data()
 
-    except Exception:
-        return None
+        if (
+            du_lieu is None
+            or du_lieu.empty
+        ):
+            return None, "Nguồn VN-INDEX trả về dữ liệu rỗng."
 
-    if du_lieu is None or du_lieu.empty:
-        return None
+        du_lieu = du_lieu.copy()
 
-    du_lieu = du_lieu.copy()
+        # ----------------------------------------------------
+        # Tìm cột đóng cửa
+        # ----------------------------------------------------
 
-    # --------------------------------------------------------
-    # Tìm cột giá đóng cửa
-    # --------------------------------------------------------
-
-    cot_dong_cua = _tim_cot(
-        du_lieu,
-        [
-            "Close",
-            "close",
-            "Đóng cửa",
-            "đóng cửa",
-            "last",
-            "price",
-            "index",
-        ],
-    )
-
-    if cot_dong_cua is None:
-        return None
-
-    du_lieu[cot_dong_cua] = pd.to_numeric(
-        du_lieu[cot_dong_cua],
-        errors="coerce",
-    )
-
-    du_lieu = du_lieu.dropna(
-        subset=[cot_dong_cua]
-    )
-
-    if du_lieu.empty:
-        return None
-
-    gia_hien_tai = float(
-        du_lieu[cot_dong_cua].iloc[-1]
-    )
-
-    # --------------------------------------------------------
-    # Thay đổi
-    # --------------------------------------------------------
-
-    thay_doi = 0.0
-    phan_tram = 0.0
-
-    if len(du_lieu) >= 2:
-
-        gia_truoc = float(
-            du_lieu[cot_dong_cua].iloc[-2]
+        cot_dong_cua = _tim_cot(
+            du_lieu,
+            [
+                "Close",
+                "close",
+                "Đóng cửa",
+                "đóng cửa",
+                "last",
+                "price",
+            ],
         )
 
-        thay_doi = (
-            gia_hien_tai
-            - gia_truoc
-        )
-
-        if gia_truoc != 0:
-            phan_tram = (
-                thay_doi
-                / gia_truoc
-                * 100
+        if cot_dong_cua is None:
+            return (
+                None,
+                "Không tìm thấy cột giá VN-INDEX."
             )
 
-    # --------------------------------------------------------
-    # Khối lượng
-    # --------------------------------------------------------
-
-    cot_khoi_luong = _tim_cot(
-        du_lieu,
-        [
-            "Volume",
-            "volume",
-            "Khối lượng",
-            "khối lượng",
-        ],
-    )
-
-    khoi_luong = None
-
-    if cot_khoi_luong is not None:
-
-        du_lieu[cot_khoi_luong] = pd.to_numeric(
-            du_lieu[cot_khoi_luong],
+        du_lieu[cot_dong_cua] = pd.to_numeric(
+            du_lieu[cot_dong_cua],
             errors="coerce",
         )
 
-        khoi_luong = _so(
-            du_lieu[cot_khoi_luong].iloc[-1],
+        du_lieu = du_lieu.dropna(
+            subset=[
+                cot_dong_cua
+            ]
+        )
+
+        if du_lieu.empty:
+            return (
+                None,
+                "Không còn giá VN-INDEX hợp lệ."
+            )
+
+        # ----------------------------------------------------
+        # Điểm hiện tại
+        # ----------------------------------------------------
+
+        diem_hien_tai = float(
+            du_lieu[
+                cot_dong_cua
+            ].iloc[-1]
+        )
+
+        # ----------------------------------------------------
+        # Thay đổi
+        # ----------------------------------------------------
+
+        thay_doi_diem = 0.0
+        thay_doi_phan_tram = 0.0
+
+        if len(
+            du_lieu
+        ) >= 2:
+
+            diem_truoc = float(
+                du_lieu[
+                    cot_dong_cua
+                ].iloc[-2]
+            )
+
+            thay_doi_diem = (
+                diem_hien_tai
+                - diem_truoc
+            )
+
+            if diem_truoc != 0:
+
+                thay_doi_phan_tram = (
+                    thay_doi_diem
+                    / diem_truoc
+                    * 100
+                )
+
+        # ----------------------------------------------------
+        # Nếu nguồn đã có Change
+        # ----------------------------------------------------
+
+        cot_thay_doi = _tim_cot(
+            du_lieu,
+            [
+                "Change",
+                "change",
+                "Thay đổi",
+            ],
+        )
+
+        if cot_thay_doi is not None:
+
+            gia_tri = _so(
+                du_lieu[
+                    cot_thay_doi
+                ].iloc[-1],
+                None,
+            )
+
+            if gia_tri is not None:
+                thay_doi_diem = gia_tri
+
+        # ----------------------------------------------------
+        # Nếu nguồn đã có ChangePercent
+        # ----------------------------------------------------
+
+        cot_phan_tram = _tim_cot(
+            du_lieu,
+            [
+                "ChangePercent",
+                "change_percent",
+                "Percent",
+                "percent",
+                "Phần trăm thay đổi",
+            ],
+        )
+
+        if cot_phan_tram is not None:
+
+            gia_tri = _so(
+                du_lieu[
+                    cot_phan_tram
+                ].iloc[-1],
+                None,
+            )
+
+            if gia_tri is not None:
+
+                # Có nguồn trả 0.65 thay vì 0.65%
+                if abs(gia_tri) < 1:
+                    thay_doi_phan_tram = (
+                        gia_tri
+                        * 100
+                    )
+                else:
+                    thay_doi_phan_tram = gia_tri
+
+        # ----------------------------------------------------
+        # Khối lượng
+        # ----------------------------------------------------
+
+        cot_khoi_luong = _tim_cot(
+            du_lieu,
+            [
+                "Volume",
+                "volume",
+                "Khối lượng",
+            ],
+        )
+
+        khoi_luong = None
+
+        if cot_khoi_luong is not None:
+
+            khoi_luong = _so(
+                du_lieu[
+                    cot_khoi_luong
+                ].iloc[-1],
+                None,
+            )
+
+        return (
+            {
+                "diem": diem_hien_tai,
+                "thay_doi": thay_doi_diem,
+                "phan_tram": thay_doi_phan_tram,
+                "khoi_luong": khoi_luong,
+                "du_lieu": du_lieu,
+            },
             None,
         )
 
-    return {
-        "diem": gia_hien_tai,
-        "thay_doi": thay_doi,
-        "phan_tram": phan_tram,
-        "khoi_luong": khoi_luong,
-        "du_lieu": du_lieu,
-    }
+    except Exception as loi:
+
+        return (
+            None,
+            str(loi),
+        )
 
 
 # ============================================================
-# RENDER DASHBOARD
+# DASHBOARD
 # ============================================================
 
 def render_dashboard():
@@ -190,32 +294,20 @@ def render_dashboard():
     # ========================================================
 
     st.markdown(
-        """
-        <div class="hero">
-            <div class="eyebrow">
-                BRIAN STOCK · INVESTMENT INTELLIGENCE
-            </div>
-
-            <h1>
-                Góc nhìn dữ liệu cho nhà đầu tư
-            </h1>
-
-            <p>
-                Dashboard nghiên cứu thị trường,
-                cổ phiếu, tin tức và AI.
-                Dữ liệu được tải trực tiếp khi cần,
-                không dùng dữ liệu ngẫu nhiên.
-            </p>
-        </div>
-        """,
+        '<div class="hero">'
+        '<div class="eyebrow">BRIAN STOCK · INVESTMENT INTELLIGENCE</div>'
+        '<h1>Góc nhìn dữ liệu cho nhà đầu tư</h1>'
+        '<p>Dashboard nghiên cứu thị trường, cổ phiếu, tin tức và AI. '
+        'Dữ liệu được tải trực tiếp khi cần, không dùng dữ liệu ngẫu nhiên.</p>'
+        '</div>',
         unsafe_allow_html=True,
     )
 
     # ========================================================
-    # LẤY VN-INDEX
+    # VN-INDEX
     # ========================================================
 
-    vn_index = _lay_vn_index()
+    vn_index, loi_vn_index = _lay_vn_index()
 
     if vn_index is None:
 
@@ -226,7 +318,9 @@ def render_dashboard():
 
     else:
 
-        vn_diem = f"{vn_index['diem']:,.2f}"
+        vn_diem = (
+            f"{vn_index['diem']:,.2f}"
+        )
 
         vn_thay_doi = (
             f"{vn_index['thay_doi']:+,.2f}"
@@ -236,11 +330,20 @@ def render_dashboard():
             f"{vn_index['phan_tram']:+.2f}%"
         )
 
-        if vn_index["khoi_luong"] is None:
+        if vn_index[
+            "khoi_luong"
+        ] is None:
+
             vn_khoi_luong = "—"
+
         else:
-            vn_khoi_luong = _dinh_dang_khoi_luong(
-                vn_index["khoi_luong"]
+
+            vn_khoi_luong = (
+                _dinh_dang_khoi_luong(
+                    vn_index[
+                        "khoi_luong"
+                    ]
+                )
             )
 
     # ========================================================
@@ -281,6 +384,23 @@ def render_dashboard():
             "READY",
             "Chỉ gọi khi yêu cầu",
         )
+
+    # ========================================================
+    # THÔNG BÁO LỖI VN-INDEX
+    # ========================================================
+
+    if (
+        vn_index is None
+        and loi_vn_index
+    ):
+
+        with st.expander(
+            "Chi tiết lỗi VN-INDEX",
+            expanded=False,
+        ):
+            st.write(
+                loi_vn_index
+            )
 
     # ========================================================
     # VN-INDEX CHI TIẾT
@@ -350,6 +470,7 @@ def render_dashboard():
         )
 
         if not ma_sach:
+
             st.warning(
                 "Vui lòng nhập mã cổ phiếu."
             )
@@ -378,7 +499,10 @@ def render_dashboard():
             "1y",
         )
 
-        if du_lieu is None or du_lieu.empty:
+        if (
+            du_lieu is None
+            or du_lieu.empty
+        ):
 
             st.warning(
                 f"Không tìm thấy dữ liệu thật "
@@ -398,10 +522,16 @@ def render_dashboard():
             # 1D
             # ------------------------------------------------
 
-            if len(du_lieu) >= 2:
+            thay_doi_1d = None
+
+            if len(
+                du_lieu
+            ) >= 2:
 
                 gia_truoc = _so(
-                    du_lieu["Close"].iloc[-2],
+                    du_lieu[
+                        "Close"
+                    ].iloc[-2],
                     None,
                 )
 
@@ -417,18 +547,14 @@ def render_dashboard():
                         - 1
                     ) * 100
 
-                else:
-                    thay_doi_1d = None
-
-            else:
-                thay_doi_1d = None
-
             # ------------------------------------------------
             # RSI
             # ------------------------------------------------
 
             rsi_value = _so(
-                dong_cuoi.get("RSI"),
+                dong_cuoi.get(
+                    "RSI"
+                ),
                 None,
             )
 
@@ -437,67 +563,59 @@ def render_dashboard():
             # ------------------------------------------------
 
             khoi_luong = _so(
-                dong_cuoi.get("Volume"),
+                dong_cuoi.get(
+                    "Volume"
+                ),
                 0,
             )
 
             # ------------------------------------------------
-            # Tiêu đề mã
+            # Tiêu đề
             # ------------------------------------------------
 
             st.markdown(
-                f"""
-                <div class="section-title">
-                    📈 {html.escape(str(ma_dang_xem))}
-                </div>
-                """,
+                f'<div class="section-title">📈 {html.escape(str(ma_dang_xem))}</div>',
                 unsafe_allow_html=True,
             )
 
             # ------------------------------------------------
-            # Cards
+            # BẢNG CHÍNH
             # ------------------------------------------------
 
             a, b, c, d = st.columns(4)
 
             with a:
 
-                if gia is None:
-                    st.metric(
-                        "Giá",
-                        "—",
-                    )
-                else:
-                    st.metric(
-                        "Giá",
-                        f"{gia:,.0f}",
-                    )
+                st.metric(
+                    "Giá",
+                    (
+                        f"{gia:,.0f}"
+                        if gia is not None
+                        else "—"
+                    ),
+                )
 
             with b:
 
-                if thay_doi_1d is None:
-                    st.metric(
-                        "1D",
-                        "—",
-                    )
-                else:
-                    st.metric(
-                        "1D",
-                        f"{thay_doi_1d:+.2f}%",
-                    )
+                st.metric(
+                    "1D",
+                    (
+                        f"{thay_doi_1d:+.2f}%"
+                        if thay_doi_1d is not None
+                        else "—"
+                    ),
+                )
 
             with c:
 
-                if rsi_value is None:
-                    st.metric(
-                        "RSI",
-                        "—",
-                    )
-                else:
-                    st.metric(
-                        "RSI",
-                        f"{rsi_value:.1f}",
-                    )
+                st.metric(
+                    "RSI",
+                    (
+                        f"{rsi_value:.1f}"
+                        if rsi_value is not None
+                        else "—"
+                    ),
+                )
 
             with d:
 
@@ -507,23 +625,29 @@ def render_dashboard():
                 )
 
             # ------------------------------------------------
-            # Thông tin chỉ báo bổ sung
+            # CHỈ BÁO
             # ------------------------------------------------
 
             e, f, g, h = st.columns(4)
 
             sma20 = _so(
-                dong_cuoi.get("SMA20"),
+                dong_cuoi.get(
+                    "SMA20"
+                ),
                 None,
             )
 
             sma50 = _so(
-                dong_cuoi.get("SMA50"),
+                dong_cuoi.get(
+                    "SMA50"
+                ),
                 None,
             )
 
             macd = _so(
-                dong_cuoi.get("MACD"),
+                dong_cuoi.get(
+                    "MACD"
+                ),
                 None,
             )
 
@@ -594,14 +718,15 @@ def render_dashboard():
                         bieu_do,
                         width="stretch",
                         config={
-                            "displaylogo": False,
+                            "displaylogo": False
                         },
                     )
 
             except Exception as loi:
 
                 st.warning(
-                    f"Không thể hiển thị biểu đồ: {loi}"
+                    "Không thể hiển thị biểu đồ: "
+                    f"{loi}"
                 )
 
     except Exception as loi:
@@ -671,22 +796,18 @@ def render_dashboard():
                     )
                 ).strip()
 
+                # QUAN TRỌNG:
+                # HTML phải viết sát trái, không thụt đầu dòng.
                 st.markdown(
-                    f"""
-                    <div class="news-card">
-                        <div class="news-title">
-                            {tieu_de}
-                        </div>
-
-                        <div class="news-meta">
-                            {nguon} · {thoi_gian}
-                        </div>
-                    </div>
-                    """,
+                    f'<div class="news-card">'
+                    f'<div class="news-title">{tieu_de}</div>'
+                    f'<div class="news-meta">{nguon} · {thoi_gian}</div>'
+                    f'</div>',
                     unsafe_allow_html=True,
                 )
 
                 if lien_ket:
+
                     st.markdown(
                         f"[Đọc bài ↗]({lien_ket})"
                     )
