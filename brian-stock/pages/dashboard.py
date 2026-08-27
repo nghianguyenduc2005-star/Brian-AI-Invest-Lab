@@ -1,4 +1,3 @@
-```python
 from __future__ import annotations
 
 import html
@@ -1007,4 +1006,3 @@ def render_dashboard():
                 st.markdown(
                     f"[Đọc bài ↗]({lien_ket})"
                 )
-```
