@@ -5,7 +5,6 @@ import streamlit as st
 
 from components.cards import metric_card
 from components.charts import price_volume_chart
-
 from data.market import (
     display_symbol,
     load_market_data,
@@ -13,51 +12,21 @@ from data.market import (
     market_snapshot,
     normalize_symbol,
 )
-
 from data.news import fetch_market_news
 
 
-# ============================================================
-# TIỆN ÍCH
-# ============================================================
-
-def to_number(value, default=None):
+def num(value, default=None):
     try:
         value = float(value)
-
         if pd.isna(value):
             return default
-
         return value
-
     except Exception:
         return default
 
 
-def find_column(df, names):
-    if df is None or df.empty:
-        return None
-
-    mapping = {
-        str(col).strip().lower(): col
-        for col in df.columns
-    }
-
-    for name in names:
-        key = str(name).strip().lower()
-
-        if key in mapping:
-            return mapping[key]
-
-    return None
-
-
-# ============================================================
-# FORMAT
-# ============================================================
-
-def fmt_volume(value):
-    value = to_number(value)
+def format_volume(value):
+    value = num(value)
 
     if value is None:
         return "—"
@@ -74,8 +43,8 @@ def fmt_volume(value):
     return f"{value:,.0f} cổ phiếu"
 
 
-def fmt_value(value):
-    value = to_number(value)
+def format_value(value):
+    value = num(value)
 
     if value is None:
         return "—"
@@ -95,8 +64,8 @@ def fmt_value(value):
     return f"{value:,.0f} đồng"
 
 
-def fmt_gia(value):
-    value = to_number(value)
+def format_price(value):
+    value = num(value)
 
     if value is None:
         return "—"
@@ -104,8 +73,8 @@ def fmt_gia(value):
     return f"{value:,.0f} đồng/cổ phiếu"
 
 
-def fmt_rsi(value):
-    value = to_number(value)
+def format_rsi(value):
+    value = num(value)
 
     if value is None:
         return "—"
@@ -113,8 +82,8 @@ def fmt_rsi(value):
     return f"{value:.1f} điểm"
 
 
-def fmt_macd(value):
-    value = to_number(value)
+def format_macd(value):
+    value = num(value)
 
     if value is None:
         return "—"
@@ -122,8 +91,8 @@ def fmt_macd(value):
     return f"{value:.3f}"
 
 
-def fmt_percent(value):
-    value = to_number(value)
+def format_percent(value):
+    value = num(value)
 
     if value is None:
         return "—"
@@ -131,32 +100,42 @@ def fmt_percent(value):
     return f"{value:+.2f}%"
 
 
-# ============================================================
-# LẤY VN-INDEX
-# ============================================================
+def find_column(df, names):
+    if df is None or df.empty:
+        return None
 
-def get_vn_index():
+    mapping = {
+        str(column).strip().lower(): column
+        for column in df.columns
+    }
+
+    for name in names:
+        key = str(name).strip().lower()
+
+        if key in mapping:
+            return mapping[key]
+
+    return None
+
+
+def get_vnindex():
 
     try:
         df = load_vnindex_data()
 
     except Exception as error:
         return {
-            "loi": str(error)
+            "error": str(error)
         }
 
     if df is None or df.empty:
         return {
-            "loi": "Nguồn VN-INDEX trả về dữ liệu rỗng."
+            "error": "Không có dữ liệu VN-INDEX."
         }
 
     df = df.copy()
 
-    # --------------------------------------------------------
-    # Điểm
-    # --------------------------------------------------------
-
-    price_col = find_column(
+    price_column = find_column(
         df,
         [
             "Close",
@@ -164,59 +143,45 @@ def get_vn_index():
             "last",
             "price",
             "index",
-            "Đóng cửa",
-            "đóng cửa",
         ],
     )
 
-    if price_col is None:
+    if price_column is None:
         return {
-            "loi": "Không tìm thấy cột điểm VN-INDEX."
+            "error": "Không tìm thấy cột VN-INDEX."
         }
 
-    df[price_col] = pd.to_numeric(
-        df[price_col],
+    df[price_column] = pd.to_numeric(
+        df[price_column],
         errors="coerce",
     )
 
     df = df.dropna(
-        subset=[price_col]
+        subset=[price_column]
     )
 
     if df.empty:
         return {
-            "loi": "VN-INDEX không có điểm hợp lệ."
+            "error": "VN-INDEX không có giá hợp lệ."
         }
 
     current = float(
-        df[price_col].iloc[-1]
+        df[price_column].iloc[-1]
     )
-
-    # --------------------------------------------------------
-    # Thay đổi
-    # --------------------------------------------------------
 
     if len(df) >= 2:
 
         previous = float(
-            df[price_col].iloc[-2]
+            df[price_column].iloc[-2]
         )
 
-        change = (
-            current
-            - previous
-        )
+        change = current - previous
 
         if previous != 0:
-
             change_percent = (
-                change
-                / previous
-                * 100
-            )
-
+                change / previous
+            ) * 100
         else:
-
             change_percent = 0.0
 
     else:
@@ -224,11 +189,7 @@ def get_vn_index():
         change = None
         change_percent = None
 
-    # --------------------------------------------------------
-    # Khối lượng
-    # --------------------------------------------------------
-
-    volume_col = find_column(
+    volume_column = find_column(
         df,
         [
             "Volume",
@@ -236,30 +197,23 @@ def get_vn_index():
             "Vol",
             "total_volume",
             "match_volume",
-            "matchvolume",
-            "Khối lượng",
-            "khối lượng",
         ],
     )
 
     volume = None
 
-    if volume_col is not None:
+    if volume_column is not None:
 
-        df[volume_col] = pd.to_numeric(
-            df[volume_col],
+        df[volume_column] = pd.to_numeric(
+            df[volume_column],
             errors="coerce",
         )
 
-        volume = to_number(
-            df[volume_col].iloc[-1]
+        volume = num(
+            df[volume_column].iloc[-1]
         )
 
-    # --------------------------------------------------------
-    # Giá trị giao dịch
-    # --------------------------------------------------------
-
-    value_col = find_column(
+    value_column = find_column(
         df,
         [
             "Value",
@@ -269,35 +223,25 @@ def get_vn_index():
             "trading_value",
             "traded_value",
             "match_value",
-            "matchvalue",
             "turnover",
-            "Turnover",
-            "Giá trị",
-            "giá trị",
         ],
     )
 
     traded_value = None
 
-    if value_col is not None:
+    if value_column is not None:
 
-        df[value_col] = pd.to_numeric(
-            df[value_col],
+        df[value_column] = pd.to_numeric(
+            df[value_column],
             errors="coerce",
         )
 
-        traded_value = to_number(
-            df[value_col].iloc[-1]
+        traded_value = num(
+            df[value_column].iloc[-1]
         )
 
-    # --------------------------------------------------------
-    # Summary fallback
-    #
-    # Không import hàm summary ở đầu file để tránh làm
-    # Dashboard chết nếu data/market.py chưa có hàm đó.
-    # --------------------------------------------------------
-
-    if traded_value is None:
+    # Summary nếu data.market.py đã có
+    if traded_value is None or volume is None:
 
         try:
 
@@ -313,20 +257,19 @@ def get_vn_index():
 
                 summary = summary_function()
 
-                if isinstance(
-                    summary,
-                    dict,
-                ):
+                if isinstance(summary, dict):
 
-                    traded_value = to_number(
-                        summary.get(
-                            "gia_tri"
+                    if traded_value is None:
+
+                        traded_value = num(
+                            summary.get(
+                                "gia_tri"
+                            )
                         )
-                    )
 
                     if volume is None:
 
-                        volume = to_number(
+                        volume = num(
                             summary.get(
                                 "khoi_luong"
                             )
@@ -336,19 +279,15 @@ def get_vn_index():
             pass
 
     return {
-        "diem": current,
-        "thay_doi": change,
-        "phan_tram": change_percent,
-        "khoi_luong": volume,
-        "gia_tri": traded_value,
-        "du_lieu": df,
-        "loi": None,
+        "price": current,
+        "change": change,
+        "change_percent": change_percent,
+        "volume": volume,
+        "value": traded_value,
+        "df": df,
+        "error": None,
     }
 
-
-# ============================================================
-# DASHBOARD
-# ============================================================
 
 def render_dashboard():
 
@@ -375,54 +314,42 @@ def render_dashboard():
     # VN-INDEX
     # ========================================================
 
-    vn_index = get_vn_index()
+    vn = get_vnindex()
 
-    if vn_index.get("loi"):
+    if vn.get("error"):
 
-        vn_diem = "—"
+        vn_price = "—"
         vn_change = "—"
-        vn_1d = "—"
+        vn_percent = "—"
         vn_volume = "—"
         vn_value = "—"
 
     else:
 
-        diem = to_number(
-            vn_index.get("diem")
-        )
-
-        change = to_number(
-            vn_index.get("thay_doi")
-        )
-
-        change_percent = to_number(
-            vn_index.get("phan_tram")
-        )
-
-        vn_diem = (
-            f"{diem:,.2f} điểm"
-            if diem is not None
+        vn_price = (
+            f"{vn['price']:,.2f} điểm"
+            if vn.get("price") is not None
             else "—"
         )
 
         vn_change = (
-            f"{change:+,.2f} điểm"
-            if change is not None
+            f"{vn['change']:+,.2f} điểm"
+            if vn.get("change") is not None
             else "—"
         )
 
-        vn_1d = (
-            f"{change_percent:+.2f}%"
-            if change_percent is not None
+        vn_percent = (
+            f"{vn['change_percent']:+.2f}%"
+            if vn.get("change_percent") is not None
             else "—"
         )
 
-        vn_volume = fmt_volume(
-            vn_index.get("khoi_luong")
+        vn_volume = format_volume(
+            vn.get("volume")
         )
 
-        vn_value = fmt_value(
-            vn_index.get("gia_tri")
+        vn_value = format_value(
+            vn.get("value")
         )
 
     # ========================================================
@@ -433,17 +360,17 @@ def render_dashboard():
         "📌 Theo dõi nhanh"
     )
 
-    c1, c2, c3, c4 = st.columns(4)
+    quick_1, quick_2, quick_3, quick_4 = st.columns(4)
 
-    with c1:
+    with quick_1:
 
         metric_card(
             "VN-INDEX",
-            vn_diem,
+            vn_price,
             "Điểm chỉ số thị trường",
         )
 
-    with c2:
+    with quick_2:
 
         metric_card(
             "Khối lượng",
@@ -451,7 +378,7 @@ def render_dashboard():
             "Khối lượng giao dịch toàn thị trường",
         )
 
-    with c3:
+    with quick_3:
 
         metric_card(
             "Giá trị giao dịch",
@@ -459,7 +386,7 @@ def render_dashboard():
             "Tổng giá trị giao dịch",
         )
 
-    with c4:
+    with quick_4:
 
         metric_card(
             "Tin tức",
@@ -468,50 +395,50 @@ def render_dashboard():
         )
 
     # ========================================================
-    # VN-INDEX CHI TIẾT
+    # VN-INDEX
     # ========================================================
 
     st.subheader(
         "📊 VN-INDEX"
     )
 
-    a, b, c, d = st.columns(4)
+    vn_1, vn_2, vn_3, vn_4 = st.columns(4)
 
-    with a:
+    with vn_1:
         st.metric(
             "Điểm",
-            vn_diem,
+            vn_price,
         )
 
-    with b:
+    with vn_2:
         st.metric(
             "Thay đổi",
             vn_change,
         )
 
-    with c:
+    with vn_3:
         st.metric(
             "Thay đổi 1D",
-            vn_1d,
+            vn_percent,
         )
 
-    with d:
+    with vn_4:
         st.metric(
             "Khối lượng",
             vn_volume,
         )
 
-    if vn_index.get("loi"):
+    if vn.get("error"):
 
         st.warning(
             "VN-INDEX chưa tải được: "
             + str(
-                vn_index["loi"]
+                vn["error"]
             )
         )
 
     # ========================================================
-    # THEO DÕI CỔ PHIẾU
+    # CỔ PHIẾU
     # ========================================================
 
     st.subheader(
@@ -527,9 +454,7 @@ def render_dashboard():
         "Mã cổ phiếu",
         value=default_symbol,
         label_visibility="collapsed",
-        placeholder=(
-            "Nhập mã cổ phiếu, ví dụ HPG, MSR, VNM"
-        ),
+        placeholder="Ví dụ HPG, VNM, FPT...",
         key="dashboard_stock_input",
     )
 
@@ -537,26 +462,25 @@ def render_dashboard():
         "Tải dữ liệu",
         type="primary",
         key="dashboard_load_button",
-        width="content",
     ):
 
         clean_symbol = normalize_symbol(
             symbol_input
         )
 
-        if not clean_symbol:
-
-            st.warning(
-                "Vui lòng nhập mã cổ phiếu."
-            )
-
-        else:
+        if clean_symbol:
 
             st.session_state[
                 "dashboard_symbol"
             ] = clean_symbol
 
             st.rerun()
+
+        else:
+
+            st.warning(
+                "Vui lòng nhập mã cổ phiếu."
+            )
 
     current_symbol = normalize_symbol(
         st.session_state.get(
@@ -566,12 +490,12 @@ def render_dashboard():
     )
 
     # ========================================================
-    # DỮ LIỆU CỔ PHIẾU
+    # LOAD CỔ PHIẾU
     # ========================================================
 
     try:
 
-        stock_data = load_market_data(
+        stock = load_market_data(
             current_symbol,
             "1y",
         )
@@ -584,56 +508,53 @@ def render_dashboard():
             f"{error}"
         )
 
-        stock_data = None
+        stock = None
 
-    if (
-        stock_data is not None
-        and not stock_data.empty
-    ):
+    if stock is not None and not stock.empty:
 
         snapshot = market_snapshot(
-            stock_data
+            stock
         )
 
-        price = to_number(
+        price = num(
             snapshot.get("price")
         )
 
-        change_1d = to_number(
+        change_1d = num(
             snapshot.get("change_1d")
         )
 
-        rsi_value = to_number(
+        rsi_value = num(
             snapshot.get("rsi")
         )
 
-        stock_volume = to_number(
+        stock_volume = num(
             snapshot.get("volume")
         )
 
-        sma20 = to_number(
+        sma20 = num(
             snapshot.get("sma20")
         )
 
-        sma50 = to_number(
+        sma50 = num(
             snapshot.get("sma50")
         )
 
-        macd_value = to_number(
+        macd = num(
             snapshot.get("macd")
         )
 
-        volatility = to_number(
+        volatility = num(
             snapshot.get("volatility20")
         )
 
-        last_row = stock_data.iloc[-1]
+        last_row = stock.iloc[-1]
 
-        atr14 = to_number(
+        atr14 = num(
             last_row.get("ATR14")
         )
 
-        volume_sma20 = to_number(
+        volume_sma20 = num(
             last_row.get("Volume_SMA20")
         )
 
@@ -649,129 +570,128 @@ def render_dashboard():
         # THÔNG TIN
         # ====================================================
 
-        a, b, c, d = st.columns(4)
+        stock_1, stock_2, stock_3, stock_4 = st.columns(4)
 
-        with a:
+        with stock_1:
 
             st.metric(
                 "Giá",
-                fmt_gia(price),
+                format_price(price),
             )
 
-        with b:
+        with stock_2:
 
             st.metric(
                 "Thay đổi 1D",
-                fmt_percent(change_1d),
+                format_percent(change_1d),
             )
 
-        with c:
+        with stock_3:
 
             st.metric(
                 "RSI",
-                fmt_rsi(rsi_value),
+                format_rsi(rsi_value),
             )
 
-        with d:
+        with stock_4:
 
             st.metric(
                 "Khối lượng",
-                fmt_volume(stock_volume),
+                format_volume(stock_volume),
             )
 
-       # ========================================================
-# CHỈ BÁO
-# ========================================================
+        # ====================================================
+        # CHỈ BÁO
+        # ====================================================
 
-e, f, g, h = st.columns(4)
+        ind_1, ind_2, ind_3, ind_4 = st.columns(4)
 
-with e:
-    st.metric(
-        "Trung bình 20 phiên",
-        f"{sma20:,.0f} đồng/cổ phiếu"
-        if sma20 is not None
-        else "—",
-    )
+        with ind_1:
 
-with f:
-    st.metric(
-        "Trung bình 50 phiên",
-        f"{sma50:,.0f} đồng/cổ phiếu"
-        if sma50 is not None
-        else "—",
-    )
+            st.metric(
+                "Trung bình 20 phiên",
+                format_price(sma20),
+            )
 
-with g:
-    st.metric(
-        "MACD",
-        f"{macd:.3f}"
-        if macd is not None
-        else "—",
-    )
+        with ind_2:
 
-with h:
-    st.metric(
-        "Biến động 20 phiên",
-        f"{bien_dong:.2f}%"
-        if bien_dong is not None
-        else "—",
-    )
+            st.metric(
+                "Trung bình 50 phiên",
+                format_price(sma50),
+            )
 
+        with ind_3:
 
-# ========================================================
-# CHỈ BÁO BỔ SUNG
-# ========================================================
+            st.metric(
+                "MACD",
+                format_macd(macd),
+            )
 
-i, j, k, l = st.columns(4)
+        with ind_4:
 
-with i:
-    st.metric(
-        "ATR 14 phiên",
-        f"{atr14:,.0f} đồng/cổ phiếu"
-        if atr14 is not None
-        else "—",
-    )
+            st.metric(
+                "Biến động 20 phiên",
+                (
+                    f"{volatility:.2f}%"
+                    if volatility is not None
+                    else "—"
+                ),
+            )
 
-with j:
-    st.metric(
-        "Khối lượng TB20",
-        _dinh_dang_khoi_luong(volume_tb20),
-    )
+        # ====================================================
+        # CHỈ BÁO BỔ SUNG
+        # ====================================================
 
-with k:
+        extra_1, extra_2, extra_3, extra_4 = st.columns(4)
 
-    ty_le_volume = None
+        with extra_1:
 
-    if (
-        khoi_luong is not None
-        and volume_tb20 is not None
-        and volume_tb20 != 0
-    ):
-        ty_le_volume = (
-            khoi_luong
-            / volume_tb20
-        )
+            st.metric(
+                "ATR 14 phiên",
+                format_price(atr14),
+            )
 
-    st.metric(
-        "Khối lượng / TB20",
-        f"{ty_le_volume:.2f} lần"
-        if ty_le_volume is not None
-        else "—",
-    )
+        with extra_2:
 
-with l:
+            st.metric(
+                "Khối lượng TB20",
+                format_volume(volume_sma20),
+            )
 
-    gia_mo = _so(
-        dong_cuoi.get("Open"),
-        None,
-    )
+        with extra_3:
 
-    st.metric(
-        "Giá mở cửa",
-        f"{gia_mo:,.0f} đồng/cổ phiếu"
-        if gia_mo is not None
-        else "—",
-    )
+            relative_volume = None
+
+            if (
+                stock_volume is not None
+                and volume_sma20 is not None
+                and volume_sma20 != 0
+            ):
+
+                relative_volume = (
+                    stock_volume
+                    / volume_sma20
+                )
+
+            st.metric(
+                "Khối lượng / TB20",
+                (
+                    f"{relative_volume:.2f} lần"
+                    if relative_volume is not None
+                    else "—"
+                ),
+            )
+
+        with extra_4:
+
+            opening_price = num(
+                last_row.get("Open")
+            )
+
+            st.metric(
+                "Giá mở cửa",
+                format_price(opening_price),
+            )
 
         # ====================================================
         # BIỂU ĐỒ
@@ -784,7 +704,7 @@ with l:
         try:
 
             chart = price_volume_chart(
-                stock_data
+                stock
             )
 
             if chart is not None:
@@ -803,13 +723,6 @@ with l:
                 "Không thể hiển thị biểu đồ: "
                 f"{error}"
             )
-
-    elif stock_data is not None:
-
-        st.warning(
-            f"Không tìm thấy dữ liệu thật cho "
-            f"{display_symbol(current_symbol)}."
-        )
 
     # ========================================================
     # TIN MỚI
