@@ -17,6 +17,19 @@ SO_DONG_MAC_DINH = 100
 
 
 # ============================================================
+# SESSION STATE
+# ============================================================
+
+def _khoi_tao_session():
+
+    if "market_loaded" not in st.session_state:
+        st.session_state["market_loaded"] = False
+
+    if "market_overview" not in st.session_state:
+        st.session_state["market_overview"] = None
+
+
+# ============================================================
 # TIỆN ÍCH
 # ============================================================
 
@@ -25,6 +38,7 @@ def _so(
     mac_dinh=None,
 ):
     try:
+
         value = float(value)
 
         if pd.isna(value):
@@ -33,15 +47,14 @@ def _so(
         return value
 
     except Exception:
+
         return mac_dinh
 
 
 def _format_gia(
     value,
 ):
-    value = _so(
-        value
-    )
+    value = _so(value)
 
     if value is None:
         return "—"
@@ -52,9 +65,7 @@ def _format_gia(
 def _format_phan_tram(
     value,
 ):
-    value = _so(
-        value
-    )
+    value = _so(value)
 
     if value is None:
         return "—"
@@ -65,77 +76,71 @@ def _format_phan_tram(
 def _format_khoi_luong(
     value,
 ):
-    value = _so(
-        value
-    )
+    value = _so(value)
 
     if value is None:
         return "—"
 
     if value >= 1_000_000_000:
+
         return (
-            f"{value / 1_000_000_000:.2f} "
-            "tỷ cổ phiếu"
+            f"{value / 1_000_000_000:.2f} tỷ"
         )
 
     if value >= 1_000_000:
+
         return (
-            f"{value / 1_000_000:.2f} "
-            "triệu cổ phiếu"
+            f"{value / 1_000_000:.2f} triệu"
         )
 
     if value >= 1_000:
+
         return (
-            f"{value / 1_000:.2f} "
-            "nghìn cổ phiếu"
+            f"{value / 1_000:.2f} nghìn"
         )
 
-    return f"{value:,.0f} cổ phiếu"
+    return f"{value:,.0f}"
 
 
 def _format_gia_tri(
     value,
 ):
-    value = _so(
-        value
-    )
+    value = _so(value)
 
     if value is None:
         return "—"
 
     if value >= 1_000_000_000_000:
+
         return (
-            f"{value / 1_000_000_000_000:.2f} "
-            "nghìn tỷ đồng"
+            f"{value / 1_000_000_000_000:.2f} nghìn tỷ"
         )
 
     if value >= 1_000_000_000:
+
         return (
-            f"{value / 1_000_000_000:.2f} "
-            "tỷ đồng"
+            f"{value / 1_000_000_000:.2f} tỷ"
         )
 
     if value >= 1_000_000:
+
         return (
-            f"{value / 1_000_000:.2f} "
-            "triệu đồng"
+            f"{value / 1_000_000:.2f} triệu"
         )
 
     if value >= 1_000:
+
         return (
-            f"{value / 1_000:.2f} "
-            "nghìn đồng"
+            f"{value / 1_000:.2f} nghìn"
         )
 
-    return f"{value:,.0f} đồng"
+    return f"{value:,.0f}"
 
 
 def _ky_hieu(
     value,
 ):
-    value = _so(
-        value
-    )
+    value = _so(value)
 
     if value is None:
         return "⚪"
@@ -150,12 +155,13 @@ def _ky_hieu(
 
 
 # ============================================================
-# CHUYỂN BẢNG DỮ LIỆU THÀNH BẢNG HIỂN THỊ
+# BẢNG HIỂN THỊ CHÍNH
 # ============================================================
 
 def _tao_bang_hien_thi(
     df,
 ):
+
     if (
         df is None
         or df.empty
@@ -163,10 +169,6 @@ def _tao_bang_hien_thi(
         return pd.DataFrame()
 
     df = df.copy()
-
-    # --------------------------------------------------------
-    # Bảo đảm cột tồn tại
-    # --------------------------------------------------------
 
     cac_cot = {
         "ma": "",
@@ -209,10 +211,7 @@ def _tao_bang_hien_thi(
         .fillna("")
         .astype(str)
         .str.strip()
-        .replace(
-            "",
-            "—",
-        )
+        .replace("", "—")
     )
 
     bang["Sàn"] = (
@@ -220,10 +219,7 @@ def _tao_bang_hien_thi(
         .fillna("")
         .astype(str)
         .str.strip()
-        .replace(
-            "",
-            "—",
-        )
+        .replace("", "—")
     )
 
     bang["Ngành"] = (
@@ -231,10 +227,7 @@ def _tao_bang_hien_thi(
         .fillna("")
         .astype(str)
         .str.strip()
-        .replace(
-            "",
-            "—",
-        )
+        .replace("", "—")
     )
 
     bang["Giá"] = (
@@ -242,27 +235,27 @@ def _tao_bang_hien_thi(
         .apply(_format_gia)
     )
 
-    bang["Tham chiếu"] = (
+    bang["TC"] = (
         df["gia_tham_chieu"]
         .apply(_format_gia)
     )
 
-    bang["Mở cửa"] = (
+    bang["Mở"] = (
         df["gia_mo_cua"]
         .apply(_format_gia)
     )
 
-    bang["Cao nhất"] = (
+    bang["Cao"] = (
         df["gia_cao_nhat"]
         .apply(_format_gia)
     )
 
-    bang["Thấp nhất"] = (
+    bang["Thấp"] = (
         df["gia_thap_nhat"]
         .apply(_format_gia)
     )
 
-    bang["Thay đổi"] = (
+    bang["+/-"] = (
         df["thay_doi_pct"]
         .apply(_format_phan_tram)
     )
@@ -283,12 +276,13 @@ def _tao_bang_hien_thi(
 
 
 # ============================================================
-# CHUYỂN BẢNG TOP
+# BẢNG TOP
 # ============================================================
 
 def _tao_bang_top(
     df,
 ):
+
     if (
         df is None
         or df.empty
@@ -297,15 +291,13 @@ def _tao_bang_top(
 
     df = df.copy()
 
-    cac_cot = {
+    for ten_cot, gia_tri in {
         "ma": "",
         "gia": None,
         "thay_doi_pct": None,
         "khoi_luong": None,
         "gia_tri_giao_dich": None,
-    }
-
-    for ten_cot, gia_tri in cac_cot.items():
+    }.items():
 
         if ten_cot not in df.columns:
             df[ten_cot] = gia_tri
@@ -336,7 +328,7 @@ def _tao_bang_top(
         .apply(_format_khoi_luong)
     )
 
-    bang["Giá trị giao dịch"] = (
+    bang["Giá trị"] = (
         df["gia_tri_giao_dich"]
         .apply(_format_gia_tri)
     )
@@ -347,79 +339,53 @@ def _tao_bang_top(
 
 
 # ============================================================
-# LOAD SESSION
+# LẤY DATAFRAME
 # ============================================================
 
-def _co_du_lieu_session():
-    return (
-        "market_overview"
-        in st.session_state
-        and isinstance(
-            st.session_state[
-                "market_overview"
-            ],
-            dict,
-        )
+def _lay_dataframe(
+    overview,
+):
+    if not isinstance(
+        overview,
+        dict,
+    ):
+        return pd.DataFrame()
+
+    df = overview.get(
+        "bang_gia",
+        pd.DataFrame(),
     )
 
-
-def _tai_du_lieu(
-    force_reload=False,
-):
-    """
-    Quan trọng:
-
-    - Nếu đã có dữ liệu trong session:
-      KHÔNG gọi API lại.
-    - Chỉ gọi API khi:
-      + mở page lần đầu
-      + bấm cập nhật dữ liệu
-    """
-
     if (
-        not force_reload
-        and _co_du_lieu_session()
-    ):
-        return st.session_state[
-            "market_overview"
-        ]
-
-    with st.spinner(
-        "Đang tải dữ liệu thị trường..."
-    ):
-
-        du_lieu = (
-            lay_market_overview(
-                force_reload=force_reload
-            )
+        df is None
+        or not isinstance(
+            df,
+            pd.DataFrame,
         )
+    ):
+        return pd.DataFrame()
 
-    st.session_state[
-        "market_overview"
-    ] = du_lieu
-
-    return du_lieu
+    return df
 
 
 # ============================================================
-# DANH SÁCH SÀN
+# OPTIONS
 # ============================================================
 
 def _lay_danh_sach_san(
     df,
 ):
-    ket_qua = [
-        "Tất cả"
-    ]
+
+    result = ["Tất cả"]
 
     if (
         df is None
         or df.empty
         or "san" not in df.columns
     ):
-        return ket_qua
+        return result
 
-    gia_tri = (
+    values = (
         df["san"]
         .fillna("")
         .astype(str)
@@ -428,41 +394,29 @@ def _lay_danh_sach_san(
         .tolist()
     )
 
-    gia_tri = [
-        x
-        for x in gia_tri
-        if x
-    ]
-
-    ket_qua.extend(
-        sorted(
-            gia_tri
-        )
+    values = sorted(
+        x for x in values if x
     )
 
-    return ket_qua
+    result.extend(values)
 
+    return result
 
-# ============================================================
-# DANH SÁCH NGÀNH
-# ============================================================
 
 def _lay_danh_sach_nganh(
     df,
 ):
-    ket_qua = [
-        "Tất cả"
-    ]
+
+    result = ["Tất cả"]
 
     if (
         df is None
         or df.empty
-        or "ten_nganh"
-        not in df.columns
+        or "ten_nganh" not in df.columns
     ):
-        return ket_qua
+        return result
 
-    gia_tri = (
+    values = (
         df["ten_nganh"]
         .fillna("")
         .astype(str)
@@ -471,23 +425,17 @@ def _lay_danh_sach_nganh(
         .tolist()
     )
 
-    gia_tri = [
-        x
-        for x in gia_tri
-        if x
-    ]
-
-    ket_qua.extend(
-        sorted(
-            gia_tri
-        )
+    values = sorted(
+        x for x in values if x
     )
 
-    return ket_qua
+    result.extend(values)
+
+    return result
 
 
 # ============================================================
-# SẮP XẾP LOCAL
+# SẮP XẾP
 # ============================================================
 
 def _sap_xep_bang(
@@ -495,6 +443,7 @@ def _sap_xep_bang(
     kieu_sap_xep,
     thu_tu,
 ):
+
     if (
         df is None
         or df.empty
@@ -503,7 +452,7 @@ def _sap_xep_bang(
 
     df = df.copy()
 
-    anh_xa = {
+    mapping = {
         "Tăng/giảm (%)": "thay_doi_pct",
         "Khối lượng": "khoi_luong",
         "Giá trị giao dịch": "gia_tri_giao_dich",
@@ -511,68 +460,75 @@ def _sap_xep_bang(
         "Mã cổ phiếu": "ma",
     }
 
-    cot = anh_xa.get(
+    column = mapping.get(
         kieu_sap_xep
     )
 
-    if cot is None:
-        return df
-
-    if cot not in df.columns:
+    if (
+        column is None
+        or column not in df.columns
+    ):
         return df
 
     ascending = (
         thu_tu == "Tăng dần"
     )
 
-    # --------------------------------------------------------
-    # Mã cổ phiếu
-    # --------------------------------------------------------
+    if column != "ma":
 
-    if cot == "ma":
-
-        return (
-            df
-            .sort_values(
-                by=cot,
-                ascending=ascending,
-                na_position="last",
-            )
-            .reset_index(
-                drop=True
-            )
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
         )
-
-    # --------------------------------------------------------
-    # Số
-    # --------------------------------------------------------
-
-    df[cot] = pd.to_numeric(
-        df[cot],
-        errors="coerce",
-    )
 
     return (
         df
         .sort_values(
-            by=cot,
+            by=column,
             ascending=ascending,
             na_position="last",
         )
-        .reset_index(
-            drop=True
-        )
+        .reset_index(drop=True)
     )
 
 
 # ============================================================
-# CALLBACK CẬP NHẬT
+# LOAD
 # ============================================================
 
-def _cap_nhat_du_lieu():
+def _load_market_data(
+    force_reload=False,
+):
+
+    if (
+        not force_reload
+        and st.session_state.get(
+            "market_loaded",
+            False,
+        )
+    ):
+
+        return st.session_state.get(
+            "market_overview"
+        )
+
+    with st.spinner(
+        "Đang tải dữ liệu thị trường..."
+    ):
+
+        overview = lay_market_overview(
+            force_reload=force_reload
+        )
+
     st.session_state[
-        "market_force_reload"
+        "market_overview"
+    ] = overview
+
+    st.session_state[
+        "market_loaded"
     ] = True
+
+    return overview
 
 
 # ============================================================
@@ -581,8 +537,10 @@ def _cap_nhat_du_lieu():
 
 def render_market():
 
+    _khoi_tao_session()
+
     # ========================================================
-    # TIÊU ĐỀ
+    # HEADER
     # ========================================================
 
     st.title(
@@ -590,102 +548,139 @@ def render_market():
     )
 
     st.caption(
-        "Bảng giá thị trường · "
-        "dữ liệu cache 60 giây"
+        "Bảng giá toàn thị trường · "
+        "Dữ liệu chỉ tải khi bấm cập nhật"
     )
 
     # ========================================================
-    # NÚT CẬP NHẬT
+    # CHƯA LOAD
     # ========================================================
 
-    cot_nut, cot_thong_tin = (
-        st.columns(
-            [
-                1.2,
-                4,
-            ]
-        )
-    )
-
-    with cot_nut:
-
-        st.button(
-            "🔄 Cập nhật dữ liệu",
-            type="primary",
-            width="stretch",
-            key="market_update_button",
-            on_click=_cap_nhat_du_lieu,
-        )
-
-    with cot_thong_tin:
-
-        if _co_du_lieu_session():
-
-            st.caption(
-                "Dữ liệu đã tải · "
-                "đổi bộ lọc không gọi API lại."
-            )
-
-    force_reload = bool(
-        st.session_state.pop(
-            "market_force_reload",
-            False,
-        )
-    )
-
-    # ========================================================
-    # LOAD
-    # ========================================================
-
-    try:
-
-        du_lieu_tong = _tai_du_lieu(
-            force_reload=force_reload
-        )
-
-    except Exception as loi:
-
-        st.error(
-            "Không thể tải dữ liệu thị trường."
-        )
-
-        st.code(
-            str(loi)
-        )
-
-        return
-
-    # ========================================================
-    # BẢNG GIÁ
-    # ========================================================
-
-    bang_gia = du_lieu_tong.get(
-        "bang_gia",
-        pd.DataFrame(),
-    )
-
-    if (
-        bang_gia is None
-        or bang_gia.empty
+    if not st.session_state.get(
+        "market_loaded",
+        False,
     ):
 
+        st.info(
+            "Bấm «Cập nhật dữ liệu» để tải bảng giá thị trường."
+        )
+
+        if st.button(
+            "🔄 Cập nhật dữ liệu",
+            type="primary",
+            key="market_first_load",
+            use_container_width=True,
+        ):
+
+            try:
+
+                _load_market_data(
+                    force_reload=True
+                )
+
+                st.rerun()
+
+            except Exception as error:
+
+                st.error(
+                    "Không thể tải dữ liệu thị trường."
+                )
+
+                st.code(
+                    str(error)
+                )
+
+                return
+
+        return
+
+    # ========================================================
+    # UPDATE
+    # ========================================================
+
+    c1, c2 = st.columns(
+        [
+            1.2,
+            4,
+        ]
+    )
+
+    with c1:
+
+        refresh = st.button(
+            "🔄 Cập nhật dữ liệu",
+            type="primary",
+            key="market_refresh",
+            use_container_width=True,
+        )
+
+    with c2:
+
+        st.caption(
+            "Đổi bộ lọc không gọi API. "
+            "Chỉ nút cập nhật mới tải lại dữ liệu."
+        )
+
+    if refresh:
+
+        try:
+
+            _load_market_data(
+                force_reload=True
+            )
+
+            st.rerun()
+
+        except Exception as error:
+
+            st.error(
+                "Không thể cập nhật dữ liệu."
+            )
+
+            st.code(
+                str(error)
+            )
+
+            return
+
+    # ========================================================
+    # GET DATA
+    # ========================================================
+
+    overview = st.session_state.get(
+        "market_overview"
+    )
+
+    bang_gia = _lay_dataframe(
+        overview
+    )
+
+    if bang_gia.empty:
+
         st.warning(
-            "Nguồn dữ liệu chưa trả về bảng giá."
+            "Chưa có dữ liệu bảng giá."
         )
 
         return
 
     # ========================================================
-    # THỐNG KÊ
+    # SUMMARY
     # ========================================================
 
-    thong_ke = du_lieu_tong.get(
-        "thong_ke",
-        {},
+    stats = (
+        overview.get(
+            "thong_ke",
+            {},
+        )
+        if isinstance(
+            overview,
+            dict,
+        )
+        else {}
     )
 
-    so_ma = int(
-        thong_ke.get(
+    total = int(
+        stats.get(
             "co_du_lieu_gia",
             len(bang_gia),
         )
@@ -693,15 +688,15 @@ def render_market():
     )
 
     tang = int(
-        thong_ke.get(
+        stats.get(
             "tang",
             0,
         )
         or 0
     )
 
-    dung_gia = int(
-        thong_ke.get(
+    dung = int(
+        stats.get(
             "dung_gia",
             0,
         )
@@ -709,16 +704,12 @@ def render_market():
     )
 
     giam = int(
-        thong_ke.get(
+        stats.get(
             "giam",
             0,
         )
         or 0
     )
-
-    # ========================================================
-    # TỔNG QUAN
-    # ========================================================
 
     st.subheader(
         "📌 Tổng quan thị trường"
@@ -729,7 +720,7 @@ def render_market():
     with a:
         st.metric(
             "Có dữ liệu",
-            f"{so_ma:,} mã",
+            f"{total:,} mã",
         )
 
     with b:
@@ -741,7 +732,7 @@ def render_market():
     with c:
         st.metric(
             "Đứng giá",
-            f"{dung_gia:,} mã",
+            f"{dung:,} mã",
         )
 
     with d:
@@ -751,7 +742,7 @@ def render_market():
         )
 
     # ========================================================
-    # BỘ LỌC
+    # FILTER
     # ========================================================
 
     st.subheader(
@@ -760,61 +751,51 @@ def render_market():
 
     f1, f2, f3 = st.columns(
         [
-            2.5,
-            1.0,
-            2.0,
+            2.4,
+            1,
+            2,
         ]
     )
 
     with f1:
 
-        tu_khoa = st.text_input(
+        keyword = st.text_input(
             "Tìm mã / doanh nghiệp",
-            placeholder=(
-                "Ví dụ: HPG, FPT, VHM..."
-            ),
-            key="market_filter_keyword",
+            placeholder="Ví dụ HPG, FPT, VHM...",
+            key="market_keyword",
         )
 
     with f2:
 
-        danh_sach_san = (
+        exchange = st.selectbox(
+            "Sàn",
             _lay_danh_sach_san(
                 bang_gia
-            )
-        )
-
-        san = st.selectbox(
-            "Sàn",
-            danh_sach_san,
-            key="market_filter_exchange",
+            ),
+            key="market_exchange",
         )
 
     with f3:
 
-        danh_sach_nganh = (
+        industry = st.selectbox(
+            "Ngành",
             _lay_danh_sach_nganh(
                 bang_gia
-            )
-        )
-
-        nganh = st.selectbox(
-            "Ngành",
-            danh_sach_nganh,
-            key="market_filter_industry",
+            ),
+            key="market_industry",
         )
 
     f4, f5, f6 = st.columns(
         [
             1.2,
-            2.0,
+            2,
             1.2,
         ]
     )
 
     with f4:
 
-        trang_thai = st.selectbox(
+        status = st.selectbox(
             "Trạng thái",
             [
                 "Tất cả",
@@ -822,12 +803,12 @@ def render_market():
                 "Đứng giá",
                 "Giảm",
             ],
-            key="market_filter_status",
+            key="market_status",
         )
 
     with f5:
 
-        kieu_sap_xep = st.selectbox(
+        sort_by = st.selectbox(
             "Sắp xếp theo",
             [
                 "Tăng/giảm (%)",
@@ -836,25 +817,21 @@ def render_market():
                 "Giá",
                 "Mã cổ phiếu",
             ],
-            key="market_filter_sort",
+            key="market_sort",
         )
 
     with f6:
 
-        thu_tu = st.selectbox(
+        order = st.selectbox(
             "Thứ tự",
             [
                 "Giảm dần",
                 "Tăng dần",
             ],
-            key="market_filter_order",
+            key="market_order",
         )
 
-    # ========================================================
-    # SỐ DÒNG
-    # ========================================================
-
-    so_dong = st.select_slider(
+    rows = st.select_slider(
         "Số dòng hiển thị",
         options=[
             50,
@@ -867,54 +844,51 @@ def render_market():
     )
 
     # ========================================================
-    # LỌC LOCAL
+    # FILTER LOCAL
     # ========================================================
 
     try:
 
-        bang_loc = loc_bang_gia(
+        filtered = loc_bang_gia(
             bang_gia,
-            san=san,
-            tu_khoa=tu_khoa,
-            nganh=nganh,
-            huong=trang_thai,
+            san=exchange,
+            tu_khoa=keyword,
+            nganh=industry,
+            huong=status,
         )
 
-    except Exception as loi:
+    except Exception as error:
 
         st.error(
-            "Không thể áp dụng bộ lọc."
+            "Lỗi khi lọc dữ liệu."
         )
 
         st.code(
-            str(loi)
+            str(error)
         )
 
-        bang_loc = pd.DataFrame()
+        filtered = pd.DataFrame()
 
     # ========================================================
-    # SẮP XẾP LOCAL
+    # SORT LOCAL
     # ========================================================
 
-    bang_loc = _sap_xep_bang(
-        bang_loc,
-        kieu_sap_xep,
-        thu_tu,
+    filtered = _sap_xep_bang(
+        filtered,
+        sort_by,
+        order,
     )
 
     # ========================================================
-    # KẾT QUẢ
+    # TABLE
     # ========================================================
 
     st.caption(
-        "Tổng "
-        f"{len(bang_gia):,}"
-        " mã · lọc còn "
-        f"{len(bang_loc):,}"
-        " mã"
+        f"Tổng {len(bang_gia):,} mã · "
+        f"đang hiển thị {len(filtered):,} mã"
     )
 
-    if bang_loc.empty:
+    if filtered.empty:
 
         st.info(
             "Không có cổ phiếu phù hợp với bộ lọc."
@@ -922,17 +896,13 @@ def render_market():
 
     else:
 
-        bang_hien_thi = (
-            _tao_bang_hien_thi(
-                bang_loc.head(
-                    so_dong
-                )
-            )
+        display_df = _tao_bang_hien_thi(
+            filtered.head(rows)
         )
 
         st.dataframe(
-            bang_hien_thi,
-            width="stretch",
+            display_df,
+            use_container_width=True,
             height=680,
             hide_index=True,
             column_config={
@@ -960,23 +930,23 @@ def render_market():
                     "Giá",
                     width="small",
                 ),
-                "Tham chiếu": st.column_config.TextColumn(
+                "TC": st.column_config.TextColumn(
                     "TC",
                     width="small",
                 ),
-                "Mở cửa": st.column_config.TextColumn(
+                "Mở": st.column_config.TextColumn(
                     "Mở",
                     width="small",
                 ),
-                "Cao nhất": st.column_config.TextColumn(
+                "Cao": st.column_config.TextColumn(
                     "Cao",
                     width="small",
                 ),
-                "Thấp nhất": st.column_config.TextColumn(
+                "Thấp": st.column_config.TextColumn(
                     "Thấp",
                     width="small",
                 ),
-                "Thay đổi": st.column_config.TextColumn(
+                "+/-": st.column_config.TextColumn(
                     "+/-",
                     width="small",
                 ),
@@ -999,25 +969,25 @@ def render_market():
         "💰 Thanh khoản"
     )
 
-    a, b = st.columns(2)
+    l1, l2 = st.columns(2)
 
-    with a:
+    with l1:
 
         st.metric(
             "Tổng khối lượng",
             _format_khoi_luong(
-                thong_ke.get(
+                stats.get(
                     "tong_khoi_luong"
                 )
             ),
         )
 
-    with b:
+    with l2:
 
         st.metric(
             "Tổng giá trị giao dịch",
             _format_gia_tri(
-                thong_ke.get(
+                stats.get(
                     "tong_gia_tri"
                 )
             ),
@@ -1031,50 +1001,50 @@ def render_market():
         "🧭 Tâm lý thị trường"
     )
 
-    diem_tam_ly = _so(
-        du_lieu_tong.get(
+    score = _so(
+        overview.get(
             "tam_ly",
             50,
         ),
         50,
     )
 
-    nhan_tam_ly = str(
-        du_lieu_tong.get(
+    label = str(
+        overview.get(
             "nhan_tam_ly",
             "Trung tính",
         )
     )
 
-    phan_tram_tang = _so(
-        thong_ke.get(
+    percent_up = _so(
+        stats.get(
             "phan_tram_tang",
             0,
         ),
         0,
     )
 
-    a, b, c = st.columns(3)
+    p1, p2, p3 = st.columns(3)
 
-    with a:
+    with p1:
 
         st.metric(
             "Điểm tâm lý",
-            f"{diem_tam_ly:.0f}/100",
+            f"{score:.0f}/100",
         )
 
-    with b:
+    with p2:
 
         st.metric(
             "Trạng thái",
-            nhan_tam_ly,
+            label,
         )
 
-    with c:
+    with p3:
 
         st.metric(
             "Tỷ lệ mã tăng",
-            f"{phan_tram_tang:.1f}%",
+            f"{percent_up:.1f}%",
         )
 
     # ========================================================
@@ -1085,76 +1055,64 @@ def render_market():
         "🏆 Cổ phiếu nổi bật"
     )
 
-    top_tang = du_lieu_tong.get(
+    top_up = overview.get(
         "top_tang",
         pd.DataFrame(),
     )
 
-    top_giam = du_lieu_tong.get(
+    top_down = overview.get(
         "top_giam",
         pd.DataFrame(),
     )
 
-    top_khoi_luong = du_lieu_tong.get(
+    top_volume = overview.get(
         "top_khoi_luong",
         pd.DataFrame(),
     )
 
-    a, b, c = st.columns(3)
+    t1, t2, t3 = st.columns(3)
 
-    with a:
+    with t1:
 
         st.markdown(
             "#### 🟢 Tăng mạnh"
         )
 
-        bang_top_tang = (
-            _tao_bang_top(
-                top_tang
-            )
-        )
-
         st.dataframe(
-            bang_top_tang,
-            width="stretch",
+            _tao_bang_top(
+                top_up
+            ),
+            use_container_width=True,
             height=360,
             hide_index=True,
         )
 
-    with b:
+    with t2:
 
         st.markdown(
             "#### 🔴 Giảm mạnh"
         )
 
-        bang_top_giam = (
-            _tao_bang_top(
-                top_giam
-            )
-        )
-
         st.dataframe(
-            bang_top_giam,
-            width="stretch",
+            _tao_bang_top(
+                top_down
+            ),
+            use_container_width=True,
             height=360,
             hide_index=True,
         )
 
-    with c:
+    with t3:
 
         st.markdown(
             "#### 💧 Khối lượng lớn"
         )
 
-        bang_top_khoi_luong = (
-            _tao_bang_top(
-                top_khoi_luong
-            )
-        )
-
         st.dataframe(
-            bang_top_khoi_luong,
-            width="stretch",
+            _tao_bang_top(
+                top_volume
+            ),
+            use_container_width=True,
             height=360,
             hide_index=True,
         )
@@ -1167,56 +1125,56 @@ def render_market():
         "📚 Diễn biến nhóm ngành"
     )
 
-    theo_nganh = du_lieu_tong.get(
+    by_industry = overview.get(
         "theo_nganh",
         pd.DataFrame(),
     )
 
     if (
-        theo_nganh is not None
-        and not theo_nganh.empty
+        by_industry is not None
+        and not by_industry.empty
     ):
 
-        bang_nganh = theo_nganh.copy()
+        industry_df = by_industry.copy()
 
-        bang_nganh[
+        industry_df[
             "Ngành"
         ] = (
-            bang_nganh[
+            industry_df[
                 "ten_nganh"
             ]
             .fillna("")
             .astype(str)
         )
 
-        bang_nganh[
+        industry_df[
             "Số mã"
-        ] = bang_nganh[
+        ] = industry_df[
             "so_ma"
         ]
 
-        bang_nganh[
+        industry_df[
             "Tăng"
-        ] = bang_nganh[
+        ] = industry_df[
             "tang"
         ]
 
-        bang_nganh[
+        industry_df[
             "Đứng giá"
-        ] = bang_nganh[
+        ] = industry_df[
             "dung_gia"
         ]
 
-        bang_nganh[
+        industry_df[
             "Giảm"
-        ] = bang_nganh[
+        ] = industry_df[
             "giam"
         ]
 
-        bang_nganh[
+        industry_df[
             "Biến động"
         ] = (
-            bang_nganh[
+            industry_df[
                 "bien_dong_binh_quan"
             ]
             .apply(
@@ -1224,10 +1182,10 @@ def render_market():
             )
         )
 
-        bang_nganh[
+        industry_df[
             "Khối lượng"
         ] = (
-            bang_nganh[
+            industry_df[
                 "tong_khoi_luong"
             ]
             .apply(
@@ -1235,10 +1193,10 @@ def render_market():
             )
         )
 
-        bang_nganh[
+        industry_df[
             "Giá trị giao dịch"
         ] = (
-            bang_nganh[
+            industry_df[
                 "tong_gia_tri"
             ]
             .apply(
@@ -1247,7 +1205,7 @@ def render_market():
         )
 
         st.dataframe(
-            bang_nganh[
+            industry_df[
                 [
                     "Ngành",
                     "Số mã",
@@ -1259,7 +1217,7 @@ def render_market():
                     "Giá trị giao dịch",
                 ]
             ],
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
         )
 
@@ -1270,15 +1228,15 @@ def render_market():
         )
 
     # ========================================================
-    # GIAO DỊCH NƯỚC NGOÀI
+    # NƯỚC NGOÀI
     # ========================================================
 
-    nuoc_ngoai = du_lieu_tong.get(
+    foreign = overview.get(
         "nuoc_ngoai",
         {},
     )
 
-    if nuoc_ngoai.get(
+    if foreign.get(
         "co_du_lieu",
         False,
     ):
@@ -1287,59 +1245,59 @@ def render_market():
             "🌏 Giao dịch nước ngoài"
         )
 
-        a, b, c = st.columns(3)
+        x1, x2, x3 = st.columns(3)
 
-        with a:
+        with x1:
 
             st.metric(
                 "Nước ngoài mua",
                 _format_khoi_luong(
-                    nuoc_ngoai.get(
+                    foreign.get(
                         "mua"
                     )
                 ),
             )
 
-        with b:
+        with x2:
 
             st.metric(
                 "Nước ngoài bán",
                 _format_khoi_luong(
-                    nuoc_ngoai.get(
+                    foreign.get(
                         "ban"
                     )
                 ),
             )
 
-        with c:
+        with x3:
 
             st.metric(
                 "Mua ròng",
                 _format_khoi_luong(
-                    nuoc_ngoai.get(
+                    foreign.get(
                         "rong"
                     )
                 ),
             )
 
     # ========================================================
-    # NGUỒN
+    # SOURCE
     # ========================================================
 
-    nguon = du_lieu_tong.get(
+    source = overview.get(
         "nguon",
         {},
     )
 
-    ten_nguon = str(
-        nguon.get(
+    source_name = str(
+        source.get(
             "nguon",
             "Vnstock",
         )
     )
 
-    so_ma_nguon = int(
-        nguon.get(
+    source_count = int(
+        source.get(
             "so_ma",
             len(bang_gia),
         )
@@ -1347,9 +1305,14 @@ def render_market():
     )
 
     st.caption(
-        "Nguồn: "
-        + ten_nguon
-        + " · "
-        + f"{so_ma_nguon:,}"
-        + " mã · cập nhật theo cache"
+        f"Nguồn: {source_name} · "
+        f"{source_count:,} mã"
     )
+
+
+# ============================================================
+# COMPATIBILITY
+# ============================================================
+
+def render_market_overview():
+    render_market()
