@@ -423,13 +423,13 @@ NGUYÊN TẮC
 FORMAT
 ==================================================
 
-# 🧠 BRIAN NEWS
+# BRIAN NEWS
 
 ## Thị trường đang chú ý gì?
 
 2–3 câu.
 
-## 🔥 3 điểm đáng chú ý
+## 3 điểm anh chị nên lưu ý
 
 Chỉ chọn tối đa 3 ý.
 
@@ -453,7 +453,7 @@ Tối đa 2 ý.
 
 Tối đa 2 ý.
 
-## 🎯 Cần theo dõi
+## Những điểm anh chị nhà đầu tư mình cần theo dõi
 
 2–3 câu.
 
