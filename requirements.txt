@@ -1,5 +1,5 @@
-streamlit
-pandas
-numpy
-statsmodels
-scikit-learn
+streamlit>=1.42,<2
+pandas>=2.2,<3
+numpy>=1.26,<3
+statsmodels>=0.14,<0.15
+scikit-learn>=1.5,<2
