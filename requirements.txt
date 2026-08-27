@@ -7,3 +7,4 @@ plotly>=5.24,<7
 statsmodels>=0.14,<1
 scikit-learn>=1.5,<2
 google-genai>=1.0,<2
+vnfin[pandas] @ git+https://github.com/hungson175/vnfin.git
