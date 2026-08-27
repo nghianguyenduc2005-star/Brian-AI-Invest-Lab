@@ -3,7 +3,14 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from components.charts import price_volume_chart
+from components.ai import (
+    render_ai_panel,
+    stock_analysis_prompt,
+)
+
+from components.charts import (
+    price_volume_chart,
+)
 
 from data.market import (
     build_quant,
@@ -17,10 +24,13 @@ from data.market import (
 
 
 # ============================================================
-# TIỆN ÍCH
+# TIỆN ÍCH CHUNG
 # ============================================================
 
-def to_number(value, default=None):
+def to_number(
+    value,
+    default=None,
+):
     try:
         value = float(value)
 
@@ -33,8 +43,13 @@ def to_number(value, default=None):
         return default
 
 
-def format_price(value):
-    value = to_number(value)
+def format_price(
+    value,
+):
+    value = to_number(
+        value,
+        None,
+    )
 
     if value is None:
         return "—"
@@ -42,8 +57,13 @@ def format_price(value):
     return f"{value:,.0f} đồng"
 
 
-def format_percent(value):
-    value = to_number(value)
+def format_percent(
+    value,
+):
+    value = to_number(
+        value,
+        None,
+    )
 
     if value is None:
         return "—"
@@ -51,26 +71,45 @@ def format_percent(value):
     return f"{value:+.2f}%"
 
 
-def format_volume(value):
-    value = to_number(value)
+def format_volume(
+    value,
+):
+    value = to_number(
+        value,
+        None,
+    )
 
     if value is None:
         return "—"
 
     if value >= 1_000_000_000:
-        return f"{value / 1_000_000_000:.2f} tỷ"
+
+        return (
+            f"{value / 1_000_000_000:.2f} tỷ"
+        )
 
     if value >= 1_000_000:
-        return f"{value / 1_000_000:.2f} triệu"
+
+        return (
+            f"{value / 1_000_000:.2f} triệu"
+        )
 
     if value >= 1_000:
-        return f"{value / 1_000:.2f} nghìn"
+
+        return (
+            f"{value / 1_000:.2f} nghìn"
+        )
 
     return f"{value:,.0f}"
 
 
-def format_rsi(value):
-    value = to_number(value)
+def format_rsi(
+    value,
+):
+    value = to_number(
+        value,
+        None,
+    )
 
     if value is None:
         return "—"
@@ -78,8 +117,13 @@ def format_rsi(value):
     return f"{value:.1f}"
 
 
-def format_macd(value):
-    value = to_number(value)
+def format_macd(
+    value,
+):
+    value = to_number(
+        value,
+        None,
+    )
 
     if value is None:
         return "—"
@@ -87,12 +131,31 @@ def format_macd(value):
     return f"{value:.3f}"
 
 
+def format_ratio(
+    value,
+):
+    value = to_number(
+        value,
+        None,
+    )
+
+    if value is None:
+        return "—"
+
+    return f"{value:.2f}x"
+
+
 # ============================================================
 # TRẠNG THÁI RSI
 # ============================================================
 
-def rsi_status(value):
-    value = to_number(value)
+def rsi_status(
+    value,
+):
+    value = to_number(
+        value,
+        None,
+    )
 
     if value is None:
         return "Không xác định"
@@ -110,10 +173,25 @@ def rsi_status(value):
 # TRẠNG THÁI GIÁ / MA
 # ============================================================
 
-def price_vs_ma_status(price, sma20, sma50):
-    price = to_number(price)
-    sma20 = to_number(sma20)
-    sma50 = to_number(sma50)
+def price_vs_ma_status(
+    price,
+    sma20,
+    sma50,
+):
+    price = to_number(
+        price,
+        None,
+    )
+
+    sma20 = to_number(
+        sma20,
+        None,
+    )
+
+    sma50 = to_number(
+        sma50,
+        None,
+    )
 
     if price is None:
         return "Không xác định"
@@ -143,11 +221,16 @@ def price_vs_ma_status(price, sma20, sma50):
 
 
 # ============================================================
-# ĐÁNH GIÁ MACD
+# TRẠNG THÁI MACD
 # ============================================================
 
-def macd_status(macd_value):
-    macd_value = to_number(macd_value)
+def macd_status(
+    macd_value,
+):
+    macd_value = to_number(
+        macd_value,
+        None,
+    )
 
     if macd_value is None:
         return "Không xác định"
@@ -162,11 +245,16 @@ def macd_status(macd_value):
 
 
 # ============================================================
-# QUANT SUMMARY
+# CHUẨN HÓA DỰ BÁO QUANT
 # ============================================================
 
-def quant_prediction_text(value):
-    value = to_number(value)
+def quant_prediction_text(
+    value,
+):
+    value = to_number(
+        value,
+        None,
+    )
 
     if value is None:
         return "Không có dự báo"
@@ -177,10 +265,114 @@ def quant_prediction_text(value):
 
 
 # ============================================================
+# SESSION STATE
+# ============================================================
+
+def _init_session():
+
+    if (
+        "stock_analysis_symbol"
+        not in st.session_state
+    ):
+
+        st.session_state[
+            "stock_analysis_symbol"
+        ] = "HPG"
+
+    if (
+        "stock_analysis_loaded_symbol"
+        not in st.session_state
+    ):
+
+        st.session_state[
+            "stock_analysis_loaded_symbol"
+        ] = None
+
+    if (
+        "stock_analysis_quant"
+        not in st.session_state
+    ):
+
+        st.session_state[
+            "stock_analysis_quant"
+        ] = None
+
+
+# ============================================================
+# LOAD DATA CACHE
+# ============================================================
+
+@st.cache_data(
+    ttl=300,
+    show_spinner=False,
+)
+def _load_stock(
+    symbol,
+):
+    return load_market_data(
+        symbol,
+        "1y",
+    )
+
+
+# ============================================================
+# RUN QUANT CACHE
+# ============================================================
+
+@st.cache_data(
+    ttl=600,
+    show_spinner=False,
+)
+def _run_quant_models(
+    data,
+):
+    """
+    Chạy các mô hình định lượng.
+
+    Cache 10 phút để:
+    - không rerun model mỗi lần Streamlit rerun
+    - không làm page lag khi đổi input/UI
+    """
+
+    result = {
+        "ols": None,
+        "forest": None,
+        "quant": None,
+    }
+
+    try:
+        result["ols"] = run_ols(
+            data
+        )
+    except Exception:
+        result["ols"] = None
+
+    try:
+        result["forest"] = (
+            run_random_forest(
+                data
+            )
+        )
+    except Exception:
+        result["forest"] = None
+
+    try:
+        result["quant"] = build_quant(
+            data
+        )
+    except Exception:
+        result["quant"] = None
+
+    return result
+
+
+# ============================================================
 # RENDER PAGE
 # ============================================================
 
 def render_stock_analysis():
+
+    _init_session()
 
     # ========================================================
     # HEADER
@@ -197,27 +389,31 @@ def render_stock_analysis():
     st.write(
         "Phân tích giá, xu hướng, động lượng, "
         "thanh khoản, biến động và chỉ báo kỹ thuật "
-        "từ dữ liệu thị trường."
+        "từ dữ liệu thị trường thực."
     )
 
     # ========================================================
     # INPUT
     # ========================================================
 
-    current_symbol = st.session_state.get(
-        "stock_analysis_symbol",
-        "HPG",
+    current_symbol = (
+        st.session_state.get(
+            "stock_analysis_symbol",
+            "HPG",
+        )
     )
 
     symbol_input = st.text_input(
         "Mã cổ phiếu",
         value=current_symbol,
-        placeholder="Ví dụ: HPG, FPT, VNM...",
+        placeholder=(
+            "Ví dụ: HPG, FPT, VNM..."
+        ),
         key="stock_analysis_symbol_input",
     )
 
     load_button = st.button(
-        "Tải dữ liệu",
+        "🔄 Tải dữ liệu",
         type="primary",
         key="stock_analysis_load_button",
     )
@@ -234,13 +430,26 @@ def render_stock_analysis():
                 "Vui lòng nhập mã cổ phiếu."
             )
 
-        else:
+            return
 
-            st.session_state[
-                "stock_analysis_symbol"
-            ] = clean_symbol
+        st.session_state[
+            "stock_analysis_symbol"
+        ] = clean_symbol
 
-            st.rerun()
+        # Xóa model cũ khi đổi mã.
+        st.session_state[
+            "stock_analysis_quant"
+        ] = None
+
+        st.session_state[
+            "stock_analysis_loaded_symbol"
+        ] = clean_symbol
+
+        st.rerun()
+
+    # ========================================================
+    # SYMBOL HIỆN TẠI
+    # ========================================================
 
     symbol = normalize_symbol(
         st.session_state.get(
@@ -255,9 +464,8 @@ def render_stock_analysis():
 
     try:
 
-        data = load_market_data(
-            symbol,
-            "1y",
+        data = _load_stock(
+            symbol
         )
 
     except Exception as error:
@@ -273,7 +481,10 @@ def render_stock_analysis():
 
         return
 
-    if data is None or data.empty:
+    if (
+        data is None
+        or data.empty
+    ):
 
         st.warning(
             f"Không có dữ liệu cho "
@@ -290,46 +501,76 @@ def render_stock_analysis():
         data
     )
 
+    # ========================================================
+    # METRICS
+    # ========================================================
+
     price = to_number(
-        snapshot.get("price")
+        snapshot.get(
+            "price"
+        )
     )
 
     change_1d = to_number(
-        snapshot.get("change_1d")
+        snapshot.get(
+            "change_1d"
+        )
     )
 
     rsi_value = to_number(
-        snapshot.get("rsi")
+        snapshot.get(
+            "rsi"
+        )
     )
 
     macd_value = to_number(
-        snapshot.get("macd")
+        snapshot.get(
+            "macd"
+        )
     )
 
     sma20 = to_number(
-        snapshot.get("sma20")
+        snapshot.get(
+            "sma20"
+        )
     )
 
     sma50 = to_number(
-        snapshot.get("sma50")
+        snapshot.get(
+            "sma50"
+        )
     )
 
     volatility20 = to_number(
-        snapshot.get("volatility20")
+        snapshot.get(
+            "volatility20"
+        )
     )
 
     volume = to_number(
-        snapshot.get("volume")
+        snapshot.get(
+            "volume"
+        )
     )
 
-    last_row = data.iloc[-1]
+    # --------------------------------------------------------
+    # Last row
+    # --------------------------------------------------------
+
+    last_row = (
+        data.iloc[-1]
+    )
 
     atr14 = to_number(
-        last_row.get("ATR14")
+        last_row.get(
+            "ATR14"
+        )
     )
 
     volume_sma20 = to_number(
-        last_row.get("Volume_SMA20")
+        last_row.get(
+            "Volume_SMA20"
+        )
     )
 
     relative_volume = None
@@ -346,7 +587,7 @@ def render_stock_analysis():
         )
 
     # ========================================================
-    # STOCK TITLE
+    # TITLE
     # ========================================================
 
     st.subheader(
@@ -363,28 +604,36 @@ def render_stock_analysis():
 
         st.metric(
             "Giá",
-            format_price(price),
+            format_price(
+                price
+            ),
         )
 
     with c2:
 
         st.metric(
             "1D",
-            format_percent(change_1d),
+            format_percent(
+                change_1d
+            ),
         )
 
     with c3:
 
         st.metric(
             "RSI",
-            format_rsi(rsi_value),
+            format_rsi(
+                rsi_value
+            ),
         )
 
     with c4:
 
         st.metric(
             "Khối lượng",
-            format_volume(volume),
+            format_volume(
+                volume
+            ),
         )
 
     # ========================================================
@@ -397,21 +646,27 @@ def render_stock_analysis():
 
         st.metric(
             "Trung bình 20 phiên",
-            format_price(sma20),
+            format_price(
+                sma20
+            ),
         )
 
     with c6:
 
         st.metric(
             "Trung bình 50 phiên",
-            format_price(sma50),
+            format_price(
+                sma50
+            ),
         )
 
     with c7:
 
         st.metric(
             "MACD",
-            format_macd(macd_value),
+            format_macd(
+                macd_value
+            ),
         )
 
     with c8:
@@ -489,7 +744,9 @@ def render_stock_analysis():
 
         st.metric(
             "ATR 14",
-            format_price(atr14),
+            format_price(
+                atr14
+            ),
         )
 
     with a2:
@@ -504,26 +761,36 @@ def render_stock_analysis():
     with a3:
 
         open_price = to_number(
-            last_row.get("Open")
+            last_row.get(
+                "Open"
+            )
         )
 
         st.metric(
             "Giá mở cửa",
-            format_price(open_price),
+            format_price(
+                open_price
+            ),
         )
 
     with a4:
 
         close_price = to_number(
-            last_row.get("Close")
+            last_row.get(
+                "Close"
+            )
         )
 
         high_price = to_number(
-            last_row.get("High")
+            last_row.get(
+                "High"
+            )
         )
 
         low_price = to_number(
-            last_row.get("Low")
+            last_row.get(
+                "Low"
+            )
         )
 
         if (
@@ -534,8 +801,14 @@ def render_stock_analysis():
         ):
 
             position = (
-                (close_price - low_price)
-                / (high_price - low_price)
+                (
+                    close_price
+                    - low_price
+                )
+                / (
+                    high_price
+                    - low_price
+                )
                 * 100
             )
 
@@ -592,191 +865,422 @@ def render_stock_analysis():
         )
 
     # ========================================================
-    # QUANT ANALYSIS
+    # QUANT
+    # ========================================================
+    #
+    # KHÔNG tự chạy.
+    # Người dùng bấm nút mới chạy.
     # ========================================================
 
     st.subheader(
-        "🤖 Phân tích định lượng"
+        "📐 Phân tích định lượng"
     )
 
-    with st.spinner(
-        "Đang chạy mô hình định lượng..."
-    ):
+    st.caption(
+        "OLS, Random Forest và Quant được chạy khi bạn yêu cầu "
+        "để tránh page tải chậm."
+    )
 
-        ols_result = run_ols(
-            data
-        )
+    run_quant_button = st.button(
+        "🧮 Chạy mô hình Quant",
+        key="stock_analysis_run_quant",
+    )
 
-        forest_result = run_random_forest(
-            data
-        )
+    if run_quant_button:
 
-    q1, q2, q3 = st.columns(3)
+        with st.spinner(
+            "Đang chạy mô hình định lượng..."
+        ):
 
-    with q1:
-
-        if ols_result is not None:
-
-            st.success(
-                "OLS: mô hình đã chạy."
+            quant_results = _run_quant_models(
+                data
             )
 
-            try:
+        st.session_state[
+            "stock_analysis_quant"
+        ] = quant_results
 
-                st.caption(
-                    f"R² = {ols_result.rsquared:.3f}"
-                )
-
-            except Exception:
-
-                pass
-
-        else:
-
-            st.info(
-                "OLS chưa đủ dữ liệu."
-            )
-
-    with q2:
-
-        if forest_result is not None:
-
-            prediction = forest_result.get(
-                "prediction"
-            )
-
-            st.success(
-                "Random Forest: đã chạy."
-            )
-
-            st.caption(
-                "Dự báo phiên kế tiếp: "
-                + quant_prediction_text(
-                    prediction
-                )
-            )
-
-        else:
-
-            st.info(
-                "Random Forest chưa đủ dữ liệu."
-            )
-
-    with q3:
-
-        st.metric(
-            "Biến động 20 phiên",
-            (
-                f"{volatility20:.2f}%"
-                if volatility20 is not None
-                else "—"
-            ),
-        )
+    quant_results = st.session_state.get(
+        "stock_analysis_quant"
+    )
 
     # ========================================================
-    # BUILD QUANT
+    # QUANT RESULT
     # ========================================================
 
-    st.subheader(
-        "📐 Mô hình Quant"
-    )
-
-    quant = build_quant(
-        data
-    )
-
-    if quant is None:
+    if quant_results is None:
 
         st.info(
-            "Chưa đủ dữ liệu hợp lệ để xây dựng mô hình Quant."
+            "Bấm «Chạy mô hình Quant» để tính OLS, "
+            "Random Forest và các chỉ số đánh giá."
         )
 
     else:
 
-        (
-            ols_model,
-            rf_model,
-            metrics,
-            next_prediction,
-            importance,
-        ) = quant
+        ols_result = (
+            quant_results.get(
+                "ols"
+            )
+        )
+
+        forest_result = (
+            quant_results.get(
+                "forest"
+            )
+        )
+
+        quant = (
+            quant_results.get(
+                "quant"
+            )
+        )
 
         q1, q2, q3 = st.columns(3)
 
+        # ----------------------------------------------------
+        # OLS
+        # ----------------------------------------------------
+
         with q1:
 
-            mae = to_number(
-                metrics.get("MAE")
-            )
+            if ols_result is not None:
 
-            st.metric(
-                "MAE",
-                (
-                    f"{mae:.6f}"
-                    if mae is not None
-                    else "—"
-                ),
-            )
+                st.success(
+                    "OLS: mô hình đã chạy"
+                )
+
+                try:
+
+                    r_squared = float(
+                        ols_result.rsquared
+                    )
+
+                    st.metric(
+                        "R²",
+                        f"{r_squared:.3f}",
+                    )
+
+                except Exception:
+
+                    st.caption(
+                        "Không đọc được R²."
+                    )
+
+            else:
+
+                st.info(
+                    "OLS chưa đủ dữ liệu."
+                )
+
+        # ----------------------------------------------------
+        # Random Forest
+        # ----------------------------------------------------
 
         with q2:
 
-            r2 = to_number(
-                metrics.get("R2")
-            )
+            if forest_result is not None:
 
-            st.metric(
-                "R²",
-                (
-                    f"{r2:.3f}"
-                    if r2 is not None
-                    else "—"
-                ),
-            )
+                st.success(
+                    "Random Forest: đã chạy"
+                )
+
+                prediction = (
+                    forest_result.get(
+                        "prediction"
+                    )
+                )
+
+                st.metric(
+                    "Dự báo phiên kế",
+                    quant_prediction_text(
+                        prediction
+                    ),
+                )
+
+            else:
+
+                st.info(
+                    "Random Forest chưa đủ dữ liệu."
+                )
+
+        # ----------------------------------------------------
+        # Volatility
+        # ----------------------------------------------------
 
         with q3:
 
             st.metric(
-                "Dự báo phiên tiếp",
-                quant_prediction_text(
-                    next_prediction
+                "Biến động 20 phiên",
+                (
+                    f"{volatility20:.2f}%"
+                    if volatility20 is not None
+                    else "—"
                 ),
             )
 
-        # ----------------------------------------------------
-        # Feature importance
-        # ----------------------------------------------------
+        # ====================================================
+        # BUILD QUANT DETAIL
+        # ====================================================
 
-        if (
-            importance is not None
-            and not importance.empty
-        ):
+        if quant is None:
 
-            importance_df = (
-                importance
-                .rename("Mức quan trọng")
-                .reset_index()
+            st.info(
+                "Chưa đủ dữ liệu để xây dựng Quant Model."
             )
 
-            importance_df.columns = [
-                "Biến",
-                "Mức quan trọng",
-            ]
+        else:
 
-            importance_df[
-                "Mức quan trọng"
-            ] = importance_df[
-                "Mức quan trọng"
-            ].round(4)
+            (
+                ols_model,
+                rf_model,
+                metrics,
+                next_prediction,
+                importance,
+            ) = quant
 
-            st.dataframe(
-                importance_df,
-                width="stretch",
-                hide_index=True,
+            st.markdown(
+                "#### Kết quả Quant"
             )
+
+            q4, q5, q6 = st.columns(3)
+
+            with q4:
+
+                mae = to_number(
+                    metrics.get(
+                        "MAE"
+                    )
+                )
+
+                st.metric(
+                    "MAE",
+                    (
+                        f"{mae:.6f}"
+                        if mae is not None
+                        else "—"
+                    ),
+                )
+
+            with q5:
+
+                r2 = to_number(
+                    metrics.get(
+                        "R2"
+                    )
+                )
+
+                st.metric(
+                    "R²",
+                    (
+                        f"{r2:.3f}"
+                        if r2 is not None
+                        else "—"
+                    ),
+                )
+
+            with q6:
+
+                st.metric(
+                    "Dự báo phiên tiếp",
+                    quant_prediction_text(
+                        next_prediction
+                    ),
+                )
+
+            # ------------------------------------------------
+            # FEATURE IMPORTANCE
+            # ------------------------------------------------
+
+            if (
+                importance is not None
+                and not importance.empty
+            ):
+
+                importance_df = (
+                    importance
+                    .rename(
+                        "Mức quan trọng"
+                    )
+                    .reset_index()
+                )
+
+                importance_df.columns = [
+                    "Biến",
+                    "Mức quan trọng",
+                ]
+
+                importance_df[
+                    "Mức quan trọng"
+                ] = importance_df[
+                    "Mức quan trọng"
+                ].round(4)
+
+                st.dataframe(
+                    importance_df,
+                    width="stretch",
+                    hide_index=True,
+                )
+
+    # ========================================================
+    # AI STOCK ANALYSIS
+    # ========================================================
+    #
+    # AI chỉ chạy khi bấm nút bên render_ai_panel.
+    # ========================================================
+
+    ai_prompt = stock_analysis_prompt(
+        symbol=display_symbol(
+            symbol
+        ),
+
+        snapshot={
+            "price": price,
+            "change_1d": change_1d,
+            "RSI": rsi_value,
+            "MACD": macd_value,
+            "SMA20": sma20,
+            "SMA50": sma50,
+            "Volatility20": volatility20,
+            "Volume": volume,
+            "Volume_SMA20": volume_sma20,
+            "Relative_Volume": relative_volume,
+            "ATR14": atr14,
+            "Xu hướng": price_vs_ma_status(
+                price,
+                sma20,
+                sma50,
+            ),
+            "RSI trạng thái": rsi_status(
+                rsi_value
+            ),
+            "MACD trạng thái": macd_status(
+                macd_value
+            ),
+        },
+
+        latest_row={
+            "Date": str(
+                data.index[-1]
+            ),
+
+            "Open": to_number(
+                last_row.get(
+                    "Open"
+                )
+            ),
+
+            "High": to_number(
+                last_row.get(
+                    "High"
+                )
+            ),
+
+            "Low": to_number(
+                last_row.get(
+                    "Low"
+                )
+            ),
+
+            "Close": to_number(
+                last_row.get(
+                    "Close"
+                )
+            ),
+
+            "Volume": to_number(
+                last_row.get(
+                    "Volume"
+                )
+            ),
+
+            "RSI": to_number(
+                last_row.get(
+                    "RSI"
+                )
+            ),
+
+            "MACD": to_number(
+                last_row.get(
+                    "MACD"
+                )
+            ),
+
+            "MACD_Signal": to_number(
+                last_row.get(
+                    "MACD_Signal"
+                )
+            ),
+
+            "MACD_Hist": to_number(
+                last_row.get(
+                    "MACD_Hist"
+                )
+            ),
+
+            "SMA20": to_number(
+                last_row.get(
+                    "SMA20"
+                )
+            ),
+
+            "SMA50": to_number(
+                last_row.get(
+                    "SMA50"
+                )
+            ),
+
+            "EMA20": to_number(
+                last_row.get(
+                    "EMA20"
+                )
+            ),
+
+            "EMA50": to_number(
+                last_row.get(
+                    "EMA50"
+                )
+            ),
+
+            "Volatility20": to_number(
+                last_row.get(
+                    "Volatility20"
+                )
+            ),
+
+            "ATR14": to_number(
+                last_row.get(
+                    "ATR14"
+                )
+            ),
+
+            "Volume_SMA20": to_number(
+                last_row.get(
+                    "Volume_SMA20"
+                )
+            ),
+
+            "Relative_Volume": to_number(
+                last_row.get(
+                    "Relative_Volume"
+                )
+            ),
+        },
+    )
+
+    render_ai_panel(
+        title="🤖 AI phân tích cổ phiếu",
+        description=(
+            "AI đọc dữ liệu kỹ thuật của mã đang xem "
+            "và đưa ra bản phân tích có cấu trúc."
+        ),
+        prompt=ai_prompt,
+        button_label="🤖 Phân tích mã này bằng AI",
+        key="stock_analysis_ai",
+    )
 
 
 # ============================================================
-# TƯƠNG THÍCH TÊN HÀM
+# TƯƠNG THÍCH CODE CŨ
 # ============================================================
 
 def render_analysis():
