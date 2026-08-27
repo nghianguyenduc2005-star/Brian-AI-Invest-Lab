@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 from typing import Any
 
 import numpy as np
@@ -17,19 +17,36 @@ from data.market import (
 # CẤU HÌNH
 # ============================================================
 
-THOI_GIAN_CACHE = 60
+# Cache dữ liệu từng mã.
+# load_market_data() bên data.market cũng đã có cache riêng,
+# nhưng giữ cache ở lớp này để tránh xử lý lại nhiều lần.
+THOI_GIAN_CACHE_MA = 300
+
+# Cache bảng tổng hợp.
+THOI_GIAN_CACHE_TONG = 600
+
+# Cache danh sách mã.
 THOI_GIAN_CACHE_DANH_SACH = 6 * 60 * 60
 
-SO_MA_THI_TRUONG = 60
-SO_LUONG_WORKER = 8
+# ============================================================
+# GIỚI HẠN API
+# ============================================================
+
+# API chỉ cho khoảng 40 request/phút.
+# Giữ mức an toàn dưới giới hạn.
+MAX_REQUESTS_PER_MINUTE = 35
+
+# 60 / 35 ~= 1.71 giây/request.
+KHOANG_CACH_GIUA_REQUEST = 1.75
+
+# Không tải 60 mã cùng lúc nữa.
+# 30 mã ~ 52 giây trong trường hợp toàn bộ đều phải gọi API.
+# Lần sau các mã được cache nên nhanh hơn nhiều.
+SO_MA_THI_TRUONG = 30
 
 
 # ============================================================
 # DANH SÁCH ƯU TIÊN
-#
-# Dùng để đảm bảo 60 mã đầu tiên có tính đại diện tốt.
-# Nếu Listing hoạt động, các mã còn thiếu sẽ được bổ sung
-# từ danh sách thực tế.
 # ============================================================
 
 DANH_SACH_MA_UU_TIEN = [
@@ -58,39 +75,11 @@ DANH_SACH_MA_UU_TIEN = [
     "PLX",
     "POW",
     "PVD",
-    "PVT",
     "FPT",
-    "CMG",
     "MWG",
-    "DGW",
     "MSN",
     "VNM",
-    "SAB",
-    "VHC",
-    "MCH",
     "SSI",
-    "VND",
-    "HCM",
-    "VCI",
-    "FTS",
-    "BSI",
-    "CTS",
-    "VIX",
-    "DSE",
-    "PDR",
-    "DIG",
-    "DXG",
-    "KDH",
-    "NLG",
-    "VPI",
-    "NVL",
-    "HUT",
-    "CTD",
-    "HHV",
-    "GEX",
-    "REE",
-    "BMP",
-    "PHR",
 ]
 
 
@@ -128,17 +117,10 @@ def _tim_cot(
     ):
         return None
 
-    anh_xa = {}
-
-    for cot in du_lieu.columns:
-
-        khoa = (
-            str(cot)
-            .strip()
-            .lower()
-        )
-
-        anh_xa[khoa] = cot
+    anh_xa = {
+        str(cot).strip().lower(): cot
+        for cot in du_lieu.columns
+    }
 
     for ten in ten_cot:
 
@@ -167,7 +149,7 @@ def _chuan_ma(
 
     except Exception:
 
-        ma = (
+        return (
             str(gia_tri)
             .strip()
             .upper()
@@ -180,8 +162,6 @@ def _chuan_ma(
                 "",
             )
         )
-
-        return ma
 
 
 def _chuan_san(
@@ -213,7 +193,7 @@ def _chuan_san(
 
 
 # ============================================================
-# LẤY THÔNG TIN LISTING
+# LISTING
 # ============================================================
 
 @st.cache_data(
@@ -221,12 +201,6 @@ def _chuan_san(
     show_spinner=False,
 )
 def _lay_listing():
-    """
-    Cố lấy danh sách thực tế từ vnstock.
-
-    Nếu Listing không khả dụng thì trả DataFrame rỗng.
-    Không làm app chết chỉ vì metadata listing.
-    """
 
     try:
 
@@ -257,7 +231,7 @@ def _lay_listing():
 
 
 # ============================================================
-# DANH SÁCH 60 MÃ
+# DANH SÁCH MÃ
 # ============================================================
 
 @st.cache_data(
@@ -265,16 +239,13 @@ def _lay_listing():
     show_spinner=False,
 )
 def lay_danh_sach_ma():
-    """
-    Trả metadata cho danh sách mã dùng ở bảng thị trường.
-    """
 
     bang_listing = _lay_listing()
 
     rows = []
 
     # --------------------------------------------------------
-    # Nếu Listing có dữ liệu
+    # Lấy metadata từ Listing
     # --------------------------------------------------------
 
     if not bang_listing.empty:
@@ -289,7 +260,6 @@ def lay_danh_sach_ma():
         cot_ten = _tim_cot(
             bang_listing,
             "organ_name",
-            "company_name",
             "company_name",
             "name",
         )
@@ -325,9 +295,9 @@ def lay_danh_sach_ma():
             ):
 
                 ma = _chuan_ma(
-                    dong[
+                    dong.get(
                         cot_ma
-                    ]
+                    )
                 )
 
                 if not ma:
@@ -338,17 +308,17 @@ def lay_danh_sach_ma():
                 if (
                     cot_ten is not None
                     and pd.notna(
-                        dong[
+                        dong.get(
                             cot_ten
-                        ]
+                        )
                     )
                 ):
 
                     ten_doanh_nghiep = (
                         str(
-                            dong[
+                            dong.get(
                                 cot_ten
-                            ]
+                            )
                         )
                         .strip()
                     )
@@ -358,16 +328,16 @@ def lay_danh_sach_ma():
                 if (
                     cot_san is not None
                     and pd.notna(
-                        dong[
+                        dong.get(
                             cot_san
-                        ]
+                        )
                     )
                 ):
 
                     san = _chuan_san(
-                        dong[
+                        dong.get(
                             cot_san
-                        ]
+                        )
                     )
 
                 ten_nganh = ""
@@ -375,17 +345,17 @@ def lay_danh_sach_ma():
                 if (
                     cot_nganh is not None
                     and pd.notna(
-                        dong[
+                        dong.get(
                             cot_nganh
-                        ]
+                        )
                     )
                 ):
 
                     ten_nganh = (
                         str(
-                            dong[
+                            dong.get(
                                 cot_nganh
-                            ]
+                            )
                         )
                         .strip()
                     )
@@ -395,17 +365,17 @@ def lay_danh_sach_ma():
                 if (
                     cot_ma_nganh is not None
                     and pd.notna(
-                        dong[
+                        dong.get(
                             cot_ma_nganh
-                        ]
+                        )
                     )
                 ):
 
                     ma_nganh = (
                         str(
-                            dong[
+                            dong.get(
                                 cot_ma_nganh
-                            ]
+                            )
                         )
                         .strip()
                     )
@@ -415,9 +385,9 @@ def lay_danh_sach_ma():
                 if cot_von_hoa is not None:
 
                     von_hoa = _so(
-                        dong[
+                        dong.get(
                             cot_von_hoa
-                        ]
+                        )
                     )
 
                 rows.append(
@@ -433,13 +403,13 @@ def lay_danh_sach_ma():
                     }
                 )
 
-    # --------------------------------------------------------
-    # Nếu không có Listing
-    # --------------------------------------------------------
-
     metadata = pd.DataFrame(
         rows
     )
+
+    # --------------------------------------------------------
+    # Fallback nếu Listing không hoạt động
+    # --------------------------------------------------------
 
     if metadata.empty:
 
@@ -452,10 +422,15 @@ def lay_danh_sach_ma():
                     for ma
                     in DANH_SACH_MA_UU_TIEN
                 ],
+
                 "ten_doanh_nghiep": "",
+
                 "san": "",
+
                 "ma_nganh": "",
+
                 "ten_nganh": "",
+
                 "von_hoa": np.nan,
             }
         )
@@ -471,18 +446,17 @@ def lay_danh_sach_ma():
         )
     )
 
-    # --------------------------------------------------------
-    # Ưu tiên các mã mong muốn
-    # --------------------------------------------------------
-
     ma_co_san = set(
         metadata[
             "ma"
-        ]
-        .tolist()
+        ].tolist()
     )
 
     danh_sach = []
+
+    # --------------------------------------------------------
+    # Ưu tiên các mã lớn
+    # --------------------------------------------------------
 
     for ma in DANH_SACH_MA_UU_TIEN:
 
@@ -501,14 +475,12 @@ def lay_danh_sach_ma():
             )
 
     # --------------------------------------------------------
-    # Bổ sung mã còn thiếu từ Listing
+    # Bổ sung từ Listing
     # --------------------------------------------------------
 
-    for ma in (
-        metadata[
-            "ma"
-        ].tolist()
-    ):
+    for ma in metadata[
+        "ma"
+    ].tolist():
 
         if (
             ma
@@ -519,9 +491,7 @@ def lay_danh_sach_ma():
                 ma
             )
 
-        if len(danh_sach) >= (
-            SO_MA_THI_TRUONG
-        ):
+        if len(danh_sach) >= SO_MA_THI_TRUONG:
             break
 
     danh_sach = danh_sach[
@@ -536,10 +506,10 @@ def lay_danh_sach_ma():
         )
     ].copy()
 
-    # Giữ đúng thứ tự ưu tiên
+    # Giữ thứ tự ưu tiên
     thu_tu = {
-        ma: vi_tri
-        for vi_tri, ma
+        ma: index
+        for index, ma
         in enumerate(
             danh_sach
         )
@@ -572,17 +542,61 @@ def lay_danh_sach_ma():
 
 
 # ============================================================
+# HẠN CHẾ TỐC ĐỘ REQUEST
+# ============================================================
+
+@st.cache_resource(
+    show_spinner=False
+)
+def _bo_dieu_tiet_request():
+    return {
+        "lan_cuoi": 0.0
+    }
+
+
+def _cho_request():
+
+    state = _bo_dieu_tiet_request()
+
+    now = time.monotonic()
+
+    lan_cuoi = state.get(
+        "lan_cuoi",
+        0.0,
+    )
+
+    thoi_gian_can_cho = (
+        KHOANG_CACH_GIUA_REQUEST
+        - (
+            now
+            - lan_cuoi
+        )
+    )
+
+    if thoi_gian_can_cho > 0:
+
+        time.sleep(
+            thoi_gian_can_cho
+        )
+
+    state["lan_cuoi"] = (
+        time.monotonic()
+    )
+
+
+# ============================================================
 # LẤY DỮ LIỆU MỘT MÃ
 # ============================================================
 
-def _lay_mot_ma(
+@st.cache_data(
+    ttl=THOI_GIAN_CACHE_MA,
+    show_spinner=False,
+)
+def _lay_mot_ma_cached(
     ma,
 ):
-    """
-    Lấy 5 ngày dữ liệu cho một mã.
 
-    Chạy song song ở hàm phía dưới.
-    """
+    _cho_request()
 
     try:
 
@@ -591,236 +605,240 @@ def _lay_mot_ma(
             "5d",
         )
 
-        if (
-            du_lieu is None
-            or du_lieu.empty
-        ):
-            return None
+    except Exception:
 
-        dong = (
-            du_lieu.iloc[-1]
-        )
+        return None
 
-        if len(
-            du_lieu
-        ) >= 2:
+    if (
+        du_lieu is None
+        or du_lieu.empty
+    ):
+        return None
 
-            dong_truoc = (
-                du_lieu.iloc[-2]
-            )
+    try:
 
-        else:
-
-            dong_truoc = dong
-
-        gia = _so(
-            dong.get(
-                "Close"
-            )
-        )
-
-        if (
-            not np.isfinite(
-                gia
-            )
-            or gia <= 0
-        ):
-            return None
-
-        gia_truoc = _so(
-            dong_truoc.get(
-                "Close"
-            )
-        )
-
-        if (
-            np.isfinite(
-                gia_truoc
-            )
-            and gia_truoc != 0
-        ):
-
-            thay_doi = (
-                gia
-                - gia_truoc
-            )
-
-            thay_doi_pct = (
-                (
-                    gia
-                    / gia_truoc
-                )
-                - 1
-            ) * 100
-
-        else:
-
-            thay_doi = np.nan
-            thay_doi_pct = np.nan
-
-        khoi_luong = _so(
-            dong.get(
-                "Volume"
-            )
-        )
-
-        # ----------------------------------------------------
-        # Giá trị giao dịch
-        #
-        # Nếu nguồn OHLCV không có value,
-        # dùng giá * volume như giá trị ước tính trong phiên.
-        # ----------------------------------------------------
-
-        gia_tri = np.nan
-
-        if (
-            np.isfinite(
-                gia
-            )
-            and np.isfinite(
-                khoi_luong
-            )
-        ):
-
-            gia_tri = (
-                gia
-                * khoi_luong
-            )
-
-        return {
-            "ma": _chuan_ma(
-                ma
-            ),
-
-            "gia": gia,
-
-            "gia_tham_chieu": (
-                gia_truoc
-            ),
-
-            "gia_mo_cua": _so(
-                dong.get(
-                    "Open"
-                )
-            ),
-
-            "gia_cao_nhat": _so(
-                dong.get(
-                    "High"
-                )
-            ),
-
-            "gia_thap_nhat": _so(
-                dong.get(
-                    "Low"
-                )
-            ),
-
-            "thay_doi": (
-                thay_doi
-            ),
-
-            "thay_doi_pct": (
-                thay_doi_pct
-            ),
-
-            "khoi_luong": (
-                khoi_luong
-            ),
-
-            "gia_tri_giao_dich": (
-                gia_tri
-            ),
-
-            "rsi": _so(
-                dong.get(
-                    "RSI"
-                )
-            ),
-
-            "macd": _so(
-                dong.get(
-                    "MACD"
-                )
-            ),
-
-            "sma20": _so(
-                dong.get(
-                    "SMA20"
-                )
-            ),
-
-            "sma50": _so(
-                dong.get(
-                    "SMA50"
-                )
-            ),
-
-            "ema20": _so(
-                dong.get(
-                    "EMA20"
-                )
-            ),
-
-            "ema50": _so(
-                dong.get(
-                    "EMA50"
-                )
-            ),
-
-            "volatility20": _so(
-                dong.get(
-                    "Volatility20"
-                )
-            ),
-
-            "atr14": _so(
-                dong.get(
-                    "ATR14"
-                )
-            ),
-
-            "relative_volume": _so(
-                dong.get(
-                    "Relative_Volume"
-                )
-            ),
-        }
+        dong = du_lieu.iloc[-1]
 
     except Exception:
+
         return None
+
+    if len(du_lieu) >= 2:
+
+        dong_truoc = (
+            du_lieu.iloc[-2]
+        )
+
+    else:
+
+        dong_truoc = dong
+
+    gia = _so(
+        dong.get("Close")
+    )
+
+    if (
+        not np.isfinite(gia)
+        or gia <= 0
+    ):
+        return None
+
+    gia_truoc = _so(
+        dong_truoc.get("Close")
+    )
+
+    if (
+        np.isfinite(
+            gia_truoc
+        )
+        and gia_truoc != 0
+    ):
+
+        thay_doi = (
+            gia
+            - gia_truoc
+        )
+
+        thay_doi_pct = (
+            gia
+            / gia_truoc
+            - 1
+        ) * 100
+
+    else:
+
+        thay_doi = np.nan
+        thay_doi_pct = np.nan
+
+    volume = _so(
+        dong.get("Volume")
+    )
+
+    # --------------------------------------------------------
+    # Value nếu nguồn có
+    # --------------------------------------------------------
+
+    value_column = _tim_cot(
+        du_lieu,
+        "Value",
+        "value",
+        "ValueTraded",
+        "value_traded",
+        "trading_value",
+        "traded_value",
+        "turnover",
+    )
+
+    value = np.nan
+
+    if value_column is not None:
+
+        try:
+
+            value = _so(
+                dong.get(
+                    value_column
+                )
+            )
+
+        except Exception:
+
+            value = np.nan
+
+    # --------------------------------------------------------
+    # Fallback:
+    # giá * khối lượng
+    #
+    # Đây là giá trị ước tính, không phải số liệu trực tiếp
+    # nếu nguồn không có cột Value.
+    # --------------------------------------------------------
+
+    value_estimated = False
+
+    if (
+        not np.isfinite(
+            value
+        )
+        and np.isfinite(
+            volume
+        )
+    ):
+
+        value = (
+            gia
+            * volume
+        )
+
+        value_estimated = True
+
+    return {
+        "ma": _chuan_ma(ma),
+
+        "gia": gia,
+
+        "gia_tham_chieu": (
+            gia_truoc
+            if np.isfinite(
+                gia_truoc
+            )
+            else np.nan
+        ),
+
+        "gia_mo_cua": _so(
+            dong.get("Open")
+        ),
+
+        "gia_cao_nhat": _so(
+            dong.get("High")
+        ),
+
+        "gia_thap_nhat": _so(
+            dong.get("Low")
+        ),
+
+        "thay_doi": thay_doi,
+
+        "thay_doi_pct": thay_doi_pct,
+
+        "khoi_luong": volume,
+
+        "gia_tri_giao_dich": value,
+
+        "gia_tri_uoc_tinh": (
+            value_estimated
+        ),
+
+        "rsi": _so(
+            dong.get("RSI")
+        ),
+
+        "macd": _so(
+            dong.get("MACD")
+        ),
+
+        "sma20": _so(
+            dong.get("SMA20")
+        ),
+
+        "sma50": _so(
+            dong.get("SMA50")
+        ),
+
+        "ema20": _so(
+            dong.get("EMA20")
+        ),
+
+        "ema50": _so(
+            dong.get("EMA50")
+        ),
+
+        "volatility20": _so(
+            dong.get("Volatility20")
+        ),
+
+        "atr14": _so(
+            dong.get("ATR14")
+        ),
+
+        "relative_volume": _so(
+            dong.get(
+                "Relative_Volume"
+            )
+        ),
+    }
 
 
 # ============================================================
-# BẢNG GIÁ 60 MÃ
+# BẢNG GIÁ
 # ============================================================
 
 @st.cache_data(
-    ttl=THOI_GIAN_CACHE,
+    ttl=THOI_GIAN_CACHE_TONG,
     show_spinner=False,
 )
 def lay_bang_gia_toan_thi_truong(
     force_reload=False,
 ):
     """
-    Lấy tối đa 60 mã song song.
+    Lấy dữ liệu thị trường theo kiểu an toàn với API.
 
-    Quan trọng:
-    - Không gọi 60 mã tuần tự.
-    - Không dùng vnstock_data.
-    - Không dùng giá giả.
+    QUAN TRỌNG:
+    - Không dùng ThreadPoolExecutor.
+    - Không request song song.
+    - Tối đa 30 mã trong một lần tải.
+    - Mỗi request được điều tiết khoảng 1.75 giây.
     """
 
+    # force_reload chỉ dùng để thay đổi cache key.
     _ = force_reload
 
-    metadata = (
-        lay_danh_sach_ma()
-    )
+    metadata = lay_danh_sach_ma()
 
     if (
         metadata is None
         or metadata.empty
     ):
+
         raise RuntimeError(
             "Không có danh sách mã cổ phiếu."
         )
@@ -840,51 +858,37 @@ def lay_bang_gia_toan_thi_truong(
     ]
 
     if not danh_sach_ma:
+
         raise RuntimeError(
             "Danh sách mã cổ phiếu đang rỗng."
         )
 
     ket_qua = []
 
-    # --------------------------------------------------------
-    # Chạy song song
-    # --------------------------------------------------------
+    # ========================================================
+    # TUẦN TỰ
+    # ========================================================
 
-    with ThreadPoolExecutor(
-        max_workers=SO_LUONG_WORKER
-    ) as bo_luong:
+    for index, ma in enumerate(
+        danh_sach_ma,
+        start=1,
+    ):
 
-        nhiem_vu = {
-            bo_luong.submit(
-                _lay_mot_ma,
-                ma,
-            ): ma
-            for ma
-            in danh_sach_ma
-        }
+        try:
 
-        for future in as_completed(
-            nhiem_vu
-        ):
+            item = _lay_mot_ma_cached(
+                ma
+            )
 
-            try:
+        except Exception:
 
-                ket_qua_mot_ma = (
-                    future.result()
-                )
+            item = None
 
-            except Exception:
+        if item is not None:
 
-                ket_qua_mot_ma = None
-
-            if (
-                ket_qua_mot_ma
-                is not None
-            ):
-
-                ket_qua.append(
-                    ket_qua_mot_ma
-                )
+            ket_qua.append(
+                item
+            )
 
     if not ket_qua:
 
@@ -896,9 +900,9 @@ def lay_bang_gia_toan_thi_truong(
         ket_qua
     )
 
-    # --------------------------------------------------------
-    # Ghép metadata
-    # --------------------------------------------------------
+    # ========================================================
+    # GHÉP METADATA
+    # ========================================================
 
     bang_ghep = metadata[
         [
@@ -917,9 +921,9 @@ def lay_bang_gia_toan_thi_truong(
         how="left",
     )
 
-    # --------------------------------------------------------
-    # Chuẩn hóa text
-    # --------------------------------------------------------
+    # ========================================================
+    # TEXT
+    # ========================================================
 
     for cot in [
         "ten_doanh_nghiep",
@@ -942,34 +946,48 @@ def lay_bang_gia_toan_thi_truong(
             .str.strip()
         )
 
-    # --------------------------------------------------------
-    # Sắp xếp theo % thay đổi
-    # --------------------------------------------------------
+    # ========================================================
+    # NUMBER
+    # ========================================================
 
-    bang_gia[
+    for cot in [
+        "gia",
+        "gia_tham_chieu",
+        "gia_mo_cua",
+        "gia_cao_nhat",
+        "gia_thap_nhat",
+        "thay_doi",
+        "thay_doi_pct",
+        "khoi_luong",
+        "gia_tri_giao_dich",
+        "von_hoa",
+    ]:
+
+        if cot in bang_gia.columns:
+
+            bang_gia[
+                cot
+            ] = pd.to_numeric(
+                bang_gia[
+                    cot
+                ],
+                errors="coerce",
+            )
+
+    # ========================================================
+    # TRẠNG THÁI
+    # ========================================================
+
+    thay_doi = bang_gia[
         "thay_doi_pct"
-    ] = pd.to_numeric(
-        bang_gia[
-            "thay_doi_pct"
-        ],
-        errors="coerce",
-    )
-
-    # --------------------------------------------------------
-    # Trạng thái
-    # --------------------------------------------------------
+    ]
 
     bang_gia[
         "trang_thai"
     ] = np.select(
         [
-            bang_gia[
-                "thay_doi_pct"
-            ] > 0.05,
-
-            bang_gia[
-                "thay_doi_pct"
-            ] < -0.05,
+            thay_doi > 0.05,
+            thay_doi < -0.05,
         ],
         [
             "Tăng",
@@ -978,31 +996,9 @@ def lay_bang_gia_toan_thi_truong(
         default="Đứng giá",
     )
 
-    # --------------------------------------------------------
-    # Kiểm tra giá trị giao dịch
-    # --------------------------------------------------------
-
-    bang_gia[
-        "gia_tri_giao_dich"
-    ] = pd.to_numeric(
-        bang_gia[
-            "gia_tri_giao_dich"
-        ],
-        errors="coerce",
-    )
-
-    bang_gia[
-        "khoi_luong"
-    ] = pd.to_numeric(
-        bang_gia[
-            "khoi_luong"
-        ],
-        errors="coerce",
-    )
-
-    # --------------------------------------------------------
-    # Cuối cùng
-    # --------------------------------------------------------
+    # ========================================================
+    # SẮP XẾP
+    # ========================================================
 
     bang_gia = (
         bang_gia
@@ -1024,7 +1020,7 @@ def lay_bang_gia_toan_thi_truong(
 
 
 # ============================================================
-# LỌC BẢNG GIÁ
+# LỌC BẢNG
 # ============================================================
 
 def loc_bang_gia(
@@ -1034,16 +1030,18 @@ def loc_bang_gia(
     nganh="Tất cả",
     huong="Tất cả",
 ):
+
     if (
         bang_gia is None
         or bang_gia.empty
     ):
+
         return pd.DataFrame()
 
     df = bang_gia.copy()
 
     # --------------------------------------------------------
-    # Từ khóa
+    # TỪ KHÓA
     # --------------------------------------------------------
 
     tu_khoa = str(
@@ -1096,7 +1094,7 @@ def loc_bang_gia(
         ].copy()
 
     # --------------------------------------------------------
-    # Sàn
+    # SÀN
     # --------------------------------------------------------
 
     if (
@@ -1119,7 +1117,7 @@ def loc_bang_gia(
         ].copy()
 
     # --------------------------------------------------------
-    # Ngành
+    # NGÀNH
     # --------------------------------------------------------
 
     if (
@@ -1135,14 +1133,12 @@ def loc_bang_gia(
             .fillna("")
             .astype(str)
             .eq(
-                str(
-                    nganh
-                )
+                str(nganh)
             )
         ].copy()
 
     # --------------------------------------------------------
-    # Trạng thái
+    # TRẠNG THÁI
     # --------------------------------------------------------
 
     if (
@@ -1171,6 +1167,7 @@ def loc_bang_gia(
 def thong_ke_thi_truong(
     bang_gia,
 ):
+
     if (
         bang_gia is None
         or bang_gia.empty
@@ -1209,25 +1206,23 @@ def thong_ke_thi_truong(
         errors="coerce",
     )
 
-    tong_hop_le = int(
+    tong = int(
         thay_doi.notna().sum()
     )
 
     tang = int(
         (
-            thay_doi
-            > 0.05
+            thay_doi > 0.05
         ).sum()
     )
 
     giam = int(
         (
-            thay_doi
-            < -0.05
+            thay_doi < -0.05
         ).sum()
     )
 
-    dung_gia = int(
+    dung = int(
         thay_doi.between(
             -0.05,
             0.05,
@@ -1239,13 +1234,11 @@ def thong_ke_thi_truong(
             bang_gia
         ),
 
-        "co_du_lieu_gia": (
-            tong_hop_le
-        ),
+        "co_du_lieu_gia": tong,
 
         "tang": tang,
 
-        "dung_gia": dung_gia,
+        "dung_gia": dung,
 
         "giam": giam,
 
@@ -1263,55 +1256,48 @@ def thong_ke_thi_truong(
 
         "phan_tram_tang": (
             tang
-            / tong_hop_le
+            / tong
             * 100
-            if tong_hop_le
+            if tong
             else 0.0
         ),
 
         "phan_tram_giam": (
             giam
-            / tong_hop_le
+            / tong
             * 100
-            if tong_hop_le
+            if tong
             else 0.0
         ),
     }
 
 
 # ============================================================
-# TÂM LÝ THỊ TRƯỜNG
+# TÂM LÝ
 # ============================================================
 
 def tinh_diem_tam_ly(
     bang_gia,
 ):
-    thong_ke = (
-        thong_ke_thi_truong(
-            bang_gia
-        )
+
+    stats = thong_ke_thi_truong(
+        bang_gia
     )
 
-    tong = (
-        thong_ke[
-            "co_du_lieu_gia"
-        ]
-    )
+    total = stats[
+        "co_du_lieu_gia"
+    ]
 
-    if tong <= 0:
+    if total <= 0:
         return 50.0
 
-    diem = (
+    score = (
         50.0
         + (
-            thong_ke[
-                "tang"
-            ]
-            - thong_ke[
-                "giam"
-            ]
+            stats["tang"]
+            - stats["giam"]
         )
-        / tong
+        / total
         * 50.0
     )
 
@@ -1320,7 +1306,7 @@ def tinh_diem_tam_ly(
             0.0,
             min(
                 100.0,
-                diem,
+                score,
             ),
         )
     )
@@ -1329,6 +1315,7 @@ def tinh_diem_tam_ly(
 def nhan_diem_tam_ly(
     diem,
 ):
+
     diem = _so(
         diem,
         50.0,
@@ -1356,13 +1343,14 @@ def nhan_diem_tam_ly(
 
 
 # ============================================================
-# TOP TĂNG
+# TOP
 # ============================================================
 
 def top_tang(
     bang_gia,
     so_luong=10,
 ):
+
     if (
         bang_gia is None
         or bang_gia.empty
@@ -1385,14 +1373,11 @@ def top_tang(
     )
 
 
-# ============================================================
-# TOP GIẢM
-# ============================================================
-
 def top_giam(
     bang_gia,
     so_luong=10,
 ):
+
     if (
         bang_gia is None
         or bang_gia.empty
@@ -1415,14 +1400,11 @@ def top_giam(
     )
 
 
-# ============================================================
-# TOP KHỐI LƯỢNG
-# ============================================================
-
 def top_khoi_luong(
     bang_gia,
     so_luong=10,
 ):
+
     if (
         bang_gia is None
         or bang_gia.empty
@@ -1444,8 +1426,7 @@ def top_khoi_luong(
         df[
             "khoi_luong"
         ].notna()
-        &
-        (
+        & (
             df[
                 "khoi_luong"
             ]
@@ -1468,14 +1449,11 @@ def top_khoi_luong(
     )
 
 
-# ============================================================
-# TOP GIÁ TRỊ GIAO DỊCH
-# ============================================================
-
 def top_gia_tri_giao_dich(
     bang_gia,
     so_luong=10,
 ):
+
     if (
         bang_gia is None
         or bang_gia.empty
@@ -1497,8 +1475,7 @@ def top_gia_tri_giao_dich(
         df[
             "gia_tri_giao_dich"
         ].notna()
-        &
-        (
+        & (
             df[
                 "gia_tri_giao_dich"
             ]
@@ -1522,17 +1499,19 @@ def top_gia_tri_giao_dich(
 
 
 # ============================================================
-# THỐNG KÊ THEO SÀN
+# THEO SÀN
 # ============================================================
 
 def thong_ke_theo_san(
     bang_gia,
 ):
+
     if (
         bang_gia is None
         or bang_gia.empty
         or "san" not in bang_gia.columns
     ):
+
         return pd.DataFrame()
 
     return (
@@ -1551,8 +1530,7 @@ def thong_ke_theo_san(
                 "thay_doi_pct",
                 lambda x: int(
                     (
-                        x
-                        > 0.05
+                        x > 0.05
                     ).sum()
                 ),
             ),
@@ -1571,8 +1549,7 @@ def thong_ke_theo_san(
                 "thay_doi_pct",
                 lambda x: int(
                     (
-                        x
-                        < -0.05
+                        x < -0.05
                     ).sum()
                 ),
             ),
@@ -1597,18 +1574,20 @@ def thong_ke_theo_san(
 
 
 # ============================================================
-# THỐNG KÊ THEO NGÀNH
+# THEO NGÀNH
 # ============================================================
 
 def thong_ke_theo_nganh(
     bang_gia,
 ):
+
     if (
         bang_gia is None
         or bang_gia.empty
         or "ten_nganh"
         not in bang_gia.columns
     ):
+
         return pd.DataFrame()
 
     df = bang_gia.copy()
@@ -1648,8 +1627,7 @@ def thong_ke_theo_nganh(
                 "thay_doi_pct",
                 lambda x: int(
                     (
-                        x
-                        > 0.05
+                        x > 0.05
                     ).sum()
                 ),
             ),
@@ -1668,8 +1646,7 @@ def thong_ke_theo_nganh(
                 "thay_doi_pct",
                 lambda x: int(
                     (
-                        x
-                        < -0.05
+                        x < -0.05
                     ).sum()
                 ),
             ),
@@ -1693,6 +1670,7 @@ def thong_ke_theo_nganh(
         .sort_values(
             "bien_dong_binh_quan",
             ascending=False,
+            na_position="last",
         )
         .reset_index(
             drop=True
@@ -1701,19 +1679,15 @@ def thong_ke_theo_nganh(
 
 
 # ============================================================
-# GIAO DỊCH NƯỚC NGOÀI
+# NƯỚC NGOÀI
 # ============================================================
 
 def thong_ke_nuoc_ngoai(
     bang_gia,
 ):
-    """
-    data.market hiện tại của repo chưa có endpoint
-    dữ liệu mua/bán nước ngoài.
 
-    Vì vậy không hiển thị dữ liệu giả.
-    """
-
+    # Repo hiện tại chưa có endpoint riêng cho foreign flow.
+    # Không sinh dữ liệu giả.
     return {
         "co_du_lieu": False,
         "mua": np.nan,
@@ -1729,6 +1703,7 @@ def thong_ke_nuoc_ngoai(
 def thong_tin_nguon(
     bang_gia,
 ):
+
     so_ma = 0
 
     if (
@@ -1748,9 +1723,11 @@ def thong_tin_nguon(
 
     return {
         "so_ma": so_ma,
+
         "cap_nhat": pd.Timestamp.now(),
+
         "nguon": (
-            "Vnstock · OHLCV thị trường"
+            "Vnstock · dữ liệu OHLCV"
         ),
     }
 
@@ -1762,16 +1739,15 @@ def thong_tin_nguon(
 def lay_market_overview(
     force_reload=False,
 ):
+
     bang_gia = (
         lay_bang_gia_toan_thi_truong(
             force_reload=force_reload
         )
     )
 
-    tam_ly = (
-        tinh_diem_tam_ly(
-            bang_gia
-        )
+    tam_ly = tinh_diem_tam_ly(
+        bang_gia
     )
 
     return {
