@@ -1,4 +1,3 @@
-```python
 from __future__ import annotations
 
 import html
@@ -1444,4 +1443,3 @@ def render_stock_analysis():
             bang,
             width="stretch",
         )
-```
