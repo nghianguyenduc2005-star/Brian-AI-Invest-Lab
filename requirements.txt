@@ -3,6 +3,3 @@ pandas
 numpy
 statsmodels
 scikit-learn
-fastapi
-uvicorn
-requests
