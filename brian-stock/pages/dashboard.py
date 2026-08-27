@@ -679,98 +679,99 @@ def render_dashboard():
                 fmt_volume(stock_volume),
             )
 
-        # ====================================================
-        # CHỈ BÁO
-        # ====================================================
+       # ========================================================
+# CHỈ BÁO
+# ========================================================
 
-        e, f, g, h = st.columns(4)
+e, f, g, h = st.columns(4)
 
-        with e:
+with e:
+    st.metric(
+        "Trung bình 20 phiên",
+        f"{sma20:,.0f} đồng/cổ phiếu"
+        if sma20 is not None
+        else "—",
+    )
 
-            st.metric(
-                "Trung bình 20 phiên",
-                fmt_gia(sma20),
-            )
+with f:
+    st.metric(
+        "Trung bình 50 phiên",
+        f"{sma50:,.0f} đồng/cổ phiếu"
+        if sma50 is not None
+        else "—",
+    )
 
-        with f:
+with g:
+    st.metric(
+        "MACD",
+        f"{macd:.3f}"
+        if macd is not None
+        else "—",
+    )
 
-            st.metric(
-                "Trung bình 50 phiên",
-                fmt_gia(sma50),
-            )
+with h:
+    st.metric(
+        "Biến động 20 phiên",
+        f"{bien_dong:.2f}%"
+        if bien_dong is not None
+        else "—",
+    )
 
-        with g:
 
-            st.metric(
-                "MACD",
-                fmt_macd(macd_value),
-            )
+# ========================================================
+# CHỈ BÁO BỔ SUNG
+# ========================================================
 
-        with h:
+i, j, k, l = st.columns(4)
 
-            st.metric(
-                "Biến động 20 phiên",
-                (
-                    f"{volatility:.2f}%"
-                    if volatility is not None
-                    else "—"
-                ),
-            )
+with i:
+    st.metric(
+        "ATR 14 phiên",
+        f"{atr14:,.0f} đồng/cổ phiếu"
+        if atr14 is not None
+        else "—",
+    )
 
-        # ====================================================
-        # CHỈ BÁO BỔ SUNG
-        # ====================================================
+with j:
+    st.metric(
+        "Khối lượng TB20",
+        _dinh_dang_khoi_luong(volume_tb20),
+    )
 
-        i, j, k, l = st.columns(4)
+with k:
 
-        with i:
+    ty_le_volume = None
 
-            st.metric(
-                "ATR 14 phiên",
-                fmt_gia(atr14),
-            )
+    if (
+        khoi_luong is not None
+        and volume_tb20 is not None
+        and volume_tb20 != 0
+    ):
+        ty_le_volume = (
+            khoi_luong
+            / volume_tb20
+        )
 
-        with j:
+    st.metric(
+        "Khối lượng / TB20",
+        f"{ty_le_volume:.2f} lần"
+        if ty_le_volume is not None
+        else "—",
+    )
 
-            st.metric(
-                "Khối lượng TB20",
-                fmt_volume(volume_sma20),
-            )
+with l:
 
-        with k:
+    gia_mo = _so(
+        dong_cuoi.get("Open"),
+        None,
+    )
 
-            relative_volume = None
-
-            if (
-                stock_volume is not None
-                and volume_sma20 is not None
-                and volume_sma20 != 0
-            ):
-
-                relative_volume = (
-                    stock_volume
-                    / volume_sma20
-                )
-
-            st.metric(
-                "Khối lượng / TB20",
-                (
-                    f"{relative_volume:.2f} lần"
-                    if relative_volume is not None
-                    else "—"
-                ),
-            )
-
-        with l:
-
-            open_price = to_number(
-                last_row.get("Open")
-            )
-
-            st.metric(
-                "Giá mở cửa",
-                fmt_gia(open_price),
-            )
+    st.metric(
+        "Giá mở cửa",
+        f"{gia_mo:,.0f} đồng/cổ phiếu"
+        if gia_mo is not None
+        else "—",
+    )
 
         # ====================================================
         # BIỂU ĐỒ
