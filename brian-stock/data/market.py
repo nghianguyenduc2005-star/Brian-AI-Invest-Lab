@@ -1,3 +1,4 @@
+```python
 import re
 import numpy as np
 import pandas as pd
@@ -7,13 +8,17 @@ import streamlit as st
 from config.settings import VIETNAM_TICKERS
 
 
+# ============================================================
+# SYMBOL
+# ============================================================
+
 def normalize_symbol(s):
     s = (s or "").strip().upper().replace(" ", "")
 
     if not s:
         return "HPG.VN"
 
-    # Nếu người dùng nhập HPG -> HPG.VN
+    # Người dùng nhập HPG -> HPG.VN
     if re.fullmatch(r"[A-Z0-9]{2,5}", s):
         if s in VIETNAM_TICKERS or s.isalpha():
             return s + ".VN"
@@ -24,6 +29,10 @@ def normalize_symbol(s):
 def display_symbol(s):
     return s.upper().replace(".VN", "")
 
+
+# ============================================================
+# RSI
+# ============================================================
 
 def rsi(series, period=14):
     delta = series.diff()
@@ -46,10 +55,14 @@ def rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
+# ============================================================
+# INDICATORS
+# ============================================================
+
 def add_indicators(df):
     df = df.copy()
 
-    # Xử lý MultiIndex do yfinance
+    # yfinance đôi khi trả MultiIndex
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
@@ -68,8 +81,6 @@ def add_indicators(df):
             raise ValueError(
                 f"Thiếu cột {col}. Các cột nhận được: {list(df.columns)}"
             )
-
-    df = df.copy()
 
     # Ép kiểu số
     for col in required:
@@ -124,7 +135,7 @@ def add_indicators(df):
         * 100
     )
 
-    # Chỉ bỏ các dòng indicator chưa đủ dữ liệu
+    # Chỉ bỏ những dòng chưa đủ indicator
     df = df.dropna(
         subset=[
             "Return",
@@ -140,16 +151,19 @@ def add_indicators(df):
     return df
 
 
-@st.cache_data(
-    ttl=900,
-    show_spinner=False
-)
-def load_market_data(symbol, period="1y"):
+# ============================================================
+# YAHOO DATA LOADER
+# ============================================================
 
-    symbol = normalize_symbol(symbol)
+def _download_yahoo(symbol, period="1y"):
+    """
+    Tải dữ liệu Yahoo Finance.
 
-    # Chỉ dùng Yahoo Finance.
-    # Không dùng vnstock ở đây.
+    Thử Ticker.history trước.
+    Nếu thất bại / rỗng thì fallback sang yf.download.
+    """
+
+    # Cách 1
     try:
         ticker = yf.Ticker(symbol)
 
@@ -159,31 +173,136 @@ def load_market_data(symbol, period="1y"):
             auto_adjust=False
         )
 
+        if df is not None and not df.empty:
+            return df
+
+    except Exception:
+        pass
+
+    # Cách 2
+    try:
+        df = yf.download(
+            symbol,
+            period=period,
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=False
+        )
+
+        if df is not None and not df.empty:
+            return df
+
     except Exception as e:
         raise ValueError(
-            f"Lỗi kết nối Yahoo Finance khi tải {symbol}: {e}"
+            f"Không thể tải dữ liệu {symbol} từ Yahoo Finance: {e}"
         )
 
-    # Fallback bằng yf.download
-    if df is None or df.empty:
+    raise ValueError(
+        f"Yahoo Finance không trả về dữ liệu cho {symbol}."
+    )
 
-        try:
-            df = yf.download(
-                symbol,
-                period=period,
-                interval="1d",
-                auto_adjust=False,
-                progress=False,
-                threads=False
-            )
-        except Exception as e:
-            raise ValueError(
-                f"Không thể tải dữ liệu {symbol}: {e}"
-            )
+
+# ============================================================
+# STOCK DATA
+# ============================================================
+
+@st.cache_data(
+    ttl=900,
+    show_spinner=False
+)
+def load_market_data(symbol, period="1y"):
+
+    symbol = normalize_symbol(symbol)
+
+    df = _download_yahoo(
+        symbol,
+        period
+    )
+
+    return add_indicators(df)
+
+
+# ============================================================
+# VN-INDEX
+# ============================================================
+
+@st.cache_data(
+    ttl=300,
+    show_spinner=False
+)
+def load_vnindex_data(period="1y"):
+    """
+    Tải dữ liệu VN-INDEX từ Yahoo Finance.
+
+    Yahoo Finance sử dụng mã:
+        ^VNINDEX
+    """
+
+    symbol = "^VNINDEX"
+
+    df = _download_yahoo(
+        symbol,
+        period
+    )
+
+    return add_indicators(df)
+
+
+# ============================================================
+# VN-INDEX SUMMARY
+# ============================================================
+
+@st.cache_data(
+    ttl=300,
+    show_spinner=False
+)
+def load_vnindex_summary():
+    """
+    Trả về số liệu phiên gần nhất của VN-INDEX.
+
+    Kết quả:
+        index       : điểm VN-INDEX
+        change      : thay đổi điểm so với phiên trước
+        change_pct  : % thay đổi
+        volume      : thanh khoản
+        date        : ngày dữ liệu
+    """
+
+    df = load_vnindex_data("1y")
 
     if df is None or df.empty:
         raise ValueError(
-            f"Không có dữ liệu thị trường cho {symbol}."
+            "Không có dữ liệu VN-INDEX."
         )
 
-    return add_indicators(df)
+    last = df.iloc[-1]
+
+    close = float(last["Close"])
+    volume = float(last["Volume"])
+
+    # Return là % thay đổi so với phiên trước
+    change_pct = float(last["Return"]) if pd.notna(last["Return"]) else 0.0
+
+    # Tính thay đổi điểm
+    if len(df) >= 2:
+        previous_close = float(df.iloc[-2]["Close"])
+        change = close - previous_close
+    else:
+        change = 0.0
+
+    # Ngày dữ liệu
+    try:
+        date_value = df.index[-1]
+        date = str(date_value.date())
+    except Exception:
+        date = ""
+
+    return {
+        "index": close,
+        "change": change,
+        "change_pct": change_pct,
+        "volume": volume,
+        "date": date,
+    }
+```
