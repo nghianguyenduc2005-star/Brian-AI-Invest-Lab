@@ -8,7 +8,6 @@ from components.charts import price_volume_chart
 
 from data.market import (
     display_symbol,
-    load_latest_price,
     load_market_data,
     load_vnindex_data,
     load_vnindex_market_summary,
@@ -55,7 +54,6 @@ def _tim_cot(
     }
 
     for ten in cac_ten:
-
         cot = ban_do.get(
             str(ten).strip().lower()
         )
@@ -82,19 +80,16 @@ def _dinh_dang_khoi_luong(
         return "—"
 
     if value >= 1_000_000_000:
-
         return (
             f"{value / 1_000_000_000:.2f} tỷ cổ phiếu"
         )
 
     if value >= 1_000_000:
-
         return (
             f"{value / 1_000_000:.2f} triệu cổ phiếu"
         )
 
     if value >= 1_000:
-
         return (
             f"{value / 1_000:.2f} nghìn cổ phiếu"
         )
@@ -120,25 +115,21 @@ def _dinh_dang_gia_tri(
         return "—"
 
     if value >= 1_000_000_000_000:
-
         return (
             f"{value / 1_000_000_000_000:.2f} nghìn tỷ đồng"
         )
 
     if value >= 1_000_000_000:
-
         return (
             f"{value / 1_000_000_000:.2f} tỷ đồng"
         )
 
     if value >= 1_000_000:
-
         return (
             f"{value / 1_000_000:.2f} triệu đồng"
         )
 
     if value >= 1_000:
-
         return (
             f"{value / 1_000:.2f} nghìn đồng"
         )
@@ -240,9 +231,7 @@ def _lay_vn_index():
     except Exception as loi:
 
         return {
-            "loi": str(
-                loi
-            )
+            "loi": str(loi)
         }
 
     if (
@@ -312,9 +301,7 @@ def _lay_vn_index():
     # THAY ĐỔI
     # ========================================================
 
-    if len(
-        du_lieu
-    ) >= 2:
+    if len(du_lieu) >= 2:
 
         diem_truoc = float(
             du_lieu[
@@ -384,13 +371,6 @@ def _lay_vn_index():
 
     # ========================================================
     # GIÁ TRỊ GIAO DỊCH
-    #
-    # Ưu tiên:
-    #   1. cột Value trong OHLCV nếu có
-    #   2. index.summary()
-    #   3. index.trade_history()
-    #
-    # Không dùng điểm VN-INDEX × khối lượng.
     # ========================================================
 
     cot_gia_tri = _tim_cot(
@@ -431,11 +411,14 @@ def _lay_vn_index():
             None,
         )
 
-    # --------------------------------------------------------
-    # Nếu OHLCV không có Value thì gọi summary riêng.
-    # --------------------------------------------------------
+    # ========================================================
+    # FALLBACK: SUMMARY
+    # ========================================================
 
-    if gia_tri is None:
+    if (
+        gia_tri is None
+        or khoi_luong is None
+    ):
 
         try:
 
@@ -447,28 +430,21 @@ def _lay_vn_index():
 
             summary = {}
 
-        gia_tri_summary = summary.get(
-            "gia_tri"
-        )
-
-        if gia_tri_summary is not None:
+        if gia_tri is None:
 
             gia_tri = _so(
-                gia_tri_summary,
+                summary.get(
+                    "gia_tri"
+                ),
                 None,
             )
 
-        khoi_luong_summary = summary.get(
-            "khoi_luong"
-        )
-
-        if (
-            khoi_luong_summary is not None
-            and khoi_luong is None
-        ):
+        if khoi_luong is None:
 
             khoi_luong = _so(
-                khoi_luong_summary,
+                summary.get(
+                    "khoi_luong"
+                ),
                 None,
             )
 
