@@ -3665,36 +3665,49 @@ def render_cross_horizon(
 # RESEARCH AI
 # ============================================================
 
+CACHE_TTL_AI = 1800
+
+RESEARCH_AI_MODELS = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+]
+
+
 def get_gemini_api_key():
     try:
-
-        key = st.secrets.get(
-            "GEMINI_API_KEY"
-        )
-
+        key = st.secrets.get("GEMINI_API_KEY")
     except Exception:
-
         key = None
 
-    key = text(
-        key,
-        "",
-    )
+    if key is None:
+        return None
 
-    return key or None
+    key = str(key).strip()
+
+    return key if key else None
 
 
-def dataframe_for_ai(
+def _safe_text(value, default=""):
+    if value is None:
+        return default
+
+    try:
+        value = str(value).strip()
+    except Exception:
+        return default
+
+    return value if value else default
+
+
+def dataframe_to_ai_text(
     df,
     columns=None,
     limit=15,
 ):
     if (
         df is None
-        or not isinstance(
-            df,
-            pd.DataFrame,
-        )
+        or not isinstance(df, pd.DataFrame)
         or df.empty
     ):
         return "Không có dữ liệu."
@@ -3702,22 +3715,16 @@ def dataframe_for_ai(
     work = df.copy()
 
     if columns:
-
-        columns = [
+        selected = [
             column
             for column in columns
             if column in work.columns
         ]
 
-        if columns:
+        if selected:
+            work = work[selected]
 
-            work = work[
-                columns
-            ]
-
-    work = work.head(
-        limit
-    ).copy()
+    work = work.head(limit).copy()
 
     for column in work.columns:
 
@@ -3725,125 +3732,13 @@ def dataframe_for_ai(
             work[column]
         ):
 
-            work[
-                column
-            ] = pd.to_numeric(
-                work[
-                    column
-                ],
+            work[column] = pd.to_numeric(
+                work[column],
                 errors="coerce",
             ).round(6)
 
     return work.to_string(
         index=False
-    )
-
-
-def tests_for_ai(
-    tests,
-):
-    if not isinstance(
-        tests,
-        dict,
-    ):
-        return "Không có kiểm định."
-
-    lines = []
-
-    adf = tests.get(
-        "ADF"
-    )
-
-    if isinstance(
-        adf,
-        dict,
-    ):
-
-        lines.append(
-            "ADF: "
-            f"stat={num(adf.get('statistic'))}, "
-            f"p={num(adf.get('p_value'))}"
-        )
-
-    jb = tests.get(
-        "Jarque-Bera"
-    )
-
-    if isinstance(
-        jb,
-        dict,
-    ):
-
-        lines.append(
-            "Jarque-Bera: "
-            f"stat={num(jb.get('statistic'))}, "
-            f"p={num(jb.get('p_value'))}"
-        )
-
-    bp = tests.get(
-        "Breusch-Pagan"
-    )
-
-    if isinstance(
-        bp,
-        dict,
-    ):
-
-        lines.append(
-            "Breusch-Pagan: "
-            f"stat={num(bp.get('statistic'))}, "
-            f"p={num(bp.get('p_value'))}"
-        )
-
-    white = tests.get(
-        "White"
-    )
-
-    if isinstance(
-        white,
-        dict,
-    ):
-
-        lines.append(
-            "White: "
-            f"stat={num(white.get('statistic'))}, "
-            f"p={num(white.get('p_value'))}"
-        )
-
-    dw = tests.get(
-        "Durbin-Watson"
-    )
-
-    if isinstance(
-        dw,
-        dict,
-    ):
-
-        lines.append(
-            "Durbin-Watson: "
-            f"{num(dw.get('statistic'))}"
-        )
-
-    lb = tests.get(
-        "Ljung-Box"
-    )
-
-    if isinstance(
-        lb,
-        dict,
-    ):
-
-        lines.append(
-            "Ljung-Box: "
-            f"lag={lb.get('lag')}, "
-            f"stat={num(lb.get('statistic'))}, "
-            f"p={num(lb.get('p_value'))}"
-        )
-
-    return (
-        "\n".join(lines)
-        if lines
-        else "Không có kiểm định."
     )
 
 
@@ -3853,14 +3748,6 @@ def build_research_ai_context(
     start_date,
     end_date,
 ):
-    """
-    Chuyển kết quả nghiên cứu thành context gọn
-    cho AI đọc.
-
-    Không truyền model object.
-    Không truyền toàn bộ raw DataFrame.
-    """
-
     blocks = []
 
     blocks.append(
@@ -3872,7 +3759,7 @@ def build_research_ai_context(
     )
 
     blocks.append(
-        f"Khoảng nghiên cứu: "
+        f"Khoảng dữ liệu: "
         f"{start_date} → {end_date}"
     )
 
@@ -3882,7 +3769,8 @@ def build_research_ai_context(
     )
 
     blocks.append(
-        f"Tổng số biến: {len(all_features)}"
+        f"Tổng số biến nghiên cứu: "
+        f"{len(all_features)}"
     )
 
     groups = result.get(
@@ -3893,12 +3781,9 @@ def build_research_ai_context(
     for group_name, values in groups.items():
 
         blocks.append(
-            f"{group_name}: {len(values)} biến"
+            f"{group_name}: "
+            f"{len(values)} biến"
         )
-
-    # --------------------------------------------------------
-    # HORIZONS
-    # --------------------------------------------------------
 
     horizons = result.get(
         "horizons",
@@ -3923,7 +3808,7 @@ def build_research_ai_context(
 
         blocks.append(
             "\n"
-            + "=" * 60
+            + "=" * 70
         )
 
         blocks.append(
@@ -3931,19 +3816,22 @@ def build_research_ai_context(
         )
 
         blocks.append(
-            "=" * 60
+            "=" * 70
         )
 
         blocks.append(
-            f"Quan sát: {item.get('observations')}"
+            f"Quan sát: "
+            f"{item.get('observations')}"
         )
 
         blocks.append(
-            f"Train: {item.get('train')}"
+            f"Train: "
+            f"{item.get('train')}"
         )
 
         blocks.append(
-            f"Test: {item.get('test')}"
+            f"Test: "
+            f"{item.get('test')}"
         )
 
         # ----------------------------------------------------
@@ -3951,11 +3839,11 @@ def build_research_ai_context(
         # ----------------------------------------------------
 
         blocks.append(
-            "\nTOP FACTOR:"
+            "\nTOP YẾU TỐ"
         )
 
         blocks.append(
-            dataframe_for_ai(
+            dataframe_to_ai_text(
                 item.get(
                     "ranking"
                 ),
@@ -3972,7 +3860,7 @@ def build_research_ai_context(
                     "TreeImportance",
                     "Ý nghĩa",
                 ],
-                limit=15,
+                20,
             )
         )
 
@@ -3981,11 +3869,11 @@ def build_research_ai_context(
         # ----------------------------------------------------
 
         blocks.append(
-            "\nNHÓM YẾU TỐ:"
+            "\nNHÓM YẾU TỐ"
         )
 
         blocks.append(
-            dataframe_for_ai(
+            dataframe_to_ai_text(
                 item.get(
                     "groups"
                 ),
@@ -3995,7 +3883,7 @@ def build_research_ai_context(
                     "Score_Max",
                     "So_bien",
                 ],
-                limit=20,
+                20,
             )
         )
 
@@ -4013,19 +3901,21 @@ def build_research_ai_context(
         ):
 
             blocks.append(
-                "\nOLS:"
+                "\nOLS"
             )
 
             blocks.append(
-                f"R2={num(ols.get('r2'))}"
+                f"R²: "
+                f"{num(ols.get('r2'))}"
             )
 
             blocks.append(
-                f"Adjusted_R2={num(ols.get('adj_r2'))}"
+                f"Adjusted R²: "
+                f"{num(ols.get('adj_r2'))}"
             )
 
             blocks.append(
-                "OLS features: "
+                "Biến OLS: "
                 + ", ".join(
                     map(
                         str,
@@ -4038,11 +3928,11 @@ def build_research_ai_context(
             )
 
         blocks.append(
-            "\nOLS COEFFICIENTS:"
+            "\nHỆ SỐ OLS"
         )
 
         blocks.append(
-            dataframe_for_ai(
+            dataframe_to_ai_text(
                 item.get(
                     "ols_table"
                 ),
@@ -4053,7 +3943,7 @@ def build_research_ai_context(
                     "p-value",
                     "Std Error",
                 ],
-                limit=15,
+                20,
             )
         )
 
@@ -4062,11 +3952,11 @@ def build_research_ai_context(
         # ----------------------------------------------------
 
         blocks.append(
-            "\nMODEL PERFORMANCE:"
+            "\nHIỆU SUẤT MODEL"
         )
 
         blocks.append(
-            dataframe_for_ai(
+            dataframe_to_ai_text(
                 item.get(
                     "models"
                 ),
@@ -4078,7 +3968,7 @@ def build_research_ai_context(
                     "Baseline_RMSE",
                     "So_baseline",
                 ],
-                limit=10,
+                10,
             )
         )
 
@@ -4087,11 +3977,11 @@ def build_research_ai_context(
         # ----------------------------------------------------
 
         blocks.append(
-            "\nVIF:"
+            "\nVIF"
         )
 
         blocks.append(
-            dataframe_for_ai(
+            dataframe_to_ai_text(
                 item.get(
                     "vif"
                 ),
@@ -4100,26 +3990,31 @@ def build_research_ai_context(
                     "Nhóm",
                     "VIF",
                 ],
-                limit=10,
+                15,
             )
         )
 
         # ----------------------------------------------------
-        # TESTS
+        # TEST
         # ----------------------------------------------------
 
-        blocks.append(
-            "\nTESTS:"
+        tests = item.get(
+            "tests",
+            {},
         )
 
-        blocks.append(
-            tests_for_ai(
-                item.get(
-                    "tests",
-                    {},
+        if tests:
+
+            blocks.append(
+                "\nKIỂM ĐỊNH"
+            )
+
+            for test_name, test_value in tests.items():
+
+                blocks.append(
+                    f"{test_name}: "
+                    f"{test_value}"
                 )
-            )
-        )
 
         # ----------------------------------------------------
         # FORECAST
@@ -4131,23 +4026,27 @@ def build_research_ai_context(
         )
 
         blocks.append(
-            "\nFORECAST:"
+            "\nDỰ BÁO"
         )
 
         blocks.append(
-            f"Giá hiện tại={num(forecast.get('current_price'))}"
+            f"Giá hiện tại: "
+            f"{num(forecast.get('current_price'))}"
         )
 
         blocks.append(
-            f"Lợi suất dự báo={num(forecast.get('predicted_return'))}"
+            f"Lợi suất dự báo: "
+            f"{num(forecast.get('predicted_return'))}"
         )
 
         blocks.append(
-            f"Giá dự báo={num(forecast.get('predicted_price'))}"
+            f"Giá dự báo: "
+            f"{num(forecast.get('predicted_price'))}"
         )
 
         blocks.append(
-            f"Model={item.get('best_model')}"
+            f"Model tốt nhất: "
+            f"{item.get('best_model')}"
         )
 
     return "\n".join(
@@ -4159,158 +4058,136 @@ def build_research_ai_prompt(
     context,
     user_question="",
 ):
-    question = text(
-        user_question,
-        "",
+    question = _safe_text(
+        user_question
     )
 
     if question:
 
-        question_part = f"""
+        question_text = f"""
 CÂU HỎI CỦA NGƯỜI DÙNG:
-
 {question}
-
-Trả lời đúng câu hỏi này bằng kết quả nghiên cứu.
 """.strip()
 
     else:
 
-        question_part = """
+        question_text = """
 Không có câu hỏi riêng.
-
-Hãy tự đọc nghiên cứu và giải thích:
-- yếu tố nào nổi bật nhất
-- yếu tố đó cùng chiều hay ngược chiều
-- bằng chứng thống kê mạnh tới đâu
-- 1D/5D/20D có giống nhau không
-- model có thật sự dự báo tốt không
-- nói đơn giản nghiên cứu này đang chỉ ra điều gì
+Hãy tự đọc nghiên cứu và chỉ ra những điểm quan trọng nhất.
 """.strip()
 
     return f"""
-Bạn là BRIAN AI — chuyên viên đọc nghiên cứu định lượng
-chứng khoán Việt Nam.
+Bạn là Brian AI, chuyên viên đọc nghiên cứu định lượng
+cổ phiếu Việt Nam.
 
-Bạn KHÔNG được chạy lại mô hình.
+Bạn KHÔNG chạy lại mô hình.
+Bạn CHỈ đọc các kết quả thống kê đã được cung cấp.
 
-Bạn chỉ được đọc kết quả thống kê và giải thích cho người dùng.
+{question_text}
 
-==================================================
-{question_part}
-==================================================
+============================================================
+MỤC TIÊU
+============================================================
 
+Người đọc phải hiểu nhanh:
+
+1. Giá/lợi suất cổ phiếu đang có quan hệ mạnh nhất với yếu tố nào?
+2. Yếu tố đó cùng chiều hay ngược chiều?
+3. Bằng chứng thống kê mạnh hay yếu?
+4. 1D, 5D, 20D có cho kết quả giống nhau không?
+5. Model có dự báo tốt hơn benchmark không?
+6. Có vấn đề về VIF, heteroskedasticity hoặc autocorrelation không?
+7. Nói đơn giản nghiên cứu này đang chỉ ra điều gì?
+
+============================================================
 QUY TẮC
-==================================================
+============================================================
 
-- Chỉ sử dụng số liệu đã cung cấp.
-- Không bịa số liệu.
-- Không tự thêm biến.
-- Không coi correlation là causality.
-- Không nói "X gây ra giá tăng" nếu dữ liệu chỉ cho thấy
-  quan hệ thống kê.
-- p-value < 0.05 mới được nói có ý nghĩa thống kê ở mức 5%.
-- R² âm trên test phải được nói rõ.
-- VIF cao phải được cảnh báo.
-- Nếu có heteroskedasticity thì phải nói.
-- Nếu có tự tương quan thì phải nói.
-- Không cố nhắc toàn bộ biến.
-- Tập trung vào 3–5 yếu tố thật sự đáng chú ý.
-- Ưu tiên yếu tố xuất hiện ở nhiều phương pháp.
-- Ưu tiên yếu tố ổn định giữa nhiều horizon.
-- Viết tự nhiên như chuyên viên phân tích.
-- Không viết kiểu giáo trình.
-- Không khuyến nghị mua/bán cá nhân hóa.
-- Nếu bằng chứng yếu thì phải nói thẳng là yếu.
+- Chỉ dùng số liệu đã cung cấp.
+- Không bịa thêm số liệu.
+- Không bịa thêm biến.
+- Không biến correlation thành quan hệ nhân quả.
+- Không nói "X làm giá tăng" nếu chỉ có bằng chứng tương quan.
+- p-value < 0.05 mới được gọi là có ý nghĩa thống kê ở mức 5%.
+- Nếu R² test âm, phải nói rõ model kém benchmark.
+- Nếu VIF cao, phải cảnh báo đa cộng tuyến.
+- Nếu BP/White có p < 0.05, nói có dấu hiệu phương sai thay đổi.
+- Nếu DW/Ljung-Box cho thấy tự tương quan, phải nói.
+- Không liệt kê hàng chục biến.
+- Chọn 3–5 yếu tố quan trọng nhất.
+- Ưu tiên yếu tố được nhiều phương pháp cùng xác nhận.
+- Ưu tiên yếu tố ổn định qua nhiều horizon.
+- Viết tiếng Việt tự nhiên, ngắn gọn.
+- Không viết như giáo trình.
+- Không khuyến nghị mua/bán.
 
-==================================================
-FORMAT
-==================================================
+============================================================
+ĐỊNH DẠNG
+============================================================
 
-# 🧠 BRIAN AI — ĐỌC NGHIÊN CỨU
+# 🧠 Brian AI — Đọc nghiên cứu
 
 ## Kết luận chính
 
-3–4 câu.
+Viết 3–4 câu.
 
-Phải trả lời:
-- nghiên cứu đang nói điều gì
+Phải nói thẳng:
 - yếu tố nào nổi bật nhất
-- bằng chứng mạnh hay yếu
+- mức độ bằng chứng
+- model có đáng tin không
 
-## 🎯 Giá/lợi suất đang phụ thuộc vào gì?
+## 🎯 Giá đang phụ thuộc vào gì?
 
-Chọn tối đa 5 yếu tố.
+Chọn tối đa 5 biến.
 
-Với mỗi yếu tố nói:
-- tên biến
-- nhóm
-- cùng chiều/ngược chiều
-- Spearman
-- Beta nếu có
-- p-value nếu có
-- vì sao đáng chú ý
+Mỗi biến:
+
+**Tên biến — Nhóm**
+- Quan hệ:
+- Spearman:
+- Beta:
+- p-value:
+- Ý nghĩa:
 
 ## 📈 1D / 5D / 20D
 
-Nói ngắn:
-- 1D nổi bật bởi gì
-- 5D nổi bật bởi gì
-- 20D nổi bật bởi gì
-- yếu tố nào nhất quán nhất
+Viết ngắn:
+- 1D:
+- 5D:
+- 20D:
+- Yếu tố nhất quán nhất:
 
-## 🤖 Model có đáng tin không?
+## 🤖 Model
 
-Nói:
-- model tốt nhất
+Nêu:
+- Model tốt nhất
 - RMSE
-- R² test
-- so với baseline
-- có sức dự báo thực tế đáng kể hay không
+- R²
+- So với baseline
+- Có đáng tin cho dự báo hay không
 
-## ⚠️ Vấn đề của nghiên cứu
+## ⚠️ Điểm cần lưu ý
 
-Chỉ nói vấn đề thực sự xuất hiện:
-- VIF
-- heteroskedasticity
-- autocorrelation
-- non-normal residual
-- mẫu nhỏ
-- R² thấp/âm
+Chỉ nêu các vấn đề thật sự xuất hiện trong số liệu.
 
 ## Nói đơn giản
 
-3–5 câu.
+Viết 3–5 câu như đang giải thích cho một người đầu tư
+không chuyên thống kê.
 
-Bắt buộc trả lời:
-
-"Nói đơn giản thì cổ phiếu này đang bị ảnh hưởng
-bởi những yếu tố nào nhiều nhất?"
-
-==================================================
-DỮ LIỆU
-==================================================
+============================================================
+DỮ LIỆU NGHIÊN CỨU
+============================================================
 
 {context}
 """.strip()
 
 
-def _call_research_ai(
+def _call_research_ai_model(
+    api_key,
+    model,
     prompt,
 ):
-    api_key = get_gemini_api_key()
-
-    if not api_key:
-
-        return {
-            "ok": False,
-            "text": "",
-            "model": GEMINI_MODEL,
-            "error": (
-                "Thiếu GEMINI_API_KEY trong Streamlit Secrets."
-            ),
-        }
-
     try:
 
         from google import genai
@@ -4323,48 +4200,173 @@ def _call_research_ai(
             client
             .models
             .generate_content(
-                model=GEMINI_MODEL,
+                model=model,
                 contents=prompt,
             )
         )
 
-        output = text(
+        output = _safe_text(
             getattr(
                 response,
                 "text",
                 "",
-            ),
-            "",
+            )
         )
 
         if not output:
 
-            return {
-                "ok": False,
-                "text": "",
-                "model": GEMINI_MODEL,
-                "error": (
-                    "Gemini không trả về nội dung."
-                ),
-            }
+            raise RuntimeError(
+                "Model không trả về nội dung."
+            )
 
-        return {
-            "ok": True,
-            "text": output,
-            "model": GEMINI_MODEL,
-            "error": "",
-        }
+        return output
 
     except Exception as error:
+
+        raise error
+
+
+def _is_retryable_ai_error(
+    error,
+):
+    message = str(
+        error
+    ).lower()
+
+    retry_tokens = [
+        "503",
+        "unavailable",
+        "high demand",
+        "overloaded",
+        "temporarily unavailable",
+        "service unavailable",
+        "resource exhausted",
+        "deadline exceeded",
+        "internal server error",
+    ]
+
+    return any(
+        token in message
+        for token in retry_tokens
+    )
+
+
+def _is_fatal_ai_error(
+    error,
+):
+    message = str(
+        error
+    ).lower()
+
+    fatal_tokens = [
+        "401",
+        "403",
+        "invalid api key",
+        "api key not valid",
+        "permission denied",
+        "unauthenticated",
+        "quota exceeded",
+        "billing",
+    ]
+
+    return any(
+        token in message
+        for token in fatal_tokens
+    )
+
+
+def generate_research_ai(
+    context,
+    question,
+):
+    api_key = get_gemini_api_key()
+
+    if not api_key:
 
         return {
             "ok": False,
             "text": "",
-            "model": GEMINI_MODEL,
-            "error": str(
-                error
+            "model": None,
+            "error": (
+                "Thiếu GEMINI_API_KEY "
+                "trong Streamlit Secrets."
             ),
         }
+
+    prompt = build_research_ai_prompt(
+        context,
+        question,
+    )
+
+    errors = []
+
+    for model in RESEARCH_AI_MODELS:
+
+        try:
+
+            output = _call_research_ai_model(
+                api_key,
+                model,
+                prompt,
+            )
+
+            return {
+                "ok": True,
+                "text": output,
+                "model": model,
+                "error": "",
+            }
+
+        except Exception as error:
+
+            error_text = str(
+                error
+            )
+
+            errors.append(
+                f"{model}: {error_text}"
+            )
+
+            # Lỗi key/quyền/quota:
+            # dừng ngay.
+            if _is_fatal_ai_error(
+                error
+            ):
+
+                return {
+                    "ok": False,
+                    "text": "",
+                    "model": model,
+                    "error": error_text,
+                }
+
+            # 503 / high demand:
+            # thử model kế tiếp.
+            if _is_retryable_ai_error(
+                error
+            ):
+                continue
+
+            # Lỗi khác:
+            # không spam API.
+            return {
+                "ok": False,
+                "text": "",
+                "model": model,
+                "error": error_text,
+            }
+
+    return {
+        "ok": False,
+        "text": "",
+        "model": None,
+        "error": (
+            "Các model AI hiện tại đều không khả dụng.\n\n"
+            + "\n".join(
+                errors
+            )
+        ),
+    }
 
 
 @st.cache_data(
@@ -4375,13 +4377,9 @@ def research_ai_cached(
     context,
     question,
 ):
-    prompt = build_research_ai_prompt(
+    return generate_research_ai(
         context,
         question,
-    )
-
-    return _call_research_ai(
-        prompt
     )
 
 
@@ -4391,12 +4389,6 @@ def render_research_ai(
     start_date,
     end_date,
 ):
-    """
-    AI đọc kết quả nghiên cứu.
-
-    Chỉ gọi khi user bấm nút.
-    """
-
     st.divider()
 
     st.header(
@@ -4404,9 +4396,8 @@ def render_research_ai(
     )
 
     st.caption(
-        "AI đọc toàn bộ kết quả định lượng đã chạy "
-        "và giải thích yếu tố nào đang liên hệ mạnh "
-        "với lợi suất của cổ phiếu."
+        "AI đọc kết quả định lượng đã chạy và giải thích "
+        "ngắn gọn yếu tố nào đang liên hệ mạnh nhất với lợi suất."
     )
 
     if (
@@ -4421,106 +4412,105 @@ def render_research_ai(
     ):
 
         st.info(
-            "Chưa có nghiên cứu để AI đọc."
+            "Chạy nghiên cứu định lượng trước."
         )
 
         return
 
-    # --------------------------------------------------------
-    # PROMPT
-    # --------------------------------------------------------
+    # ========================================================
+    # CUSTOM QUESTION
+    # ========================================================
 
     question = st.text_area(
-        "Hỏi Brian AI về nghiên cứu",
+        "Hỏi Brian AI",
         placeholder=(
             "Ví dụ:\n"
             "Biến nào ảnh hưởng giá mạnh nhất?\n"
-            "Tại sao Bollinger Upper đứng đầu?\n"
+            "Khối ngoại có ảnh hưởng đáng kể không?\n"
+            "Yếu tố thị trường chung có quan trọng không?\n"
             "1D, 5D hay 20D đáng tin hơn?\n"
-            "Nói đơn giản nghiên cứu này đang nói cái gì?\n"
-            "Khối ngoại có thật sự ảnh hưởng cổ phiếu này không?\n"
-            "Nhóm yếu tố nào quan trọng nhất?"
+            "Nói đơn giản nghiên cứu này đang cho thấy gì?\n"
+            "Tại sao model có R² âm?"
         ),
         height=120,
         key="research_ai_question",
     ).strip()
 
-    # --------------------------------------------------------
-    # QUICK
-    # --------------------------------------------------------
+    # ========================================================
+    # QUICK QUESTIONS
+    # ========================================================
 
     st.markdown(
-        "#### Hỏi nhanh"
+        "#### ⚡ Hỏi nhanh"
     )
 
     q1, q2, q3 = st.columns(3)
 
-    quick_question = ""
+    quick_question = None
 
     with q1:
 
         if st.button(
             "🎯 Yếu tố mạnh nhất",
-            key="research_ai_q1",
+            key="research_ai_quick_1",
             width="stretch",
         ):
 
             quick_question = (
-                "Yếu tố nào ảnh hưởng mạnh nhất "
-                "đến lợi suất cổ phiếu và vì sao?"
+                "Yếu tố nào có quan hệ mạnh nhất "
+                "với lợi suất cổ phiếu và bằng chứng mạnh tới đâu?"
             )
 
     with q2:
 
         if st.button(
             "📈 Giá phụ thuộc vào gì?",
-            key="research_ai_q2",
+            key="research_ai_quick_2",
             width="stretch",
         ):
 
             quick_question = (
-                "Nói đơn giản cổ phiếu này đang "
-                "phụ thuộc vào những yếu tố nào nhiều nhất?"
+                "Nói đơn giản giá cổ phiếu đang phụ thuộc "
+                "vào 3 đến 5 yếu tố nào nhiều nhất?"
             )
 
     with q3:
 
         if st.button(
-            "🔬 Nghiên cứu đáng tin không?",
-            key="research_ai_q3",
+            "🔬 Độ tin cậy nghiên cứu",
+            key="research_ai_quick_3",
             width="stretch",
         ):
 
             quick_question = (
-                "Đánh giá chất lượng nghiên cứu: "
-                "model, p-value, VIF và các kiểm định "
-                "cho thấy kết quả đáng tin đến đâu?"
+                "Nghiên cứu này đáng tin đến đâu? "
+                "Hãy xem model, R², baseline, VIF và các kiểm định."
             )
 
     if quick_question:
 
         question = quick_question
 
-    # --------------------------------------------------------
+    # ========================================================
     # RUN
-    # --------------------------------------------------------
+    # ========================================================
 
     if st.button(
         "🤖 AI đọc toàn bộ nghiên cứu",
         type="primary",
         width="stretch",
-        key="research_ai_button",
+        key="research_ai_run",
     ):
 
         context = build_research_ai_context(
-            result=result,
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
+            result,
+            symbol,
+            start_date,
+            end_date,
         )
 
         with st.spinner(
-            "Brian AI đang đọc nghiên cứu..."
+            "Brian AI đang đọc kết quả nghiên cứu..."
         ):
 
             ai_result = research_ai_cached(
@@ -4544,15 +4534,11 @@ def render_research_ai(
             "research_ai_question_used"
         ] = question
 
-    # --------------------------------------------------------
+    # ========================================================
     # RESULT
-    # --------------------------------------------------------
+    # ========================================================
 
-    ai_result = st.session_state.get(
-        "research_ai_result"
-    )
-
-    ai_scope = st.session_state.get(
+    saved_scope = st.session_state.get(
         "research_ai_scope"
     )
 
@@ -4562,13 +4548,18 @@ def render_research_ai(
         str(end_date),
     )
 
+    ai_result = st.session_state.get(
+        "research_ai_result"
+    )
+
     if (
         ai_result is None
-        or ai_scope != current_scope
+        or saved_scope != current_scope
     ):
 
         st.info(
-            "Bấm nút để Brian AI đọc kết quả nghiên cứu."
+            "Đặt câu hỏi hoặc để trống rồi bấm "
+            "“AI đọc toàn bộ nghiên cứu”."
         )
 
         return
@@ -4579,15 +4570,19 @@ def render_research_ai(
     ):
 
         st.error(
-            "AI chưa thể đọc nghiên cứu."
+            "Brian AI chưa chạy được."
         )
 
-        st.code(
-            ai_result.get(
-                "error",
-                "Không xác định.",
-            )
+        error = ai_result.get(
+            "error",
+            "",
         )
+
+        if error:
+
+            st.code(
+                error
+            )
 
         return
 
@@ -4613,18 +4608,17 @@ def render_research_ai(
         ):
 
             st.caption(
-                "Câu hỏi"
+                "Câu hỏi:"
             )
 
             st.write(
                 question_used
             )
 
-    output = text(
+    output = _safe_text(
         ai_result.get(
             "text"
-        ),
-        "",
+        )
     )
 
     if output:
@@ -4636,757 +4630,6 @@ def render_research_ai(
             st.markdown(
                 output
             )
-
-
-# ============================================================
-# MAIN PAGE
-# ============================================================
-
-def render_stock_analysis():
-
-    # ========================================================
-    # HEADER
-    # ========================================================
-
-    st.caption(
-        "BRIAN STOCK · STOCK RESEARCH"
-    )
-
-    st.title(
-        "Phân tích cổ phiếu"
-    )
-
-    st.write(
-        "Phân tích kỹ thuật, dòng tiền, khối ngoại, tự doanh, "
-        "thị trường chung, nhóm ngành và nghiên cứu định lượng."
-    )
-
-    # ========================================================
-    # SYMBOL
-    # ========================================================
-
-    current_symbol = st.session_state.get(
-        "stock_analysis_symbol",
-        "HPG",
-    )
-
-    symbol_input = st.text_input(
-        "Mã cổ phiếu",
-        value=current_symbol,
-        placeholder="Ví dụ HPG, FPT, VNM...",
-        key="stock_analysis_symbol_input",
-    )
-
-    if st.button(
-        "🔄 Tải dữ liệu",
-        type="primary",
-        key="stock_analysis_load_button",
-    ):
-
-        clean = normalize_symbol(
-            symbol_input
-        )
-
-        if not clean:
-
-            st.warning(
-                "Vui lòng nhập mã cổ phiếu."
-            )
-
-            return
-
-        st.session_state[
-            "stock_analysis_symbol"
-        ] = clean
-
-        for key in [
-            "stock_research_result",
-            "stock_research_symbol",
-            "stock_research_dates",
-            "research_ai_result",
-            "research_ai_scope",
-            "research_ai_question_used",
-        ]:
-
-            st.session_state.pop(
-                key,
-                None,
-            )
-
-        st.rerun()
-
-    symbol = normalize_symbol(
-        st.session_state.get(
-            "stock_analysis_symbol",
-            symbol_input,
-        )
-    )
-
-    # ========================================================
-    # DISPLAY DATA
-    # ========================================================
-
-    try:
-
-        display_data = load_display_data(
-            symbol
-        )
-
-    except Exception as error:
-
-        st.error(
-            f"Không thể tải dữ liệu "
-            f"{display_symbol(symbol)}."
-        )
-
-        st.code(
-            str(error)
-        )
-
-        return
-
-    if (
-        display_data is None
-        or display_data.empty
-    ):
-
-        st.warning(
-            "Không có dữ liệu."
-        )
-
-        return
-
-    snapshot = market_snapshot(
-        display_data
-    )
-
-    price = num(
-        snapshot.get(
-            "price"
-        )
-    )
-
-    change = num(
-        snapshot.get(
-            "change_1d"
-        )
-    )
-
-    rsi_value = num(
-        snapshot.get(
-            "rsi"
-        )
-    )
-
-    volume = num(
-        snapshot.get(
-            "volume"
-        )
-    )
-
-    sma20 = num(
-        snapshot.get(
-            "sma20"
-        )
-    )
-
-    sma50 = num(
-        snapshot.get(
-            "sma50"
-        )
-    )
-
-    macd = num(
-        snapshot.get(
-            "macd"
-        )
-    )
-
-    volatility = num(
-        snapshot.get(
-            "volatility20"
-        )
-    )
-
-    last = display_data.iloc[
-        -1
-    ]
-
-    atr14 = num(
-        last.get(
-            "ATR14"
-        )
-    )
-
-    volume_sma20 = num(
-        last.get(
-            "Volume_SMA20"
-        )
-    )
-
-    relative_volume = None
-
-    if (
-        volume is not None
-        and volume_sma20 is not None
-        and volume_sma20 != 0
-    ):
-
-        relative_volume = (
-            volume
-            / volume_sma20
-        )
-
-    # ========================================================
-    # STOCK SNAPSHOT
-    # ========================================================
-
-    st.subheader(
-        f"📈 {display_symbol(symbol)}"
-    )
-
-    a, b, c, d = st.columns(4)
-
-    with a:
-
-        st.metric(
-            "Giá",
-            format_price(
-                price
-            ),
-        )
-
-    with b:
-
-        st.metric(
-            "Thay đổi 1D",
-            format_percent(
-                change
-            ),
-        )
-
-    with c:
-
-        st.metric(
-            "RSI",
-            format_number(
-                rsi_value,
-                1,
-            ),
-        )
-
-    with d:
-
-        st.metric(
-            "Khối lượng",
-            format_volume(
-                volume
-            ),
-        )
-
-    a, b, c, d = st.columns(4)
-
-    with a:
-
-        st.metric(
-            "MA20",
-            format_price(
-                sma20
-            ),
-        )
-
-    with b:
-
-        st.metric(
-            "MA50",
-            format_price(
-                sma50
-            ),
-        )
-
-    with c:
-
-        st.metric(
-            "MACD",
-            format_number(
-                macd,
-                3,
-            ),
-        )
-
-    with d:
-
-        st.metric(
-            "Biến động 20 phiên",
-            (
-                f"{volatility:.2f}%"
-                if volatility is not None
-                else "—"
-            ),
-        )
-
-    # ========================================================
-    # TECHNICAL STATUS
-    # ========================================================
-
-    st.subheader(
-        "🧭 Trạng thái kỹ thuật"
-    )
-
-    a, b, c, d = st.columns(4)
-
-    with a:
-
-        st.metric(
-            "Xu hướng",
-            ma_status(
-                price,
-                sma20,
-                sma50,
-            ),
-        )
-
-    with b:
-
-        st.metric(
-            "RSI",
-            rsi_status(
-                rsi_value
-            ),
-        )
-
-    with c:
-
-        st.metric(
-            "MACD",
-            macd_status(
-                macd
-            ),
-        )
-
-    with d:
-
-        st.metric(
-            "Thanh khoản",
-            (
-                f"{relative_volume:.2f}x TB20"
-                if relative_volume is not None
-                else "—"
-            ),
-        )
-
-    # ========================================================
-    # EXTRA
-    # ========================================================
-
-    st.subheader(
-        "📋 Chỉ báo bổ sung"
-    )
-
-    a, b, c, d = st.columns(4)
-
-    with a:
-
-        st.metric(
-            "ATR14",
-            format_price(
-                atr14
-            ),
-        )
-
-    with b:
-
-        st.metric(
-            "Volume TB20",
-            format_volume(
-                volume_sma20
-            ),
-        )
-
-    with c:
-
-        st.metric(
-            "Giá mở cửa",
-            format_price(
-                num(
-                    last.get(
-                        "Open"
-                    )
-                )
-            ),
-        )
-
-    with d:
-
-        high = num(
-            last.get(
-                "High"
-            )
-        )
-
-        low = num(
-            last.get(
-                "Low"
-            )
-        )
-
-        close = num(
-            last.get(
-                "Close"
-            )
-        )
-
-        if (
-            high is not None
-            and low is not None
-            and close is not None
-            and high != low
-        ):
-
-            position = (
-                (
-                    close
-                    - low
-                )
-                / (
-                    high
-                    - low
-                )
-                * 100
-            )
-
-            st.metric(
-                "Vị trí biên ngày",
-                f"{position:.1f}%",
-            )
-
-        else:
-
-            st.metric(
-                "Vị trí biên ngày",
-                "—",
-            )
-
-    # ========================================================
-    # CHART
-    # ========================================================
-
-    st.subheader(
-        "📊 Biểu đồ kỹ thuật"
-    )
-
-    try:
-
-        chart = price_volume_chart(
-            display_data
-        )
-
-        if chart is not None:
-
-            st.plotly_chart(
-                chart,
-                width="stretch",
-                config={
-                    "displaylogo": False,
-                },
-            )
-
-    except Exception as error:
-
-        st.warning(
-            "Không thể hiển thị biểu đồ."
-        )
-
-        st.caption(
-            str(error)
-        )
-
-    # ========================================================
-    # RESEARCH
-    # ========================================================
-
-    st.divider()
-
-    st.header(
-        "🧪 Nghiên cứu định lượng"
-    )
-
-    st.write(
-        "Chọn khoảng dữ liệu trước. Hệ thống chỉ tải "
-        "multifactor khi mày bấm chạy nghiên cứu."
-    )
-
-    mode = st.radio(
-        "Kiểu chọn mẫu",
-        [
-            "Preset",
-            "Khoảng ngày tùy chọn",
-        ],
-        horizontal=True,
-        key="research_mode",
-    )
-
-    today = (
-        pd.Timestamp.today()
-        .date()
-    )
-
-    if mode == "Preset":
-
-        preset = st.selectbox(
-            "Khoảng thời gian",
-            list(
-                PERIOD_PRESETS.keys()
-            ),
-            index=3,
-            key="research_preset",
-        )
-
-        start_date = (
-            pd.Timestamp(
-                today
-            )
-            - pd.Timedelta(
-                days=PERIOD_PRESETS[
-                    preset
-                ]
-            )
-        ).date()
-
-        end_date = today
-
-    else:
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            start_date = st.date_input(
-                "Từ ngày",
-                value=(
-                    pd.Timestamp(
-                        today
-                    )
-                    - pd.Timedelta(
-                        days=365
-                    )
-                ).date(),
-                max_value=today,
-                key="research_start_date",
-            )
-
-        with c2:
-
-            end_date = st.date_input(
-                "Đến ngày",
-                value=today,
-                max_value=today,
-                key="research_end_date",
-            )
-
-        preset = "Tùy chọn"
-
-    if start_date > end_date:
-
-        st.error(
-            "Ngày bắt đầu phải nhỏ hơn ngày kết thúc."
-        )
-
-        return
-
-    st.info(
-        f"Mẫu: "
-        f"{start_date.strftime('%d/%m/%Y')}"
-        f" → "
-        f"{end_date.strftime('%d/%m/%Y')}"
-    )
-
-    # ========================================================
-    # RUN
-    # ========================================================
-
-    run_research = st.button(
-        "🚀 Chạy toàn bộ nghiên cứu",
-        type="primary",
-        width="stretch",
-        key="run_stock_research",
-    )
-
-    if run_research:
-
-        for key in [
-            "stock_research_result",
-            "research_ai_result",
-            "research_ai_scope",
-            "research_ai_question_used",
-        ]:
-
-            st.session_state.pop(
-                key,
-                None,
-            )
-
-        with st.status(
-            "Đang nghiên cứu...",
-            expanded=True,
-        ) as status:
-
-            st.write(
-                "1/4 Đang lấy dữ liệu multifactor..."
-            )
-
-            try:
-
-                research_data = (
-                    load_multifactor_research_history(
-                        symbol,
-                        start_date,
-                        end_date,
-                    )
-                )
-
-            except Exception as error:
-
-                status.update(
-                    label="Nghiên cứu thất bại",
-                    state="error",
-                )
-
-                st.error(
-                    "Không lấy được dữ liệu nghiên cứu."
-                )
-
-                st.code(
-                    str(error)
-                )
-
-                return
-
-            st.write(
-                "2/4 Đã lấy dữ liệu. Đang cắt đúng mẫu..."
-            )
-
-            sample = slice_date_range(
-                research_data,
-                start_date,
-                end_date,
-            )
-
-            if sample.empty:
-
-                status.update(
-                    label="Không có dữ liệu",
-                    state="error",
-                )
-
-                st.error(
-                    "Không có phiên giao dịch trong khoảng chọn."
-                )
-
-                return
-
-            st.write(
-                f"3/4 Có {len(sample):,} quan sát thực tế."
-            )
-
-            st.write(
-                "4/4 Đang chạy correlation, OLS, "
-                "machine learning, importance, VIF và kiểm định..."
-            )
-
-            result = execute_full_research(
-                sample
-            )
-
-            if not result.get(
-                "ok",
-                False,
-            ):
-
-                status.update(
-                    label="Nghiên cứu thất bại",
-                    state="error",
-                )
-
-                st.error(
-                    result.get(
-                        "error",
-                        "Nghiên cứu thất bại.",
-                    )
-                )
-
-                return
-
-            status.update(
-                label="Đã hoàn tất nghiên cứu",
-                state="complete",
-            )
-
-        st.session_state[
-            "stock_research_result"
-        ] = result
-
-        st.session_state[
-            "stock_research_symbol"
-        ] = symbol
-
-        st.session_state[
-            "stock_research_dates"
-        ] = (
-            start_date,
-            end_date,
-        )
-
-    # ========================================================
-    # RESULT
-    # ========================================================
-
-    result = st.session_state.get(
-        "stock_research_result"
-    )
-
-    saved_symbol = st.session_state.get(
-        "stock_research_symbol"
-    )
-
-    saved_dates = st.session_state.get(
-        "stock_research_dates"
-    )
-
-    current_scope = (
-        symbol,
-        start_date,
-        end_date,
-    )
-
-    if (
-        result is None
-        or saved_symbol != symbol
-        or saved_dates != current_scope[1:]
-    ):
-
-        if result is not None:
-
-            st.caption(
-                "Mẫu hiện tại khác với mẫu đã chạy. "
-                "Bấm lại 'Chạy toàn bộ nghiên cứu'."
-            )
-
-        return
-
-    if not result.get(
-        "ok",
-        False,
-    ):
-
-        st.error(
-            result.get(
-                "error",
-                "Nghiên cứu thất bại.",
-            )
-        )
-
-        return
 
     # ========================================================
     # SAMPLE
