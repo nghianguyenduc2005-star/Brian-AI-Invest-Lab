@@ -68,3 +68,160 @@ def lay_market_overview(
             bang_gia
         ),
     }
+def loc_bang_gia(
+    bang_gia,
+    san="Tất cả",
+    tu_khoa="",
+    nganh="Tất cả",
+    huong="Tất cả",
+):
+    """
+    Lọc bảng giá toàn thị trường.
+
+    san:
+        Tất cả / HOSE / HNX / UPCOM
+
+    tu_khoa:
+        Mã cổ phiếu hoặc tên doanh nghiệp
+
+    nganh:
+        Tên ngành
+
+    huong:
+        Tất cả / Tăng / Đứng giá / Giảm
+    """
+
+    if (
+        bang_gia is None
+        or not isinstance(
+            bang_gia,
+            pd.DataFrame,
+        )
+        or bang_gia.empty
+    ):
+        return pd.DataFrame()
+
+    df = bang_gia.copy()
+
+    # --------------------------------------------------------
+    # Lọc sàn
+    # --------------------------------------------------------
+
+    if (
+        san
+        and san != "Tất cả"
+        and "san" in df.columns
+    ):
+
+        df = df[
+            df["san"]
+            .fillna("")
+            .astype(str)
+            .str.upper()
+            .eq(
+                str(san).upper()
+            )
+        ].copy()
+
+    # --------------------------------------------------------
+    # Lọc ngành
+    # --------------------------------------------------------
+
+    if (
+        nganh
+        and nganh != "Tất cả"
+        and "ten_nganh" in df.columns
+    ):
+
+        df = df[
+            df["ten_nganh"]
+            .fillna("")
+            .astype(str)
+            .eq(
+                str(nganh)
+            )
+        ].copy()
+
+    # --------------------------------------------------------
+    # Tìm mã / tên doanh nghiệp
+    # --------------------------------------------------------
+
+    tu_khoa = str(
+        tu_khoa or ""
+    ).strip()
+
+    if tu_khoa:
+
+        tu_khoa_upper = (
+            tu_khoa.upper()
+        )
+
+        mask_ma = pd.Series(
+            False,
+            index=df.index,
+        )
+
+        mask_ten = pd.Series(
+            False,
+            index=df.index,
+        )
+
+        if "ma" in df.columns:
+
+            mask_ma = (
+                df["ma"]
+                .fillna("")
+                .astype(str)
+                .str.upper()
+                .str.contains(
+                    tu_khoa_upper,
+                    regex=False,
+                    na=False,
+                )
+            )
+
+        if (
+            "ten_doanh_nghiep"
+            in df.columns
+        ):
+
+            mask_ten = (
+                df[
+                    "ten_doanh_nghiep"
+                ]
+                .fillna("")
+                .astype(str)
+                .str.contains(
+                    tu_khoa,
+                    case=False,
+                    regex=False,
+                    na=False,
+                )
+            )
+
+        df = df[
+            mask_ma | mask_ten
+        ].copy()
+
+    # --------------------------------------------------------
+    # Lọc tăng / giảm
+    # --------------------------------------------------------
+
+    if (
+        huong
+        and huong != "Tất cả"
+        and "trang_thai" in df.columns
+    ):
+
+        df = df[
+            df["trang_thai"]
+            .fillna("")
+            .astype(str)
+            .eq(
+                str(huong)
+            )
+        ].copy()
+
+    return df.reset_index(
+        drop=True
+    )
