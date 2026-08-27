@@ -729,3 +729,103 @@ def get_vn_index():
         "DNSE chưa trả được VN-INDEX. "
         + " | ".join(errors)
     )
+def get_vn_index():
+    """
+    Lấy VN-INDEX từ DNSE market index.
+    Không dùng vnstock.
+    """
+
+    url = "https://api.dnse.com.vn/market-data/v1/index"
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
+        ),
+    }
+
+    params = {
+        "indexCode": "VNINDEX",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            params=params,
+            timeout=15,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        # DNSE có thể trả object hoặc bọc trong data/result
+        if isinstance(data, dict):
+
+            if isinstance(data.get("data"), dict):
+                data = data["data"]
+
+            elif isinstance(data.get("result"), dict):
+                data = data["result"]
+
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Response VN-INDEX không hợp lệ: {data}"
+            )
+
+        def pick(*keys, default=0):
+            for key in keys:
+                if key in data and data[key] is not None:
+                    return data[key]
+            return default
+
+        price = float(
+            pick(
+                "indexValue",
+                "value",
+                "close",
+                "last",
+                "price",
+            )
+        )
+
+        change = float(
+            pick(
+                "change",
+                "indexChange",
+                "changeValue",
+            )
+        )
+
+        change_pct = float(
+            pick(
+                "changePercent",
+                "changePct",
+                "percentChange",
+                "changePercentage",
+            )
+        )
+
+        volume = float(
+            pick(
+                "volume",
+                "totalVolume",
+                "totalVol",
+                default=0,
+            )
+        )
+
+        return {
+            "symbol": "VN-INDEX",
+            "price": price,
+            "change": change,
+            "change_pct": change_pct,
+            "volume": volume,
+        }
+
+    except Exception as e:
+        raise ValueError(
+            f"Không lấy được VN-INDEX từ DNSE: {e}"
+        )
