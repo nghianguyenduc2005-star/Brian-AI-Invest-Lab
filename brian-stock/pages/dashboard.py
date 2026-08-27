@@ -13,6 +13,10 @@ from data.market import (
     normalize_symbol,
 )
 from data.news import fetch_market_news
+from components.ai import (
+    dashboard_prompt,
+    render_ai_panel,
+)
 
 
 def num(value, default=None):
