@@ -513,9 +513,12 @@ def generate_ai_summary(
     market_summary,
     news
 ):
+    """
+    Dùng Gemini để tổng hợp dữ liệu thị trường + tin tức.
+    """
 
     api_key = st.secrets.get(
-        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
         None
     )
 
@@ -523,70 +526,114 @@ def generate_ai_summary(
         return None
 
     try:
+        from google import genai
 
-        from openai import OpenAI
-
-        client = OpenAI(
+        client = genai.Client(
             api_key=api_key
         )
 
         news_text = "\n".join(
             [
-                f"- {n['title']} | {n['source']}"
+                f"- {n['title']} | "
+                f"{n['source']} | "
+                f"{n.get('published', '')} | "
+                f"{n['link']}"
                 for n in news
             ]
         )
 
         prompt = f"""
-Bạn là Brian AI Invest Lab, một trợ lý phân tích
-thị trường chứng khoán.
+Bạn là Brian AI Invest Lab — trợ lý phân tích
+chứng khoán bằng tiếng Việt.
 
-Hãy tổng hợp thông tin về cổ phiếu {ticker}
+Nhiệm vụ:
+Tổng hợp thông tin về cổ phiếu {ticker}
 trong {days} ngày gần nhất.
 
-DỮ LIỆU THỊ TRƯỜNG:
+========================
+DỮ LIỆU THỊ TRƯỜNG
+========================
+
 {market_summary}
 
-TIN TỨC:
+========================
+TIN TỨC
+========================
+
 {news_text}
 
-Yêu cầu:
+========================
+YÊU CẦU
+========================
 
-1. Tóm tắt tình hình hiện tại.
-2. Những tin tức quan trọng nhất.
-3. Yếu tố tích cực.
-4. Yếu tố tiêu cực.
-5. Rủi ro cần chú ý.
-6. Phân tích kỹ thuật dựa trên dữ liệu được cung cấp.
-7. Nhận xét ML nếu có.
-8. Kết luận ngắn gọn.
+Hãy viết báo cáo hoàn toàn bằng TIẾNG VIỆT.
 
-Không được bịa số liệu hoặc tin tức.
+Cấu trúc bắt buộc:
 
-Nếu dữ liệu không đủ để kết luận,
-phải nói rõ "chưa đủ dữ liệu".
+# 🧠 Bản tin đầu tư {ticker}
 
-Không đưa ra lời khuyên mua/bán tuyệt đối.
-Đây là phân tích thông tin, không phải khuyến nghị đầu tư.
+## 📌 Tóm tắt nhanh
+Tóm tắt tình hình trong 3-5 câu.
+
+## 📰 Tin tức đáng chú ý
+Chọn những tin quan trọng nhất.
+Giải thích tại sao mỗi tin đáng chú ý.
+
+## 📈 Diễn biến thị trường
+Phân tích giá, return, RSI, MACD và volatility
+dựa đúng trên dữ liệu được cung cấp.
+
+## 🤖 Phân tích Machine Learning
+Nếu có kết quả Random Forest,
+giải thích dự báo và feature importance.
+
+## 🟢 Yếu tố tích cực
+Liệt kê các catalyst/yếu tố hỗ trợ.
+
+## 🔴 Yếu tố tiêu cực
+Liệt kê các rủi ro/yếu tố gây áp lực.
+
+## ⚠️ Rủi ro cần theo dõi
+Nêu những thứ nhà đầu tư cần kiểm tra thêm.
+
+## 🎯 Kết luận
+Đưa ra đánh giá tổng hợp:
+- Tích cực
+- Trung lập
+- Tiêu cực
+
+Kèm lý do.
+
+========================
+QUY TẮC
+========================
+
+1. Chỉ sử dụng dữ liệu được cung cấp.
+2. Không bịa số liệu.
+3. Không bịa tin tức.
+4. Không khẳng định điều không có trong dữ liệu.
+5. Nếu thiếu dữ liệu, phải nói rõ:
+   "Chưa đủ dữ liệu để kết luận."
+6. Phân biệt rõ dữ liệu thực tế và nhận định của AI.
+7. Không đưa ra lời khuyên mua/bán tuyệt đối.
+8. Đây là báo cáo nghiên cứu thông tin,
+   không phải khuyến nghị đầu tư cá nhân.
+9. Luôn viết bằng tiếng Việt.
 """
 
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt
+        response = client.models.generate_content(
+            model="gemini-3.7-flash",
+            contents=prompt
         )
 
-        return response.output_text
+        return response.text
 
     except Exception as e:
 
         return (
-            f"Không gọi được AI API: {str(e)}"
+            f"❌ Không thể kết nối Gemini API.\n\n"
+            f"Chi tiết lỗi: `{str(e)}`"
         )
-
-
-# =========================================================
-# DISPLAY NEWS
-# =========================================================
 
 def display_news(news):
 
