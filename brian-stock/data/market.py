@@ -1,16 +1,15 @@
-```python
 import pandas as pd
 from datetime import datetime, timedelta
 
-from vnstock_data import Market, Reference
+from vnstock import Market, Reference
 
 
 # ============================================================
 # KHỞI TẠO NGUỒN DỮ LIỆU
 # ============================================================
 
-_thi_truong = Market()
-_tham_chieu = Reference()
+thi_truong = Market()
+tham_chieu = Reference()
 
 
 # ============================================================
@@ -44,12 +43,13 @@ def display_symbol(ma_co_phieu):
 
 
 # ============================================================
-# LẤY TOÀN BỘ DANH SÁCH CỔ PHIẾU
+# LẤY DANH SÁCH TOÀN BỘ MÃ CỔ PHIẾU
 # ============================================================
 
 def load_symbol_list():
+
     try:
-        du_lieu = _tham_chieu.equity.list()
+        du_lieu = tham_chieu.listing.all_symbols()
 
         if du_lieu is None:
             return []
@@ -60,50 +60,35 @@ def load_symbol_list():
         if du_lieu.empty:
             return []
 
-        cot_ma = None
-
-        for ten_cot in du_lieu.columns:
-            ten_cot_chuan = str(ten_cot).strip().lower()
-
-            if ten_cot_chuan in [
-                "symbol",
-                "ticker",
-                "code",
-                "ma",
-                "mã",
-                "mã ck",
-                "ma_ck",
-            ]:
-                cot_ma = ten_cot
-                break
-
-        if cot_ma is None:
+        if "symbol" not in du_lieu.columns:
             return []
 
         danh_sach = (
-            du_lieu[cot_ma]
+            du_lieu["symbol"]
             .dropna()
             .astype(str)
             .map(normalize_symbol)
+            .tolist()
         )
 
         danh_sach = [
             ma
-            for ma in danh_sach.tolist()
+            for ma in danh_sach
             if ma
         ]
 
-        return sorted(list(set(danh_sach)))
+        return sorted(set(danh_sach))
 
     except Exception:
         return []
 
 
 # ============================================================
-# KIỂM TRA MÃ CỔ PHIẾU
+# KIỂM TRA MÃ
 # ============================================================
 
 def is_valid_symbol(ma_co_phieu):
+
     ma_co_phieu = normalize_symbol(ma_co_phieu)
 
     if not ma_co_phieu:
@@ -118,7 +103,7 @@ def is_valid_symbol(ma_co_phieu):
 
 
 # ============================================================
-# CHUYỂN TÊN CỘT VỀ CHUẨN TIẾNG VIỆT
+# CHUẨN HÓA TÊN CỘT
 # ============================================================
 
 def _normalize_columns(du_lieu):
@@ -134,47 +119,46 @@ def _normalize_columns(du_lieu):
 
     anh_xa = {}
 
-    for cot in du_lieu.columns:
+    for ten_cot in du_lieu.columns:
 
-        ten = str(cot).strip().lower()
+        ten = str(ten_cot).strip().lower()
 
         if ten in ["time", "datetime", "date", "timestamp"]:
-            anh_xa[cot] = "Thời gian"
+            anh_xa[ten_cot] = "Thời gian"
 
         elif ten in ["open", "open_price"]:
-            anh_xa[cot] = "Mở cửa"
+            anh_xa[ten_cot] = "Mở cửa"
 
         elif ten in ["high", "high_price"]:
-            anh_xa[cot] = "Cao nhất"
+            anh_xa[ten_cot] = "Cao nhất"
 
         elif ten in ["low", "low_price"]:
-            anh_xa[cot] = "Thấp nhất"
+            anh_xa[ten_cot] = "Thấp nhất"
 
         elif ten in ["close", "close_price"]:
-            anh_xa[cot] = "Đóng cửa"
+            anh_xa[ten_cot] = "Đóng cửa"
 
         elif ten in ["volume", "total_volume"]:
-            anh_xa[cot] = "Khối lượng"
+            anh_xa[ten_cot] = "Khối lượng"
 
         elif ten in ["value", "value_traded"]:
-            anh_xa[cot] = "Giá trị giao dịch"
+            anh_xa[ten_cot] = "Giá trị giao dịch"
 
         elif ten in ["change", "price_change"]:
-            anh_xa[cot] = "Thay đổi"
+            anh_xa[ten_cot] = "Thay đổi"
 
         elif ten in ["change_percent", "percent_change"]:
-            anh_xa[cot] = "Phần trăm thay đổi"
+            anh_xa[ten_cot] = "Phần trăm thay đổi"
 
-        elif ten in ["symbol", "ticker"]:
-            anh_xa[cot] = "Mã cổ phiếu"
-
-    du_lieu = du_lieu.rename(columns=anh_xa)
+    du_lieu = du_lieu.rename(
+        columns=anh_xa
+    )
 
     return du_lieu
 
 
 # ============================================================
-# CHUẨN HÓA ĐƠN VỊ GIÁ
+# CHUẨN HÓA GIÁ
 # ============================================================
 
 def _normalize_price(du_lieu):
@@ -182,38 +166,43 @@ def _normalize_price(du_lieu):
     if du_lieu.empty:
         return du_lieu
 
-    for cot in [
+    cac_cot_gia = [
         "Mở cửa",
         "Cao nhất",
         "Thấp nhất",
         "Đóng cửa",
-    ]:
+    ]
 
-        if cot not in du_lieu.columns:
+    for ten_cot in cac_cot_gia:
+
+        if ten_cot not in du_lieu.columns:
             continue
 
         try:
 
-            gia_trung_binh = pd.to_numeric(
-                du_lieu[cot],
+            gia_tri = pd.to_numeric(
+                du_lieu[ten_cot],
                 errors="coerce"
-            ).median()
+            )
 
-            if pd.notna(gia_trung_binh) and gia_trung_binh < 1000:
+            gia_trung_binh = gia_tri.median()
 
-                du_lieu[cot] = pd.to_numeric(
-                    du_lieu[cot],
-                    errors="coerce"
-                ) * 1000
+            if (
+                pd.notna(gia_trung_binh)
+                and gia_trung_binh < 1000
+            ):
+                du_lieu[ten_cot] = gia_tri * 1000
+            else:
+                du_lieu[ten_cot] = gia_tri
 
         except Exception:
-            pass
+            continue
 
     return du_lieu
 
 
 # ============================================================
-# THÊM CÁC CHỈ BÁO CƠ BẢN
+# THÊM CHỈ BÁO PHÂN TÍCH
 # ============================================================
 
 def add_indicators(du_lieu):
@@ -223,85 +212,53 @@ def add_indicators(du_lieu):
 
     du_lieu = du_lieu.copy()
 
-    cot_gia = None
-
-    for ten_cot in [
-        "Đóng cửa",
-        "close",
-        "Close",
-    ]:
-
-        if ten_cot in du_lieu.columns:
-            cot_gia = ten_cot
-            break
-
-    if cot_gia is None:
+    if "Đóng cửa" not in du_lieu.columns:
         return du_lieu
 
-    gia = pd.to_numeric(
-        du_lieu[cot_gia],
+    gia_dong_cua = pd.to_numeric(
+        du_lieu["Đóng cửa"],
         errors="coerce"
     )
 
     # --------------------------------------------------------
-    # ĐƯỜNG TRUNG BÌNH 5
+    # TRUNG BÌNH ĐỘNG
     # --------------------------------------------------------
 
-    du_lieu["Trung bình động 5"] = gia.rolling(
-        window=5
-    ).mean()
+    du_lieu["Trung bình động 5"] = (
+        gia_dong_cua.rolling(5).mean()
+    )
 
-    # --------------------------------------------------------
-    # ĐƯỜNG TRUNG BÌNH 10
-    # --------------------------------------------------------
+    du_lieu["Trung bình động 10"] = (
+        gia_dong_cua.rolling(10).mean()
+    )
 
-    du_lieu["Trung bình động 10"] = gia.rolling(
-        window=10
-    ).mean()
+    du_lieu["Trung bình động 20"] = (
+        gia_dong_cua.rolling(20).mean()
+    )
 
-    # --------------------------------------------------------
-    # ĐƯỜNG TRUNG BÌNH 20
-    # --------------------------------------------------------
+    du_lieu["Trung bình động 50"] = (
+        gia_dong_cua.rolling(50).mean()
+    )
 
-    du_lieu["Trung bình động 20"] = gia.rolling(
-        window=20
-    ).mean()
+    du_lieu["Trung bình động 100"] = (
+        gia_dong_cua.rolling(100).mean()
+    )
 
-    # --------------------------------------------------------
-    # ĐƯỜNG TRUNG BÌNH 50
-    # --------------------------------------------------------
-
-    du_lieu["Trung bình động 50"] = gia.rolling(
-        window=50
-    ).mean()
-
-    # --------------------------------------------------------
-    # ĐƯỜNG TRUNG BÌNH 100
-    # --------------------------------------------------------
-
-    du_lieu["Trung bình động 100"] = gia.rolling(
-        window=100
-    ).mean()
-
-    # --------------------------------------------------------
-    # ĐƯỜNG TRUNG BÌNH 200
-    # --------------------------------------------------------
-
-    du_lieu["Trung bình động 200"] = gia.rolling(
-        window=200
-    ).mean()
+    du_lieu["Trung bình động 200"] = (
+        gia_dong_cua.rolling(200).mean()
+    )
 
     # --------------------------------------------------------
     # THAY ĐỔI GIÁ
     # --------------------------------------------------------
 
-    du_lieu["Thay đổi giá"] = gia.diff()
+    du_lieu["Thay đổi giá"] = (
+        gia_dong_cua.diff()
+    )
 
-    # --------------------------------------------------------
-    # PHẦN TRĂM THAY ĐỔI
-    # --------------------------------------------------------
-
-    du_lieu["Phần trăm thay đổi"] = gia.pct_change() * 100
+    du_lieu["Phần trăm thay đổi"] = (
+        gia_dong_cua.pct_change() * 100
+    )
 
     # --------------------------------------------------------
     # BIẾN ĐỘNG
@@ -314,54 +271,70 @@ def add_indicators(du_lieu):
     )
 
     # --------------------------------------------------------
-    # GIÁ CAO NHẤT 20 NGÀY
+    # CAO NHẤT / THẤP NHẤT
     # --------------------------------------------------------
 
-    du_lieu["Cao nhất 20 ngày"] = gia.rolling(
-        20
-    ).max()
+    du_lieu["Cao nhất 20 ngày"] = (
+        gia_dong_cua
+        .rolling(20)
+        .max()
+    )
 
-    # --------------------------------------------------------
-    # GIÁ THẤP NHẤT 20 NGÀY
-    # --------------------------------------------------------
+    du_lieu["Thấp nhất 20 ngày"] = (
+        gia_dong_cua
+        .rolling(20)
+        .min()
+    )
 
-    du_lieu["Thấp nhất 20 ngày"] = gia.rolling(
-        20
-    ).min()
+    du_lieu["Cao nhất 52 tuần"] = (
+        gia_dong_cua
+        .rolling(252)
+        .max()
+    )
+
+    du_lieu["Thấp nhất 52 tuần"] = (
+        gia_dong_cua
+        .rolling(252)
+        .min()
+    )
 
     # --------------------------------------------------------
     # RSI
     # --------------------------------------------------------
 
-    thay_doi = gia.diff()
+    thay_doi = gia_dong_cua.diff()
 
-    tang = thay_doi.clip(lower=0)
+    muc_tang = thay_doi.clip(lower=0)
 
-    giam = -thay_doi.clip(upper=0)
+    muc_giam = -thay_doi.clip(upper=0)
 
-    trung_binh_tang = tang.rolling(
-        14
-    ).mean()
+    tang_trung_binh = (
+        muc_tang
+        .rolling(14)
+        .mean()
+    )
 
-    trung_binh_giam = giam.rolling(
-        14
-    ).mean()
+    giam_trung_binh = (
+        muc_giam
+        .rolling(14)
+        .mean()
+    )
 
-    ti_le_tang_giam = (
-        trung_binh_tang /
-        trung_binh_giam.replace(0, pd.NA)
+    ty_le_tang_giam = (
+        tang_trung_binh /
+        giam_trung_binh.replace(0, pd.NA)
     )
 
     du_lieu["RSI"] = (
         100 -
         (
             100 /
-            (1 + ti_le_tang_giam)
+            (1 + ty_le_tang_giam)
         )
     )
 
     # --------------------------------------------------------
-    # KHỐI LƯỢNG TRUNG BÌNH
+    # KHỐI LƯỢNG
     # --------------------------------------------------------
 
     if "Khối lượng" in du_lieu.columns:
@@ -377,32 +350,58 @@ def add_indicators(du_lieu):
             .mean()
         )
 
+        trung_binh_khoi_luong = (
+            khoi_luong
+            .rolling(20)
+            .mean()
+        )
+
         du_lieu["Tỷ lệ khối lượng"] = (
             khoi_luong /
-            du_luong_trung_binh_an_toan(
-                khoi_luong,
-                20
+            trung_binh_khoi_luong.replace(
+                0,
+                pd.NA
             )
         )
+
+    # --------------------------------------------------------
+    # KHOẢNG DAO ĐỘNG TRONG NGÀY
+    # --------------------------------------------------------
+
+    if (
+        "Cao nhất" in du_lieu.columns
+        and "Thấp nhất" in du_lieu.columns
+    ):
+
+        cao_nhat = pd.to_numeric(
+            du_lieu["Cao nhất"],
+            errors="coerce"
+        )
+
+        thap_nhat = pd.to_numeric(
+            du_lieu["Thấp nhất"],
+            errors="coerce"
+        )
+
+        du_lieu["Biên độ trong ngày"] = (
+            cao_nhat - thap_nhat
+        )
+
+        du_lieu["Phần trăm biên độ"] = (
+            (
+                cao_nhat - thap_nhat
+            )
+            / gia_dong_cua.replace(
+                0,
+                pd.NA
+            )
+        ) * 100
 
     return du_lieu
 
 
-def du_luong_trung_binh_an_toan(
-    du_lieu,
-    so_phien
-):
-
-    return (
-        du_lieu
-        .rolling(so_phien)
-        .mean()
-        .replace(0, pd.NA)
-    )
-
-
 # ============================================================
-# LẤY DỮ LIỆU LỊCH SỬ
+# LẤY LỊCH SỬ GIÁ
 # ============================================================
 
 def load_market_data(
@@ -410,10 +409,14 @@ def load_market_data(
     so_ngay=365
 ):
 
-    ma_co_phieu = normalize_symbol(ma_co_phieu)
+    ma_co_phieu = normalize_symbol(
+        ma_co_phieu
+    )
 
     if not ma_co_phieu:
-        raise ValueError("Mã cổ phiếu không hợp lệ.")
+        raise ValueError(
+            "Mã cổ phiếu không hợp lệ."
+        )
 
     ngay_ket_thuc = datetime.now()
 
@@ -424,63 +427,56 @@ def load_market_data(
 
     loi_cuoi = None
 
-    # --------------------------------------------------------
-    # ƯU TIÊN KBS
-    # --------------------------------------------------------
+    try:
 
-    for nguon_du_lieu in [
-        "kbs",
-        "vci",
-    ]:
-
-        try:
-
-            du_lieu = (
-                _thi_truong
-                .equity(ma_co_phieu)
-                .ohlcv(
-                    start=ngay_bat_dau.strftime("%Y-%m-%d"),
-                    end=ngay_ket_thuc.strftime("%Y-%m-%d"),
-                )
+        du_lieu = (
+            thi_truong.equity.ohlcv(
+                symbol=ma_co_phieu,
+                start=ngay_bat_dau.strftime(
+                    "%Y-%m-%d"
+                ),
+                end=ngay_ket_thuc.strftime(
+                    "%Y-%m-%d"
+                ),
+                interval="1D"
             )
-
-            if du_lieu is None:
-                continue
-
-            du_lieu = _normalize_columns(
-                du_lieu
-            )
-
-            if du_lieu.empty:
-                continue
-
-            du_lieu = _normalize_price(
-                du_lieu
-            )
-
-            du_lieu = add_indicators(
-                du_lieu
-            )
-
-            return du_lieu
-
-        except Exception as loi:
-
-            loi_cuoi = loi
-            continue
-
-    if loi_cuoi is not None:
-        raise RuntimeError(
-            f"Không lấy được dữ liệu {ma_co_phieu}: {loi_cuoi}"
         )
 
+        if du_lieu is None:
+            raise RuntimeError(
+                "Nguồn dữ liệu trả về rỗng."
+            )
+
+        du_lieu = _normalize_columns(
+            du_lieu
+        )
+
+        if du_lieu.empty:
+            raise RuntimeError(
+                f"Không có dữ liệu lịch sử cho {ma_co_phieu}."
+            )
+
+        du_lieu = _normalize_price(
+            du_lieu
+        )
+
+        du_lieu = add_indicators(
+            du_lieu
+        )
+
+        return du_lieu
+
+    except Exception as loi:
+
+        loi_cuoi = loi
+
     raise RuntimeError(
-        f"Không lấy được dữ liệu {ma_co_phieu}."
+        f"Không lấy được dữ liệu {ma_co_phieu}: {loi_cuoi}"
     )
 
 
 # ============================================================
-# GIÁ HIỆN TẠI
+# LẤY GIÁ HIỆN TẠI
 # ============================================================
 
 def load_current_quote(ma_co_phieu):
@@ -495,9 +491,9 @@ def load_current_quote(ma_co_phieu):
     try:
 
         du_lieu = (
-            _thi_truong
-            .equity(ma_co_phieu)
-            .quote()
+            thi_truong.equity.quote(
+                symbol=ma_co_phieu
+            )
         )
 
         if du_lieu is None:
@@ -522,12 +518,12 @@ def load_current_quote(ma_co_phieu):
 
         ket_qua = {}
 
-        for cot in du_lieu.columns:
+        for ten_cot in du_lieu.columns:
 
-            gia_tri = dong_cuoi[cot]
+            gia_tri = dong_cuoi[ten_cot]
 
             if pd.notna(gia_tri):
-                ket_qua[cot] = gia_tri
+                ket_qua[ten_cot] = gia_tri
 
         return ket_qua
 
@@ -536,44 +532,7 @@ def load_current_quote(ma_co_phieu):
 
 
 # ============================================================
-# LẤY TỔNG HỢP CỔ PHIẾU
-# ============================================================
-
-def load_stock_summary(ma_co_phieu):
-
-    ma_co_phieu = normalize_symbol(
-        ma_co_phieu
-    )
-
-    try:
-
-        du_lieu = (
-            _thi_truong
-            .equity(ma_co_phieu)
-            .summary()
-        )
-
-        if du_lieu is None:
-            return pd.DataFrame()
-
-        if not isinstance(
-            du_lieu,
-            pd.DataFrame
-        ):
-            du_lieu = pd.DataFrame(
-                du_lieu
-            )
-
-        return _normalize_columns(
-            du_lieu
-        )
-
-    except Exception:
-        return pd.DataFrame()
-
-
-# ============================================================
-# DỮ LIỆU CHỈ SỐ VN-INDEX
+# LẤY VN-INDEX
 # ============================================================
 
 def load_vnindex_data():
@@ -581,16 +540,18 @@ def load_vnindex_data():
     try:
 
         du_lieu = (
-            _thi_truong
-            .index("VNINDEX")
-            .ohlcv(
+            thi_truong.index.ohlcv(
+                symbol="VNINDEX",
                 start=(
                     datetime.now() -
-                    timedelta(days=30)
-                ).strftime("%Y-%m-%d"),
+                    timedelta(days=60)
+                ).strftime(
+                    "%Y-%m-%d"
+                ),
                 end=datetime.now().strftime(
                     "%Y-%m-%d"
                 ),
+                interval="1D"
             )
         )
 
@@ -605,44 +566,19 @@ def load_vnindex_data():
                 du_lieu
             )
 
-        return _normalize_columns(
+        du_lieu = _normalize_columns(
             du_lieu
         )
 
+        du_lieu = _normalize_price(
+            du_lieu
+        )
+
+        du_lieu = add_indicators(
+            du_lieu
+        )
+
+        return du_lieu
+
     except Exception:
         return pd.DataFrame()
-
-
-# ============================================================
-# LẤY TOÀN BỘ DỮ LIỆU NGHIÊN CỨU
-# ============================================================
-
-def load_full_stock_data(
-    ma_co_phieu
-):
-
-    du_lieu_lich_su = load_market_data(
-        ma_co_phieu
-    )
-
-    du_lieu_hien_tai = (
-        load_current_quote(
-            ma_co_phieu
-        )
-    )
-
-    du_lieu_tong_hop = (
-        load_stock_summary(
-            ma_co_phieu
-        )
-    )
-
-    return {
-        "ma_co_phieu": normalize_symbol(
-            ma_co_phieu
-        ),
-        "lich_su": du_lieu_lich_su,
-        "hien_tai": du_lieu_hien_tai,
-        "tong_hop": du_lieu_tong_hop,
-    }
-```
