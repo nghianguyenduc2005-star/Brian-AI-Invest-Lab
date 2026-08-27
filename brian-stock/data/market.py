@@ -1,114 +1,85 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
-from urllib.parse import quote
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+
+# ============================================================
+# Vnstock 4.x
+# ============================================================
+
 try:
-    import feedparser
+    from vnstock import Market
+
+    THI_TRUONG_VNSTOCK = Market()
+
 except Exception:
-    feedparser = None
+    THI_TRUONG_VNSTOCK = None
 
 
 # ============================================================
-# CẤU HÌNH
+# TIỆN ÍCH
 # ============================================================
 
-THOI_GIAN_LUU_DU_LIEU = 300
-THOI_GIAN_LUU_TIN = 600
+def normalize_symbol(symbol: str) -> str:
 
-
-# ============================================================
-# CHUẨN HÓA MÃ
-# ============================================================
-
-def normalize_symbol(ma):
-    if ma is None:
+    if symbol is None:
         return "HPG"
 
-    ma = str(ma).strip().upper()
-    ma = re.sub(r"\s+", "", ma)
+    symbol = str(symbol).strip().upper()
 
-    if not ma:
+    symbol = re.sub(
+        r"\s+",
+        "",
+        symbol,
+    )
+
+    if not symbol:
         return "HPG"
 
-    return ma
+    return symbol
 
 
-def display_symbol(ma):
-    if ma is None:
+def display_symbol(symbol: str) -> str:
+
+    if symbol is None:
         return ""
 
-    ma = str(ma).strip().upper()
+    symbol = str(symbol).strip().upper()
 
-    if ma.endswith(".VN"):
-        ma = ma[:-3]
+    if symbol.endswith(".VN"):
+        symbol = symbol[:-3]
 
-    return ma
-
-
-def _tao_danh_sach_mã(ma):
-    ma = normalize_symbol(ma)
-
-    danh_sach = []
-
-    if ma.endswith(".VN"):
-        ma_goc = ma[:-3]
-
-        danh_sach.append(ma)
-
-        if ma_goc:
-            danh_sach.append(ma_goc)
-
-    else:
-        if re.fullmatch(r"[A-Z0-9]{2,5}", ma):
-            danh_sach.append(f"{ma}.VN")
-
-        danh_sach.append(ma)
-
-    ket_qua = []
-
-    for gia_tri in danh_sach:
-        if gia_tri not in ket_qua:
-            ket_qua.append(gia_tri)
-
-    return ket_qua
+    return symbol
 
 
-# ============================================================
-# CHUẨN HÓA PERIOD
-# ============================================================
+def _so(value, mac_dinh=np.nan):
 
-def _chuan_hoa_khoang_thoi_gian(khoang):
-    if khoang is None:
-        return "1y"
+    try:
+        value = float(value)
 
-    khoang = str(khoang).strip().lower()
+        if pd.isna(value):
+            return mac_dinh
 
-    cac_khoang_hop_le = {
-        "1d",
-        "5d",
-        "1mo",
-        "3mo",
-        "6mo",
-        "1y",
-        "2y",
-        "5y",
-        "10y",
-        "ytd",
-        "max",
-    }
+        return value
 
-    if khoang not in cac_khoang_hop_le:
-        return "1y"
+    except Exception:
+        return mac_dinh
 
-    return khoang
+
+def _tach_ma_viet_nam(symbol):
+
+    symbol = normalize_symbol(symbol)
+
+    if symbol.endswith(".VN"):
+        return symbol[:-3]
+
+    return symbol
 
 
 # ============================================================
@@ -116,66 +87,79 @@ def _chuan_hoa_khoang_thoi_gian(khoang):
 # ============================================================
 
 def rsi(
-    chuoi_gia,
-    chu_ky=14,
+    series: pd.Series,
+    period: int = 14,
 ):
-    chu_ky = int(chu_ky)
 
-    thay_doi = chuoi_gia.diff()
-
-    tang = thay_doi.clip(lower=0)
-    giam = -thay_doi.clip(upper=0)
-
-    trung_binh_tang = tang.ewm(
-        alpha=1 / chu_ky,
-        adjust=False,
-        min_periods=chu_ky,
-    ).mean()
-
-    trung_binh_giam = giam.ewm(
-        alpha=1 / chu_ky,
-        adjust=False,
-        min_periods=chu_ky,
-    ).mean()
-
-    ti_so = (
-        trung_binh_tang
-        / trung_binh_giam.replace(0, np.nan)
+    series = pd.to_numeric(
+        series,
+        errors="coerce",
     )
 
-    ket_qua = 100 - (
-        100 / (1 + ti_so)
+    delta = series.diff()
+
+    gain = delta.clip(
+        lower=0
     )
 
-    ket_qua = ket_qua.where(
+    loss = -delta.clip(
+        upper=0
+    )
+
+    avg_gain = gain.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period,
+    ).mean()
+
+    avg_loss = loss.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period,
+    ).mean()
+
+    rs = (
+        avg_gain
+        / avg_loss.replace(
+            0,
+            np.nan,
+        )
+    )
+
+    result = 100 - (
+        100 / (1 + rs)
+    )
+
+    result = result.where(
         ~(
-            (trung_binh_giam == 0)
-            & (trung_binh_tang > 0)
+            (avg_loss == 0)
+            & (avg_gain > 0)
         ),
         100,
     )
 
-    ket_qua = ket_qua.where(
+    result = result.where(
         ~(
-            (trung_binh_giam == 0)
-            & (trung_binh_tang == 0)
+            (avg_loss == 0)
+            & (avg_gain == 0)
         ),
         50,
     )
 
-    return ket_qua
+    return result
 
 
 # ============================================================
-# CHUẨN HÓA DATAFRAME
+# CHUẨN HÓA OHLCV
 # ============================================================
 
-def _chuan_hoa_bang_gia(
+def _chuan_hoa_ohlcv(
     du_lieu,
 ):
+
     if du_lieu is None:
         raise ValueError(
-            "Nguồn dữ liệu không trả về dữ liệu."
+            "Nguồn dữ liệu trả về rỗng."
         )
 
     if not isinstance(
@@ -188,7 +172,7 @@ def _chuan_hoa_bang_gia(
 
     if du_lieu.empty:
         raise ValueError(
-            "Nguồn dữ liệu trả về bảng rỗng."
+            "Nguồn dữ liệu không có dữ liệu."
         )
 
     du_lieu = du_lieu.copy()
@@ -202,44 +186,24 @@ def _chuan_hoa_bang_gia(
         pd.MultiIndex,
     ):
 
-        muc_can_dung = None
-
-        for so_muc in range(
+        for cap in range(
             du_lieu.columns.nlevels
         ):
 
-            tap_cac_ten = {
+            ten_cot = {
                 str(x).strip().lower()
                 for x in du_lieu.columns
-                .get_level_values(so_muc)
+                .get_level_values(cap)
             }
 
-            if "close" in tap_cac_ten:
-                muc_can_dung = so_muc
+            if "close" in ten_cot:
+
+                du_lieu.columns = (
+                    du_lieu.columns
+                    .get_level_values(cap)
+                )
+
                 break
-
-        if muc_can_dung is not None:
-
-            du_lieu.columns = (
-                du_lieu.columns
-                .get_level_values(
-                    muc_can_dung
-                )
-            )
-
-        else:
-
-            du_lieu.columns = [
-                (
-                    str(cot[-1])
-                    if isinstance(
-                        cot,
-                        tuple,
-                    )
-                    else str(cot)
-                )
-                for cot in du_lieu.columns
-            ]
 
     # --------------------------------------------------------
     # Chuẩn hóa tên cột
@@ -251,37 +215,88 @@ def _chuan_hoa_bang_gia(
 
         ten = str(cot).strip().lower()
 
-        if ten == "open":
+        if ten in [
+            "time",
+            "date",
+            "datetime",
+            "timestamp",
+        ]:
+            anh_xa[cot] = "Time"
+
+        elif ten in [
+            "open",
+            "open_price",
+        ]:
             anh_xa[cot] = "Open"
 
-        elif ten == "high":
+        elif ten in [
+            "high",
+            "high_price",
+        ]:
             anh_xa[cot] = "High"
 
-        elif ten == "low":
+        elif ten in [
+            "low",
+            "low_price",
+        ]:
             anh_xa[cot] = "Low"
 
-        elif ten == "close":
+        elif ten in [
+            "close",
+            "close_price",
+        ]:
             anh_xa[cot] = "Close"
 
         elif ten in [
-            "adj close",
-            "adj_close",
-            "adjusted close",
+            "volume",
+            "total_volume",
         ]:
-            anh_xa[cot] = "Adj Close"
-
-        elif ten == "volume":
             anh_xa[cot] = "Volume"
+
+        elif ten in [
+            "value",
+            "value_traded",
+            "trading_value",
+        ]:
+            anh_xa[cot] = "Value"
 
     du_lieu = du_lieu.rename(
         columns=anh_xa
     )
 
     # --------------------------------------------------------
-    # Kiểm tra cột
+    # Một số nguồn không trả Time mà dùng index
     # --------------------------------------------------------
 
-    cac_cot_bat_buoc = [
+    if "Time" in du_lieu.columns:
+
+        du_lieu["Time"] = pd.to_datetime(
+            du_lieu["Time"],
+            errors="coerce",
+        )
+
+        du_lieu = du_lieu.set_index(
+            "Time"
+        )
+
+    else:
+
+        du_lieu.index = pd.to_datetime(
+            du_lieu.index,
+            errors="coerce",
+        )
+
+    du_lieu = du_lieu[
+        ~du_lieu.index.isna()
+    ].copy()
+
+    du_lieu = du_lieu.sort_index()
+
+    # --------------------------------------------------------
+    # Kiểm tra OHLCV
+    # --------------------------------------------------------
+
+    bat_buoc = [
         "Open",
         "High",
         "Low",
@@ -291,47 +306,26 @@ def _chuan_hoa_bang_gia(
 
     thieu = [
         cot
-        for cot in cac_cot_bat_buoc
+        for cot in bat_buoc
         if cot not in du_lieu.columns
     ]
 
     if thieu:
         raise ValueError(
-            "Thiếu cột dữ liệu: "
+            "Thiếu cột: "
             + ", ".join(thieu)
         )
 
     # --------------------------------------------------------
-    # Ép kiểu
+    # Ép kiểu số
     # --------------------------------------------------------
 
-    for cot in cac_cot_bat_buoc:
+    for cot in bat_buoc:
 
         du_lieu[cot] = pd.to_numeric(
             du_lieu[cot],
             errors="coerce",
         )
-
-    # --------------------------------------------------------
-    # Thời gian
-    # --------------------------------------------------------
-
-    du_lieu.index = pd.to_datetime(
-        du_lieu.index,
-        errors="coerce",
-    )
-
-    du_lieu = du_lieu[
-        ~du_lieu.index.isna()
-    ].copy()
-
-    du_lieu = du_lieu.sort_index()
-
-    du_lieu = du_lieu[
-        ~du_lieu.index.duplicated(
-            keep="last"
-        )
-    ].copy()
 
     du_lieu = du_lieu.dropna(
         subset=["Close"]
@@ -339,33 +333,63 @@ def _chuan_hoa_bang_gia(
 
     if du_lieu.empty:
         raise ValueError(
-            "Không còn dữ liệu giá hợp lệ."
+            "Không có giá đóng cửa hợp lệ."
         )
+
+    # --------------------------------------------------------
+    # Đơn vị giá
+    #
+    # Một số nguồn trả 22.05 thay vì 22,050.
+    # Cổ phiếu VN thường hiển thị theo đồng.
+    # --------------------------------------------------------
+
+    trung_binh_gia = _so(
+        du_lieu["Close"].median(),
+        np.nan,
+    )
+
+    if (
+        not np.isnan(trung_binh_gia)
+        and trung_binh_gia < 1000
+        and trung_binh_gia > 0
+    ):
+
+        for cot in [
+            "Open",
+            "High",
+            "Low",
+            "Close",
+        ]:
+
+            du_lieu[cot] = (
+                du_lieu[cot] * 1000
+            )
 
     return du_lieu
 
 
 # ============================================================
-# THÊM CHỈ BÁO
+# CHỈ BÁO
 # ============================================================
 
 def add_indicators(
     du_lieu,
 ):
-    du_lieu = _chuan_hoa_bang_gia(
+
+    du_lieu = _chuan_hoa_ohlcv(
         du_lieu
     )
 
     du_lieu = du_lieu.copy()
 
-    gia_dong = du_lieu["Close"]
+    gia = du_lieu["Close"]
 
     # --------------------------------------------------------
-    # LỢI SUẤT
+    # Return
     # --------------------------------------------------------
 
     du_lieu["Return"] = (
-        gia_dong.pct_change()
+        gia.pct_change()
     )
 
     du_lieu["ReturnPct"] = (
@@ -377,7 +401,7 @@ def add_indicators(
     # --------------------------------------------------------
 
     du_lieu["RSI"] = rsi(
-        gia_dong,
+        gia,
         14,
     )
 
@@ -386,7 +410,7 @@ def add_indicators(
     # --------------------------------------------------------
 
     du_lieu["EMA9"] = (
-        gia_dong
+        gia
         .ewm(
             span=9,
             adjust=False,
@@ -395,7 +419,7 @@ def add_indicators(
     )
 
     du_lieu["EMA12"] = (
-        gia_dong
+        gia
         .ewm(
             span=12,
             adjust=False,
@@ -404,7 +428,7 @@ def add_indicators(
     )
 
     du_lieu["EMA20"] = (
-        gia_dong
+        gia
         .ewm(
             span=20,
             adjust=False,
@@ -413,7 +437,7 @@ def add_indicators(
     )
 
     du_lieu["EMA26"] = (
-        gia_dong
+        gia
         .ewm(
             span=26,
             adjust=False,
@@ -422,7 +446,7 @@ def add_indicators(
     )
 
     du_lieu["EMA50"] = (
-        gia_dong
+        gia
         .ewm(
             span=50,
             adjust=False,
@@ -435,39 +459,27 @@ def add_indicators(
     # --------------------------------------------------------
 
     du_lieu["SMA5"] = (
-        gia_dong
-        .rolling(5)
-        .mean()
+        gia.rolling(5).mean()
     )
 
     du_lieu["SMA10"] = (
-        gia_dong
-        .rolling(10)
-        .mean()
+        gia.rolling(10).mean()
     )
 
     du_lieu["SMA20"] = (
-        gia_dong
-        .rolling(20)
-        .mean()
+        gia.rolling(20).mean()
     )
 
     du_lieu["SMA50"] = (
-        gia_dong
-        .rolling(50)
-        .mean()
+        gia.rolling(50).mean()
     )
 
     du_lieu["SMA100"] = (
-        gia_dong
-        .rolling(100)
-        .mean()
+        gia.rolling(100).mean()
     )
 
     du_lieu["SMA200"] = (
-        gia_dong
-        .rolling(200)
-        .mean()
+        gia.rolling(200).mean()
     )
 
     # --------------------------------------------------------
@@ -498,7 +510,7 @@ def add_indicators(
     # --------------------------------------------------------
 
     do_lech = (
-        gia_dong
+        gia
         .rolling(20)
         .std()
     )
@@ -517,26 +529,9 @@ def add_indicators(
         - 2 * do_lech
     )
 
-    du_lieu["Bollinger_Width"] = (
-        (
-            du_lieu["Bollinger_Upper"]
-            - du_lieu["Bollinger_Lower"]
-        )
-        / du_lieu["Bollinger_Mid"]
-        * 100
-    )
-
     # --------------------------------------------------------
     # BIẾN ĐỘNG
     # --------------------------------------------------------
-
-    du_lieu["Volatility5"] = (
-        du_lieu["Return"]
-        .rolling(5)
-        .std()
-        * np.sqrt(252)
-        * 100
-    )
 
     du_lieu["Volatility20"] = (
         du_lieu["Return"]
@@ -546,38 +541,21 @@ def add_indicators(
         * 100
     )
 
-    du_lieu["Volatility60"] = (
+    du_lieu["Volatility5"] = (
         du_lieu["Return"]
-        .rolling(60)
+        .rolling(5)
         .std()
         * np.sqrt(252)
         * 100
-    )
-
-    du_lieu["Volatility_20D"] = (
-        du_lieu["Volatility20"]
-        / 100
     )
 
     # --------------------------------------------------------
     # KHỐI LƯỢNG
     # --------------------------------------------------------
 
-    du_lieu["Volume_SMA5"] = (
-        du_lieu["Volume"]
-        .rolling(5)
-        .mean()
-    )
-
     du_lieu["Volume_SMA20"] = (
         du_lieu["Volume"]
         .rolling(20)
-        .mean()
-    )
-
-    du_lieu["Volume_SMA50"] = (
-        du_lieu["Volume"]
-        .rolling(50)
         .mean()
     )
 
@@ -592,7 +570,7 @@ def add_indicators(
     )
 
     # --------------------------------------------------------
-    # BIÊN ĐỘ
+    # RANGE
     # --------------------------------------------------------
 
     du_lieu["Range"] = (
@@ -610,32 +588,32 @@ def add_indicators(
     # ATR
     # --------------------------------------------------------
 
-    bien_1 = (
+    phan_1 = (
         du_lieu["High"]
         - du_lieu["Low"]
     )
 
-    bien_2 = (
+    phan_2 = (
         du_lieu["High"]
         - du_lieu["Close"].shift(1)
     ).abs()
 
-    bien_3 = (
+    phan_3 = (
         du_lieu["Low"]
         - du_lieu["Close"].shift(1)
     ).abs()
 
-    bien_that = pd.concat(
+    bien_do_that = pd.concat(
         [
-            bien_1,
-            bien_2,
-            bien_3,
+            phan_1,
+            phan_2,
+            phan_3,
         ],
         axis=1,
     ).max(axis=1)
 
     du_lieu["ATR14"] = (
-        bien_that
+        bien_do_that
         .rolling(14)
         .mean()
     )
@@ -645,20 +623,20 @@ def add_indicators(
     # --------------------------------------------------------
 
     du_lieu["Momentum5"] = (
-        gia_dong
-        / gia_dong.shift(5)
+        gia
+        / gia.shift(5)
         - 1
     )
 
     du_lieu["Momentum10"] = (
-        gia_dong
-        / gia_dong.shift(10)
+        gia
+        / gia.shift(10)
         - 1
     )
 
     du_lieu["Momentum20"] = (
-        gia_dong
-        / gia_dong.shift(20)
+        gia
+        / gia.shift(20)
         - 1
     )
 
@@ -703,39 +681,24 @@ def add_indicators(
     )
 
     # --------------------------------------------------------
-    # KHOẢNG CÁCH ĐỈNH ĐÁY
+    # TỶ LỆ VỊ TRÍ
     # --------------------------------------------------------
 
-    du_lieu["Distance_From_High20"] = (
-        (
-            gia_dong
-            / du_lieu["High20"]
-            - 1
-        ) * 100
+    bien_20 = (
+        du_lieu["High20"]
+        - du_lieu["Low20"]
+    ).replace(
+        0,
+        np.nan,
     )
 
-    du_lieu["Distance_From_Low20"] = (
+    du_lieu["Position20"] = (
         (
-            gia_dong
-            / du_lieu["Low20"]
-            - 1
-        ) * 100
-    )
-
-    du_lieu["Distance_From_High252"] = (
-        (
-            gia_dong
-            / du_lieu["High252"]
-            - 1
-        ) * 100
-    )
-
-    du_lieu["Distance_From_Low252"] = (
-        (
-            gia_dong
-            / du_lieu["Low252"]
-            - 1
-        ) * 100
+            gia
+            - du_lieu["Low20"]
+        )
+        / bien_20
+        * 100
     )
 
     # --------------------------------------------------------
@@ -743,12 +706,12 @@ def add_indicators(
     # --------------------------------------------------------
 
     du_lieu["Above_SMA20"] = (
-        gia_dong
+        gia
         > du_lieu["SMA20"]
     )
 
     du_lieu["Above_SMA50"] = (
-        gia_dong
+        gia
         > du_lieu["SMA50"]
     )
 
@@ -762,10 +725,6 @@ def add_indicators(
         > du_lieu["SMA200"]
     )
 
-    # --------------------------------------------------------
-    # LÀM SẠCH
-    # --------------------------------------------------------
-
     du_lieu = du_lieu.replace(
         [np.inf, -np.inf],
         np.nan,
@@ -775,148 +734,139 @@ def add_indicators(
 
 
 # ============================================================
-# TẢI DỮ LIỆU YAHOO
+# LẤY DỮ LIỆU CỔ PHIẾU BẰNG VNSTOCK
 # ============================================================
 
-def _tai_yahoo(
-    mã,
-    khoang_thoi_gian="1y",
-):
-
-    khoang_thoi_gian = (
-        _chuan_hoa_khoang_thoi_gian(
-            khoang_thoi_gian
-        )
-    )
-
-    loi_cuoi = None
-
-    # --------------------------------------------------------
-    # Cách 1
-    # --------------------------------------------------------
-
-    try:
-
-        doi_tuong = yf.Ticker(
-            mã
-        )
-
-        du_lieu = doi_tuong.history(
-            period=khoang_thoi_gian,
-            interval="1d",
-            auto_adjust=False,
-            actions=False,
-        )
-
-        if (
-            isinstance(
-                du_lieu,
-                pd.DataFrame,
-            )
-            and not du_lieu.empty
-        ):
-
-            return _chuan_hoa_bang_gia(
-                du_lieu
-            )
-
-    except Exception as loi:
-        loi_cuoi = loi
-
-    # --------------------------------------------------------
-    # Cách 2
-    # --------------------------------------------------------
-
-    try:
-
-        du_lieu = yf.download(
-            mã,
-            period=khoang_thoi_gian,
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            threads=False,
-        )
-
-        if (
-            isinstance(
-                du_lieu,
-                pd.DataFrame,
-            )
-            and not du_lieu.empty
-        ):
-
-            return _chuan_hoa_bang_gia(
-                du_lieu
-            )
-
-    except Exception as loi:
-        loi_cuoi = loi
-
-    if loi_cuoi:
-
-        raise ValueError(
-            f"Lỗi nguồn dữ liệu {mã}: "
-            f"{loi_cuoi}"
-        )
-
-    raise ValueError(
-        f"Không tìm thấy dữ liệu {mã}."
-    )
-
-
-# ============================================================
-# DỮ LIỆU CỔ PHIẾU
-# ============================================================
-
-@st.cache_data(
-    ttl=THOI_GIAN_LUU_DU_LIEU,
-    show_spinner=False,
-)
-def load_market_data(
+def _lay_co_phieu_vnstock(
     symbol,
     period="1y",
 ):
 
-    mã = normalize_symbol(
+    if THI_TRUONG_VNSTOCK is None:
+        raise RuntimeError(
+            "Không khởi tạo được Vnstock Market."
+        )
+
+    ma = _tach_ma_viet_nam(
         symbol
     )
 
-    danh_sach_mã = _tao_danh_sach_mã(
-        mã
+    # Vnstock v4 Unified UI:
+    # market.equity.ohlcv(...)
+    #
+    # Dùng length để tránh tự xử lý timedelta.
+
+    anh_xa_period = {
+        "1d": "1D",
+        "5d": "5D",
+        "1mo": "1M",
+        "3mo": "3M",
+        "6mo": "6M",
+        "1y": "1Y",
+        "2y": "2Y",
+        "5y": "5Y",
+        "10y": "10Y",
+        "max": "MAX",
+    }
+
+    period = str(
+        period
+    ).strip().lower()
+
+    length = anh_xa_period.get(
+        period,
+        "1Y",
+    )
+
+    du_lieu = (
+        THI_TRUONG_VNSTOCK
+        .equity
+        .ohlcv(
+            symbol=ma,
+            length=length,
+            interval="1D",
+        )
+    )
+
+    return _chuan_hoa_ohlcv(
+        du_lieu
+    )
+
+
+# ============================================================
+# FALLBACK YAHOO
+# ============================================================
+
+def _lay_co_phieu_yahoo(
+    symbol,
+    period="1y",
+):
+
+    danh_sach = []
+
+    symbol = normalize_symbol(
+        symbol
+    )
+
+    if symbol.endswith(".VN"):
+
+        danh_sach.append(
+            symbol
+        )
+
+        goc = symbol[:-3]
+
+        if goc:
+            danh_sach.append(
+                goc
+            )
+
+    else:
+
+        if re.fullmatch(
+            r"[A-Z0-9]{2,5}",
+            symbol,
+        ):
+            danh_sach.append(
+                f"{symbol}.VN"
+            )
+
+        danh_sach.append(
+            symbol
+        )
+
+    danh_sach = list(
+        dict.fromkeys(
+            danh_sach
+        )
     )
 
     loi = []
 
-    for ticker in danh_sach_mã:
+    for ticker in danh_sach:
 
         try:
 
-            du_lieu_tho = _tai_yahoo(
-                ticker,
-                period,
-            )
-
-            du_lieu = add_indicators(
-                du_lieu_tho
-            )
-
-            if du_lieu.empty:
-                continue
-
-            du_lieu.attrs["symbol"] = (
+            du_lieu = yf.Ticker(
                 ticker
+            ).history(
+                period=str(period),
+                interval="1d",
+                auto_adjust=False,
+                actions=False,
             )
 
-            du_lieu.attrs["display_symbol"] = (
-                display_symbol(ticker)
-            )
+            if (
+                isinstance(
+                    du_lieu,
+                    pd.DataFrame,
+                )
+                and not du_lieu.empty
+            ):
 
-            du_lieu.attrs["source"] = (
-                "Yahoo Finance"
-            )
-
-            return du_lieu
+                return _chuan_hoa_ohlcv(
+                    du_lieu
+                )
 
         except Exception as exc:
 
@@ -924,13 +874,119 @@ def load_market_data(
                 f"{ticker}: {exc}"
             )
 
-    chi_tiet = " | ".join(loi)
+        try:
+
+            du_lieu = yf.download(
+                ticker,
+                period=str(period),
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+                threads=False,
+            )
+
+            if (
+                isinstance(
+                    du_lieu,
+                    pd.DataFrame,
+                )
+                and not du_lieu.empty
+            ):
+
+                return _chuan_hoa_ohlcv(
+                    du_lieu
+                )
+
+        except Exception as exc:
+
+            loi.append(
+                f"{ticker}: {exc}"
+            )
 
     raise ValueError(
-        f"Không lấy được dữ liệu "
-        f"{display_symbol(mã)}. "
-        f"{chi_tiet}"
+        "Không lấy được dữ liệu cổ phiếu. "
+        + " | ".join(loi)
     )
+
+
+# ============================================================
+# HÀM CHÍNH LẤY DỮ LIỆU CỔ PHIẾU
+# ============================================================
+
+@st.cache_data(
+    ttl=300,
+    show_spinner=False,
+)
+def load_market_data(
+    symbol,
+    period="1y",
+):
+
+    symbol = normalize_symbol(
+        symbol
+    )
+
+    period = str(
+        period
+    ).strip().lower()
+
+    # --------------------------------------------------------
+    # Ưu tiên Vnstock cho chứng khoán Việt Nam
+    # --------------------------------------------------------
+
+    if (
+        re.fullmatch(
+            r"[A-Z0-9]{2,5}(\.VN)?",
+            symbol,
+        )
+        and THI_TRUONG_VNSTOCK is not None
+    ):
+
+        try:
+
+            du_lieu = _lay_co_phieu_vnstock(
+                symbol,
+                period,
+            )
+
+            du_lieu = add_indicators(
+                du_lieu
+            )
+
+            du_lieu.attrs["symbol"] = (
+                _tach_ma_viet_nam(
+                    symbol
+                )
+            )
+
+            du_lieu.attrs["source"] = (
+                "Vnstock"
+            )
+
+            return du_lieu
+
+        except Exception:
+            pass
+
+    # --------------------------------------------------------
+    # Fallback Yahoo
+    # --------------------------------------------------------
+
+    du_lieu = _lay_co_phieu_yahoo(
+        symbol,
+        period,
+    )
+
+    du_lieu = add_indicators(
+        du_lieu
+    )
+
+    du_lieu.attrs["symbol"] = symbol
+    du_lieu.attrs["source"] = (
+        "Yahoo Finance"
+    )
+
+    return du_lieu
 
 
 # ============================================================
@@ -938,206 +994,194 @@ def load_market_data(
 # ============================================================
 
 @st.cache_data(
-    ttl=THOI_GIAN_LUU_DU_LIEU,
+    ttl=60,
     show_spinner=False,
 )
 def load_vnindex_data():
 
-    # Yahoo sử dụng mã này cho VN-INDEX
-    danh_sach_chi_so = [
-        "^VNINDEX",
-        "VNINDEX.VN",
-        "VNINDEX",
-    ]
+    if THI_TRUONG_VNSTOCK is None:
+
+        raise RuntimeError(
+            "Không khởi tạo được Vnstock Market."
+        )
 
     loi = []
 
-    for mã in danh_sach_chi_so:
+    # ========================================================
+    # Vnstock v4
+    # ========================================================
 
-        try:
+    try:
 
-            du_lieu = _tai_yahoo(
-                mã,
-                "1y",
+        du_lieu = (
+            THI_TRUONG_VNSTOCK
+            .index(
+                "VNINDEX"
             )
+            .ohlcv(
+                length="1Y",
+                interval="1D",
+            )
+        )
 
-            if du_lieu.empty:
-                continue
+        if (
+            du_lieu is not None
+            and not du_lieu.empty
+        ):
+
+            du_lieu = _chuan_hoa_ohlcv(
+                du_lieu
+            )
 
             du_lieu = add_indicators(
                 du_lieu
             )
 
-            if du_lieu.empty:
-                continue
-
             du_lieu.attrs["symbol"] = (
-                "VN-INDEX"
+                "VNINDEX"
             )
 
             du_lieu.attrs["source"] = (
-                "Yahoo Finance"
+                "Vnstock"
             )
 
             return du_lieu
 
-        except Exception as exc:
+    except Exception as exc:
 
-            loi.append(
-                f"{mã}: {exc}"
+        loi.append(
+            f"Vnstock index: {exc}"
+        )
+
+    # ========================================================
+    # Fallback: API Quote cũ / index quote
+    # ========================================================
+
+    try:
+
+        from vnstock.api.quote import (
+            Quote,
+        )
+
+        # Không dùng cho VNINDEX nếu nguồn hiện tại
+        # không xác nhận hỗ trợ; chỉ thử nếu khả dụng.
+
+        quote = Quote(
+            symbol="VNINDEX",
+            source="VCI",
+        )
+
+        du_lieu = quote.history(
+            length="1Y",
+            interval="1D",
+        )
+
+        if (
+            du_lieu is not None
+            and not du_lieu.empty
+        ):
+
+            du_lieu = _chuan_hoa_ohlcv(
+                du_lieu
             )
 
-    chi_tiet = " | ".join(loi)
+            du_lieu = add_indicators(
+                du_lieu
+            )
+
+            du_lieu.attrs["symbol"] = (
+                "VNINDEX"
+            )
+
+            du_lieu.attrs["source"] = (
+                "Vnstock Quote"
+            )
+
+            return du_lieu
+
+    except Exception as exc:
+
+        loi.append(
+            f"Vnstock Quote: {exc}"
+        )
 
     raise ValueError(
-        "Không lấy được dữ liệu VN-INDEX. "
-        + chi_tiet
+        "Không lấy được VN-INDEX. "
+        + " | ".join(loi)
     )
 
 
 # ============================================================
-# GIÁ HIỆN TẠI
+# GIÁ MỚI NHẤT
 # ============================================================
 
 @st.cache_data(
-    ttl=60,
+    ttl=30,
     show_spinner=False,
 )
 def load_latest_price(
     symbol,
 ):
 
-    mã = normalize_symbol(
-        symbol
-    )
+    try:
 
-    for ticker in _tao_danh_sach_mã(
-        mã
-    ):
+        du_lieu = load_market_data(
+            symbol,
+            "5d",
+        )
 
-        try:
+        if du_lieu.empty:
+            return {}
 
-            du_lieu = _tai_yahoo(
-                ticker,
-                "5d",
+        gia = _so(
+            du_lieu["Close"].iloc[-1],
+            np.nan,
+        )
+
+        if len(du_lieu) >= 2:
+
+            gia_truoc = _so(
+                du_lieu["Close"].iloc[-2],
+                np.nan,
             )
 
-            if du_lieu.empty:
-                continue
+        else:
+            gia_truoc = gia
 
-            gia_moi = float(
-                du_lieu["Close"]
-                .dropna()
-                .iloc[-1]
-            )
+        if (
+            not np.isnan(gia)
+            and not np.isnan(gia_truoc)
+            and gia_truoc != 0
+        ):
 
-            if len(du_lieu) >= 2:
+            thay_doi = (
+                gia
+                / gia_truoc
+                - 1
+            ) * 100
 
-                gia_truoc = float(
-                    du_lieu["Close"]
-                    .dropna()
-                    .iloc[-2]
-                )
+        else:
 
-            else:
-                gia_truoc = gia_moi
+            thay_doi = np.nan
 
-            if gia_truoc != 0:
+        khoi_luong = _so(
+            du_lieu["Volume"].iloc[-1],
+            0,
+        )
 
-                thay_doi = (
-                    gia_moi
-                    / gia_truoc
-                    - 1
-                ) * 100
+        return {
+            "ma": display_symbol(
+                symbol
+            ),
+            "gia": gia,
+            "thay_doi": thay_doi,
+            "khoi_luong": khoi_luong,
+            "thoi_gian": du_lieu.index[-1],
+        }
 
-            else:
-                thay_doi = 0.0
+    except Exception:
 
-            khoi_luong = 0
-
-            if "Volume" in du_lieu.columns:
-
-                try:
-                    khoi_luong = int(
-                        du_lieu[
-                            "Volume"
-                        ]
-                        .iloc[-1]
-                    )
-                except Exception:
-                    khoi_luong = 0
-
-            return {
-                "ma": display_symbol(
-                    ticker
-                ),
-                "gia": gia_moi,
-                "thay_doi": thay_doi,
-                "khoi_luong": khoi_luong,
-                "thoi_gian": du_lieu.index[-1],
-            }
-
-        except Exception:
-            continue
-
-    return {}
-
-
-# ============================================================
-# THÔNG TIN DOANH NGHIỆP
-# ============================================================
-
-@st.cache_data(
-    ttl=1800,
-    show_spinner=False,
-)
-def load_company_info(
-    symbol,
-):
-
-    mã = normalize_symbol(
-        symbol
-    )
-
-    for ticker in _tao_danh_sach_mã(
-        mã
-    ):
-
-        try:
-
-            doi_tuong = yf.Ticker(
-                ticker
-            )
-
-            try:
-
-                thong_tin_nhanh = dict(
-                    doi_tuong.fast_info
-                )
-
-                if thong_tin_nhanh:
-                    return thong_tin_nhanh
-
-            except Exception:
-                pass
-
-            try:
-
-                thong_tin = doi_tuong.info
-
-                if isinstance(
-                    thong_tin,
-                    dict,
-                ):
-                    return thong_tin
-
-            except Exception:
-                pass
-
-        except Exception:
-            continue
-
-    return {}
+        return {}
 
 
 # ============================================================
@@ -1151,457 +1195,89 @@ def market_snapshot(
     if du_lieu is None or du_lieu.empty:
         return {}
 
-    dong_cuoi = du_lieu.iloc[-1]
+    cuoi = du_lieu.iloc[-1]
 
     if len(du_lieu) >= 2:
-        dong_truoc = du_lieu.iloc[-2]
+        truoc = du_lieu.iloc[-2]
     else:
-        dong_truoc = dong_cuoi
+        truoc = cuoi
 
-    try:
-        gia = float(
-            dong_cuoi["Close"]
-        )
-    except Exception:
-        gia = np.nan
+    gia = _so(
+        cuoi.get(
+            "Close"
+        ),
+        np.nan,
+    )
 
-    try:
-        gia_truoc = float(
-            dong_truoc["Close"]
-        )
+    gia_truoc = _so(
+        truoc.get(
+            "Close"
+        ),
+        np.nan,
+    )
 
-        thay_doi = (
-            gia / gia_truoc - 1
-        ) * 100
-
-    except Exception:
-        thay_doi = np.nan
-
-    def lay_so(
-        ten_cot,
+    if (
+        not np.isnan(gia)
+        and not np.isnan(gia_truoc)
+        and gia_truoc != 0
     ):
 
-        try:
+        thay_doi = (
+            gia
+            / gia_truoc
+            - 1
+        ) * 100
 
-            gia_tri = float(
-                dong_cuoi[ten_cot]
-            )
+    else:
 
-            if pd.isna(
-                gia_tri
-            ):
-                return np.nan
-
-            return gia_tri
-
-        except Exception:
-            return np.nan
+        thay_doi = np.nan
 
     return {
         "price": gia,
         "change_1d": thay_doi,
         "return_1d": (
-            lay_so("Return") * 100
+            _so(
+                cuoi.get(
+                    "Return"
+                ),
+                np.nan,
+            )
+            * 100
         ),
-        "rsi": lay_so("RSI"),
-        "macd": lay_so("MACD"),
-        "sma20": lay_so("SMA20"),
-        "sma50": lay_so("SMA50"),
-        "volatility20": lay_so(
-            "Volatility20"
+        "rsi": _so(
+            cuoi.get(
+                "RSI"
+            ),
+            np.nan,
         ),
-        "volume": lay_so("Volume"),
-    }
-
-
-# ============================================================
-# DANH SÁCH MÃ TỰ ĐỘNG
-# ============================================================
-
-@st.cache_data(
-    ttl=1800,
-    show_spinner=False,
-)
-def load_symbol_list():
-
-    ma = set()
-
-    try:
-
-        # Yahoo Finance không có endpoint chính thức
-        # trả toàn bộ mã Việt Nam.
-        #
-        # Vì vậy không bịa danh sách mã.
-        #
-        # Danh sách thực tế sẽ được chấp nhận tự động
-        # khi người dùng nhập mã.
-
-        return []
-
-    except Exception:
-        return []
-
-
-def is_valid_symbol(
-    symbol,
-):
-
-    mã = normalize_symbol(
-        symbol
-    )
-
-    if not mã:
-        return False
-
-    # Không khóa người dùng vào danh sách viết tay.
-    return True
-
-
-# ============================================================
-# TIN TỨC
-# ============================================================
-
-def _lam_sach_html(
-    chuoi,
-):
-
-    if chuoi is None:
-        return ""
-
-    chuoi = str(
-        chuoi
-    )
-
-    chuoi = re.sub(
-        r"<[^>]+>",
-        " ",
-        chuoi,
-    )
-
-    chuoi = re.sub(
-        r"\s+",
-        " ",
-        chuoi,
-    )
-
-    return chuoi.strip()
-
-
-def _chuyen_thoi_gian(
-    gia_tri,
-):
-
-    if not gia_tri:
-        return None
-
-    try:
-
-        if hasattr(
-            gia_tri,
-            "tm_year",
-        ):
-
-            return datetime(
-                gia_tri.tm_year,
-                gia_tri.tm_mon,
-                gia_tri.tm_mday,
-                gia_tri.tm_hour,
-                gia_tri.tm_min,
-                gia_tri.tm_sec,
-                tzinfo=timezone.utc,
-            )
-
-    except Exception:
-        pass
-
-    try:
-
-        ket_qua = (
-            parsedate_to_datetime(
-                str(gia_tri)
-            )
-        )
-
-        if ket_qua.tzinfo is None:
-
-            ket_qua = ket_qua.replace(
-                tzinfo=timezone.utc
-            )
-
-        return ket_qua
-
-    except Exception:
-        pass
-
-    try:
-
-        ket_qua = pd.to_datetime(
-            gia_tri,
-            utc=True,
-            errors="coerce",
-        )
-
-        if pd.isna(
-            ket_qua
-        ):
-            return None
-
-        return ket_qua.to_pydatetime()
-
-    except Exception:
-        return None
-
-
-@st.cache_data(
-    ttl=THOI_GIAN_LUU_TIN,
-    show_spinner=False,
-)
-def fetch_news(
-    symbol,
-    limit=8,
-):
-
-    try:
-        limit = int(
-            float(limit)
-        )
-    except Exception:
-        limit = 8
-
-    limit = max(
-        1,
-        min(
-            limit,
-            50,
+        "macd": _so(
+            cuoi.get(
+                "MACD"
+            ),
+            np.nan,
         ),
-    )
-
-    ma = display_symbol(
-        symbol
-    )
-
-    truy_van = quote(
-        f'"{ma}" cổ phiếu OR "{ma}" chứng khoán'
-    )
-
-    dia_chi = (
-        "https://news.google.com/rss/search?"
-        f"q={truy_van}"
-        "&hl=vi"
-        "&gl=VN"
-        "&ceid=VN:vi"
-    )
-
-    ket_qua = []
-
-    if feedparser is None:
-        return ket_qua
-
-    try:
-
-        bang_tin = feedparser.parse(
-            dia_chi
-        )
-
-        for muc in getattr(
-            bang_tin,
-            "entries",
-            [],
-        ):
-
-            tieu_de = _lam_sach_html(
-                muc.get(
-                    "title",
-                    "",
-                )
-            )
-
-            lien_ket = str(
-                muc.get(
-                    "link",
-                    "",
-                )
-            ).strip()
-
-            thoi_gian_goc = (
-                muc.get(
-                    "published",
-                    "",
-                )
-                or muc.get(
-                    "updated",
-                    "",
-                )
-            )
-
-            thoi_gian = _chuyen_thoi_gian(
-                thoi_gian_goc
-            )
-
-            if thoi_gian:
-
-                hien_thi_thoi_gian = (
-                    thoi_gian.astimezone()
-                    .strftime(
-                        "%d/%m/%Y %H:%M"
-                    )
-                )
-
-            else:
-
-                hien_thi_thoi_gian = str(
-                    thoi_gian_goc
-                )
-
-            nguon = "Google News"
-
-            try:
-
-                nguon = (
-                    muc.get(
-                        "source",
-                        {}
-                    ).get(
-                        "title",
-                        "Google News",
-                    )
-                    or "Google News"
-                )
-
-            except Exception:
-                nguon = "Google News"
-
-            tom_tat = _lam_sach_html(
-                muc.get(
-                    "summary",
-                    "",
-                )
-            )
-
-            if not tieu_de:
-                continue
-
-            ket_qua.append(
-                {
-                    "title": tieu_de,
-                    "link": lien_ket,
-                    "published": hien_thi_thoi_gian,
-                    "summary": tom_tat,
-                    "source": nguon,
-                }
-            )
-
-            if len(
-                ket_qua
-            ) >= limit:
-                break
-
-    except Exception:
-        return []
-
-    return ket_qua
-
-
-# ============================================================
-# TƯƠNG THÍCH CODE CŨ
-# ============================================================
-
-def get_news(
-    ticker,
-    days=7,
-):
-
-    tin = fetch_news(
-        ticker,
-        20,
-    )
-
-    if not tin:
-        return []
-
-    try:
-        days = int(
-            float(days)
-        )
-    except Exception:
-        days = 7
-
-    days = max(
-        1,
-        min(
-            days,
-            365,
+        "sma20": _so(
+            cuoi.get(
+                "SMA20"
+            ),
+            np.nan,
         ),
-    )
-
-    moc_thoi_gian = (
-        datetime.now(
-            timezone.utc
-        )
-        - pd.Timedelta(
-            days=days
-        )
-    )
-
-    ket_qua = []
-
-    for muc in tin:
-
-        thoi_gian = _chuyen_thoi_gian(
-            muc.get(
-                "published",
-                "",
-            )
-        )
-
-        if (
-            thoi_gian is None
-            or thoi_gian >= moc_thoi_gian
-        ):
-            ket_qua.append(
-                muc
-            )
-
-    return ket_qua[:20]
-
-
-# ============================================================
-# TƯƠNG THÍCH TÊN HÀM CŨ
-# ============================================================
-
-def market_data(
-    symbol,
-    period="1y",
-):
-
-    return load_market_data(
-        symbol,
-        period,
-    )
-
-
-def load_full_stock_data(
-    symbol,
-):
-
-    du_lieu = load_market_data(
-        symbol,
-        "1y",
-    )
-
-    gia_moi = load_latest_price(
-        symbol
-    )
-
-    thong_tin = load_company_info(
-        symbol
-    )
-
-    return {
-        "symbol": normalize_symbol(
-            symbol
+        "sma50": _so(
+            cuoi.get(
+                "SMA50"
+            ),
+            np.nan,
         ),
-        "data": du_lieu,
-        "latest": gia_moi,
-        "company": thong_tin,
+        "volatility20": _so(
+            cuoi.get(
+                "Volatility20"
+            ),
+            np.nan,
+        ),
+        "volume": _so(
+            cuoi.get(
+                "Volume"
+            ),
+            np.nan,
+        ),
     }
