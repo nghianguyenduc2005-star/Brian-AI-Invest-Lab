@@ -1,24 +1,22 @@
 from __future__ import annotations
 
-import html
-
 import pandas as pd
 import streamlit as st
 
 from components.cards import metric_card
 from components.charts import price_volume_chart
 from data.market import (
-    normalize_symbol,
     display_symbol,
     load_market_data,
     load_vnindex_data,
     market_snapshot,
+    normalize_symbol,
 )
 from data.news import fetch_market_news
 
 
 # ============================================================
-# HÀM TIỆN ÍCH
+# TIỆN ÍCH
 # ============================================================
 
 def _so(
@@ -70,7 +68,6 @@ def _tim_cot(
 
 def _dinh_dang_khoi_luong(
     value,
-    kem_don_vi=True,
 ):
     value = _so(
         value,
@@ -82,32 +79,25 @@ def _dinh_dang_khoi_luong(
 
     if value >= 1_000_000_000:
 
-        ket_qua = (
-            f"{value / 1_000_000_000:.2f} tỷ"
+        return (
+            f"{value / 1_000_000_000:.2f} tỷ cổ phiếu"
         )
 
-    elif value >= 1_000_000:
+    if value >= 1_000_000:
 
-        ket_qua = (
-            f"{value / 1_000_000:.2f} triệu"
+        return (
+            f"{value / 1_000_000:.2f} triệu cổ phiếu"
         )
 
-    elif value >= 1_000:
+    if value >= 1_000:
 
-        ket_qua = (
-            f"{value / 1_000:.2f} nghìn"
+        return (
+            f"{value / 1_000:.2f} nghìn cổ phiếu"
         )
 
-    else:
-
-        ket_qua = (
-            f"{value:,.0f}"
-        )
-
-    if kem_don_vi:
-        return f"{ket_qua} cổ phiếu"
-
-    return ket_qua
+    return (
+        f"{value:,.0f} cổ phiếu"
+    )
 
 
 def _dinh_dang_gia_tri(
@@ -150,6 +140,70 @@ def _dinh_dang_gia_tri(
     )
 
 
+def _dinh_dang_gia(
+    value,
+):
+    value = _so(
+        value,
+        None,
+    )
+
+    if value is None:
+        return "—"
+
+    return (
+        f"{value:,.0f} đồng/cổ phiếu"
+    )
+
+
+def _dinh_dang_rsi(
+    value,
+):
+    value = _so(
+        value,
+        None,
+    )
+
+    if value is None:
+        return "—"
+
+    return (
+        f"{value:.1f} điểm"
+    )
+
+
+def _dinh_dang_macd(
+    value,
+):
+    value = _so(
+        value,
+        None,
+    )
+
+    if value is None:
+        return "—"
+
+    return (
+        f"{value:.3f}"
+    )
+
+
+def _dinh_dang_phan_tram(
+    value,
+):
+    value = _so(
+        value,
+        None,
+    )
+
+    if value is None:
+        return "—"
+
+    return (
+        f"{value:+.2f}%"
+    )
+
+
 # ============================================================
 # VN-INDEX
 # ============================================================
@@ -181,20 +235,16 @@ def _lay_vn_index():
 
     du_lieu = du_lieu.copy()
 
-    # --------------------------------------------------------
-    # Cột điểm
-    # --------------------------------------------------------
-
     cot_diem = _tim_cot(
         du_lieu,
         [
             "Close",
             "close",
-            "Đóng cửa",
-            "đóng cửa",
             "last",
             "price",
             "index",
+            "Đóng cửa",
+            "đóng cửa",
         ],
     )
 
@@ -262,7 +312,6 @@ def _lay_vn_index():
 
     else:
 
-        diem_truoc = None
         thay_doi = None
         phan_tram = None
 
@@ -284,8 +333,12 @@ def _lay_vn_index():
 
     if cot_khoi_luong is not None:
 
-        du_lieu[cot_khoi_luong] = pd.to_numeric(
-            du_lieu[cot_khoi_luong],
+        du_lieu[
+            cot_khoi_luong
+        ] = pd.to_numeric(
+            du_lieu[
+                cot_khoi_luong
+            ],
             errors="coerce",
         )
 
@@ -316,8 +369,12 @@ def _lay_vn_index():
 
     if cot_gia_tri is not None:
 
-        du_lieu[cot_gia_tri] = pd.to_numeric(
-            du_lieu[cot_gia_tri],
+        du_lieu[
+            cot_gia_tri
+        ] = pd.to_numeric(
+            du_lieu[
+                cot_gia_tri
+            ],
             errors="coerce",
         )
 
@@ -330,7 +387,6 @@ def _lay_vn_index():
 
     return {
         "diem": diem,
-        "diem_truoc": diem_truoc,
         "thay_doi": thay_doi,
         "phan_tram": phan_tram,
         "khoi_luong": khoi_luong,
@@ -341,35 +397,29 @@ def _lay_vn_index():
 
 
 # ============================================================
-# RENDER DASHBOARD
+# DASHBOARD
 # ============================================================
 
 def render_dashboard():
 
     # ========================================================
     # HERO
+    # KHÔNG DÙNG HTML
     # ========================================================
 
-    st.markdown(
-        """
-<div class="hero">
-    <div class="eyebrow">
-        BRIAN STOCK · INVESTMENT INTELLIGENCE
-    </div>
+    st.caption(
+        "BRIAN STOCK · INVESTMENT INTELLIGENCE"
+    )
 
-    <h1>
-        Góc nhìn dữ liệu cho nhà đầu tư
-    </h1>
+    st.title(
+        "Góc nhìn dữ liệu cho nhà đầu tư"
+    )
 
-    <p>
-        Dashboard nghiên cứu thị trường,
-        cổ phiếu, tin tức và AI.
-        Dữ liệu được tải trực tiếp khi cần,
-        không dùng dữ liệu ngẫu nhiên.
-    </p>
-</div>
-""",
-        unsafe_allow_html=True,
+    st.write(
+        "Dashboard nghiên cứu thị trường, "
+        "cổ phiếu, tin tức và AI. "
+        "Dữ liệu được tải trực tiếp khi cần, "
+        "không dùng dữ liệu ngẫu nhiên."
     )
 
     # ========================================================
@@ -426,15 +476,19 @@ def render_dashboard():
             else "—"
         )
 
-        vn_khoi_luong = _dinh_dang_khoi_luong(
-            vn_index.get(
-                "khoi_luong"
+        vn_khoi_luong = (
+            _dinh_dang_khoi_luong(
+                vn_index.get(
+                    "khoi_luong"
+                )
             )
         )
 
-        vn_gia_tri = _dinh_dang_gia_tri(
-            vn_index.get(
-                "gia_tri"
+        vn_gia_tri = (
+            _dinh_dang_gia_tri(
+                vn_index.get(
+                    "gia_tri"
+                )
             )
         )
 
@@ -442,9 +496,8 @@ def render_dashboard():
     # THEO DÕI NHANH
     # ========================================================
 
-    st.markdown(
-        '<div class="section-title">📌 Theo dõi nhanh</div>',
-        unsafe_allow_html=True,
+    st.subheader(
+        "📌 Theo dõi nhanh"
     )
 
     c1, c2, c3, c4 = st.columns(4)
@@ -485,9 +538,8 @@ def render_dashboard():
     # VN-INDEX CHI TIẾT
     # ========================================================
 
-    st.markdown(
-        '<div class="section-title">📊 VN-INDEX</div>',
-        unsafe_allow_html=True,
+    st.subheader(
+        "📊 VN-INDEX"
     )
 
     a, b, c, d = st.columns(4)
@@ -537,9 +589,8 @@ def render_dashboard():
     # THEO DÕI CỔ PHIẾU
     # ========================================================
 
-    st.markdown(
-        '<div class="section-title">📈 Theo dõi cổ phiếu</div>',
-        unsafe_allow_html=True,
+    st.subheader(
+        "📈 Theo dõi cổ phiếu"
     )
 
     ma_mac_dinh = st.session_state.get(
@@ -561,6 +612,7 @@ def render_dashboard():
         "Tải dữ liệu",
         type="primary",
         key="dashboard_load_button",
+        width="content",
     ):
 
         ma_sach = normalize_symbol(
@@ -692,26 +744,17 @@ def render_dashboard():
             None,
         )
 
-        # ----------------------------------------------------
-        # Tiêu đề
-        # ----------------------------------------------------
+        # ====================================================
+        # TIÊU ĐỀ MÃ
+        # ====================================================
 
-        st.markdown(
-            f"""
-<div class="section-title">
-    📈 {html.escape(
-        display_symbol(
-            ma_dang_xem
-        )
-    )}
-</div>
-""",
-            unsafe_allow_html=True,
+        st.subheader(
+            f"📈 {display_symbol(ma_dang_xem)}"
         )
 
-        # ----------------------------------------------------
-        # HÀNG 1
-        # ----------------------------------------------------
+        # ====================================================
+        # THÔNG TIN
+        # ====================================================
 
         a, b, c, d = st.columns(4)
 
@@ -719,10 +762,8 @@ def render_dashboard():
 
             st.metric(
                 "Giá",
-                (
-                    f"{gia:,.0f} đồng/cổ phiếu"
-                    if gia is not None
-                    else "—"
+                _dinh_dang_gia(
+                    gia
                 ),
             )
 
@@ -730,10 +771,8 @@ def render_dashboard():
 
             st.metric(
                 "Thay đổi 1D",
-                (
-                    f"{thay_doi_1d:+.2f}%"
-                    if thay_doi_1d is not None
-                    else "—"
+                _dinh_dang_phan_tram(
+                    thay_doi_1d
                 ),
             )
 
@@ -741,10 +780,8 @@ def render_dashboard():
 
             st.metric(
                 "RSI",
-                (
-                    f"{rsi:.1f} điểm"
-                    if rsi is not None
-                    else "—"
+                _dinh_dang_rsi(
+                    rsi
                 ),
             )
 
@@ -757,9 +794,9 @@ def render_dashboard():
                 ),
             )
 
-        # ----------------------------------------------------
-        # HÀNG 2
-        # ----------------------------------------------------
+        # ====================================================
+        # CHỈ BÁO
+        # ====================================================
 
         e, f, g, h = st.columns(4)
 
@@ -767,10 +804,8 @@ def render_dashboard():
 
             st.metric(
                 "Trung bình 20 phiên",
-                (
-                    f"{sma20:,.0f} đồng/cổ phiếu"
-                    if sma20 is not None
-                    else "—"
+                _dinh_dang_gia(
+                    sma20
                 ),
             )
 
@@ -778,10 +813,8 @@ def render_dashboard():
 
             st.metric(
                 "Trung bình 50 phiên",
-                (
-                    f"{sma50:,.0f} đồng/cổ phiếu"
-                    if sma50 is not None
-                    else "—"
+                _dinh_dang_gia(
+                    sma50
                 ),
             )
 
@@ -789,10 +822,8 @@ def render_dashboard():
 
             st.metric(
                 "MACD",
-                (
-                    f"{macd:.3f}"
-                    if macd is not None
-                    else "—"
+                _dinh_dang_macd(
+                    macd
                 ),
             )
 
@@ -807,9 +838,9 @@ def render_dashboard():
                 ),
             )
 
-        # ----------------------------------------------------
-        # HÀNG 3
-        # ----------------------------------------------------
+        # ====================================================
+        # CHỈ BÁO BỔ SUNG
+        # ====================================================
 
         i, j, k, l = st.columns(4)
 
@@ -817,10 +848,8 @@ def render_dashboard():
 
             st.metric(
                 "ATR 14 phiên",
-                (
-                    f"{atr14:,.0f} đồng/cổ phiếu"
-                    if atr14 is not None
-                    else "—"
+                _dinh_dang_gia(
+                    atr14
                 ),
             )
 
@@ -868,20 +897,17 @@ def render_dashboard():
 
             st.metric(
                 "Giá mở cửa",
-                (
-                    f"{gia_mo:,.0f} đồng/cổ phiếu"
-                    if gia_mo is not None
-                    else "—"
+                _dinh_dang_gia(
+                    gia_mo
                 ),
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # BIỂU ĐỒ
-        # ----------------------------------------------------
+        # ====================================================
 
-        st.markdown(
-            '<div class="section-title">📊 Biểu đồ kỹ thuật</div>',
-            unsafe_allow_html=True,
+        st.subheader(
+            "📊 Biểu đồ kỹ thuật"
         )
 
         try:
@@ -916,11 +942,13 @@ def render_dashboard():
 
     # ========================================================
     # TIN MỚI
+    #
+    # DÙNG STREAMLIT NATIVE
+    # => KHÔNG CÒN HTML <div> HIỆN RA MÀN HÌNH
     # ========================================================
 
-    st.markdown(
-        '<div class="section-title">📰 Tin mới</div>',
-        unsafe_allow_html=True,
+    st.subheader(
+        "📰 Tin mới"
     )
 
     try:
@@ -947,32 +975,26 @@ def render_dashboard():
 
         for tin in tin_tuc:
 
-            tieu_de = html.escape(
-                str(
-                    tin.get(
-                        "title",
-                        "Không có tiêu đề",
-                    )
+            tieu_de = str(
+                tin.get(
+                    "title",
+                    "Không có tiêu đề",
                 )
-            )
+            ).strip()
 
-            nguon = html.escape(
-                str(
-                    tin.get(
-                        "source",
-                        "Nguồn không xác định",
-                    )
+            nguon = str(
+                tin.get(
+                    "source",
+                    "Nguồn không xác định",
                 )
-            )
+            ).strip()
 
-            thoi_gian = html.escape(
-                str(
-                    tin.get(
-                        "published",
-                        "",
-                    )
+            thoi_gian = str(
+                tin.get(
+                    "published",
+                    "",
                 )
-            )
+            ).strip()
 
             lien_ket = str(
                 tin.get(
@@ -982,27 +1004,46 @@ def render_dashboard():
             ).strip()
 
             # ------------------------------------------------
-            # CARD TIN TỨC
-            # HTML KHÔNG THỤT LỀ
+            # Mỗi tin là một container riêng.
+            # Không dùng HTML.
             # ------------------------------------------------
 
-            st.markdown(
-                f"""
-<div class="news-card">
-    <div class="news-title">
-        {tieu_de}
-    </div>
-
-    <div class="news-meta">
-        {nguon} · {thoi_gian}
-    </div>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-
-            if lien_ket:
+            with st.container(
+                border=True,
+            ):
 
                 st.markdown(
-                    f"[Đọc bài ↗]({lien_ket})"
+                    f"**{tieu_de}**"
                 )
+
+                if (
+                    nguon
+                    or thoi_gian
+                ):
+
+                    if (
+                        nguon
+                        and thoi_gian
+                    ):
+
+                        st.caption(
+                            f"{nguon} · {thoi_gian}"
+                        )
+
+                    elif nguon:
+
+                        st.caption(
+                            nguon
+                        )
+
+                    else:
+
+                        st.caption(
+                            thoi_gian
+                        )
+
+                if lien_ket:
+
+                    st.markdown(
+                        f"[Đọc bài ↗]({lien_ket})"
+                    )
