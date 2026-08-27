@@ -12,14 +12,11 @@ import streamlit as st
 # ============================================================
 
 CACHE_SECONDS = 60
-
-# Nếu nguồn không chấp nhận toàn bộ symbols trong 1 request,
-# fallback sẽ chia thành các lô lớn hơn nhiều so với bản cũ.
-FALLBACK_BATCH_SIZE = 500
+SO_MA_MAC_DINH = 60
 
 
 # ============================================================
-# TIỆN ÍCH
+# TIỆN ÍCH CƠ BẢN
 # ============================================================
 
 def _so(
@@ -59,7 +56,7 @@ def _chuan_hoa_ma(
 
 def _tim_cot(
     du_lieu: pd.DataFrame,
-    *ten_cot,
+    *ten_cot: str,
 ):
     if (
         du_lieu is None
@@ -83,7 +80,7 @@ def _tim_cot(
     return None
 
 
-def _chuan_hoa_dataframe(
+def _df(
     du_lieu,
 ):
     if isinstance(
@@ -95,58 +92,175 @@ def _chuan_hoa_dataframe(
     return pd.DataFrame()
 
 
+def _chuan_san(
+    gia_tri,
+):
+    text = str(
+        gia_tri or ""
+    ).strip().upper()
+
+    if text in {
+        "HSX",
+        "HOSE",
+        "HO CHI MINH",
+        "HOCHIMINH",
+    }:
+        return "HOSE"
+
+    if text in {
+        "HNX",
+        "HA NOI",
+        "HANOI",
+    }:
+        return "HNX"
+
+    if text == "UPCOM":
+        return "UPCOM"
+
+    return text
+
+
 # ============================================================
-# KHỞI TẠO VNSTOCK
+# VNSTOCK DATA
 # ============================================================
 
 @st.cache_resource(
     show_spinner=False,
 )
-def _tao_reference():
+def _tao_insights():
     try:
-        from vnstock_data import Reference
+        from vnstock_data import Insights
 
-        return Reference()
-
-    except Exception:
-        pass
-
-    try:
-        from vnstock import Reference
-
-        return Reference()
+        return Insights()
 
     except Exception as loi:
         raise RuntimeError(
-            "Không thể khởi tạo Vnstock Reference."
+            "Không thể khởi tạo vnstock_data.Insights."
         ) from loi
 
 
 @st.cache_resource(
     show_spinner=False,
 )
-def _tao_market():
+def _tao_listing():
     try:
-        from vnstock_data import Market
+        from vnstock_data import Listing
 
-        return Market()
+        return Listing(
+            source="vci"
+        )
 
     except Exception:
-        pass
-
-    try:
-        from vnstock import Market
-
-        return Market()
-
-    except Exception as loi:
-        raise RuntimeError(
-            "Không thể khởi tạo Vnstock Market."
-        ) from loi
+        return None
 
 
 # ============================================================
-# UNIVERSE TOÀN THỊ TRƯỜNG
+# LẤY NGÀNH ICB
+# ============================================================
+
+@st.cache_data(
+    ttl=6 * 60 * 60,
+    show_spinner=False,
+)
+def _lay_bang_nganh():
+    listing = _tao_listing()
+
+    if listing is None:
+        return pd.DataFrame()
+
+    try:
+        bang_nganh = (
+            listing
+            .industries_icb()
+        )
+
+    except Exception:
+        return pd.DataFrame()
+
+    if (
+        not isinstance(
+            bang_nganh,
+            pd.DataFrame,
+        )
+        or bang_nganh.empty
+    ):
+        return pd.DataFrame()
+
+    bang_nganh = bang_nganh.copy()
+
+    cot_cap = _tim_cot(
+        bang_nganh,
+        "level",
+    )
+
+    cot_ma = _tim_cot(
+        bang_nganh,
+        "icb_code",
+    )
+
+    cot_ten = _tim_cot(
+        bang_nganh,
+        "icb_name",
+    )
+
+    if (
+        cot_cap is None
+        or cot_ma is None
+        or cot_ten is None
+    ):
+        return pd.DataFrame()
+
+    bang_nganh[
+        "ma_nganh"
+    ] = (
+        bang_nganh[
+            cot_ma
+        ]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    bang_nganh[
+        "ten_nganh"
+    ] = (
+        bang_nganh[
+            cot_ten
+        ]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    cap = pd.to_numeric(
+        bang_nganh[
+            cot_cap
+        ],
+        errors="coerce",
+    )
+
+    bang_nganh = bang_nganh[
+        cap == 1
+    ].copy()
+
+    return (
+        bang_nganh[
+            [
+                "ma_nganh",
+                "ten_nganh",
+            ]
+        ]
+        .drop_duplicates(
+            "ma_nganh"
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+
+# ============================================================
+# UNIVERSE NHẸ
 # ============================================================
 
 @st.cache_data(
@@ -158,286 +272,112 @@ def lay_universe(
 ):
     _ = force_reload
 
-    reference = _tao_reference()
-
-    # --------------------------------------------------------
-    # TOÀN BỘ CỔ PHIẾU
-    # --------------------------------------------------------
-
-    du_lieu = pd.DataFrame()
+    insights = _tao_insights()
 
     try:
-        du_lieu = (
-            reference
-            .equity
-            .list()
-        )
-    except Exception:
-        du_lieu = pd.DataFrame()
 
-    # --------------------------------------------------------
-    # FALLBACK: THEO SÀN
-    # --------------------------------------------------------
-
-    if du_lieu.empty:
-
-        try:
-
-            du_lieu_san = (
-                reference
-                .equity
-                .list_by_exchange()
+        bang = (
+            insights
+            .screener
+            .filter(
+                limit=SO_MA_MAC_DINH
             )
+        )
 
-            if isinstance(
-                du_lieu_san,
-                pd.DataFrame,
-            ):
-
-                du_lieu = (
-                    du_lieu_san.copy()
-                )
-
-            elif isinstance(
-                du_lieu_san,
-                dict,
-            ):
-
-                cac_bang = []
-
-                for ten_san, bang in (
-                    du_lieu_san.items()
-                ):
-
-                    if not isinstance(
-                        bang,
-                        pd.DataFrame,
-                    ):
-                        continue
-
-                    bang = (
-                        bang.copy()
-                    )
-
-                    cot_ma = _tim_cot(
-                        bang,
-                        "symbol",
-                        "ticker",
-                        "code",
-                    )
-
-                    if cot_ma is None:
-                        continue
-
-                    bang[
-                        "_san_tam"
-                    ] = (
-                        str(
-                            ten_san
-                        ).upper()
-                    )
-
-                    cac_bang.append(
-                        bang
-                    )
-
-                if cac_bang:
-
-                    du_lieu = pd.concat(
-                        cac_bang,
-                        ignore_index=True,
-                    )
-
-        except Exception:
-            du_lieu = pd.DataFrame()
-
-    if du_lieu.empty:
+    except Exception as loi:
 
         raise RuntimeError(
-            "Không lấy được danh sách cổ phiếu toàn thị trường."
-        )
+            "Không lấy được universe từ Screener."
+        ) from loi
 
-    du_lieu = _chuan_hoa_dataframe(
-        du_lieu
+    bang = _df(
+        bang
     )
 
-    # --------------------------------------------------------
-    # CỘT CHUẨN
-    # --------------------------------------------------------
+    if bang.empty:
+        raise RuntimeError(
+            "Screener trả về dữ liệu rỗng."
+        )
 
     cot_ma = _tim_cot(
-        du_lieu,
+        bang,
         "symbol",
         "ticker",
         "code",
-        "stock_code",
-        "_ma",
     )
 
     if cot_ma is None:
-
         raise RuntimeError(
-            "Universe không có cột mã cổ phiếu."
+            "Không tìm thấy cột mã cổ phiếu."
         )
 
-    cot_ten = _tim_cot(
-        du_lieu,
-        "organ_name",
-        "company_name",
-        "company",
-        "name",
+    ket_qua = pd.DataFrame()
+
+    ket_qua[
+        "ma"
+    ] = (
+        bang[
+            cot_ma
+        ]
+        .map(
+            _chuan_hoa_ma
+        )
     )
 
     cot_san = _tim_cot(
-        du_lieu,
+        bang,
         "exchange",
-        "exchange_name",
-        "floor",
-        "_san_tam",
     )
 
-    cot_ma_nganh = _tim_cot(
-        du_lieu,
-        "icb_code",
-        "industry_code",
-    )
+    if cot_san is not None:
 
-    cot_nganh = _tim_cot(
-        du_lieu,
-        "icb_name",
-        "industry_name",
-        "industry",
-    )
-
-    rows = []
-
-    for _, dong in du_lieu.iterrows():
-
-        ma = _chuan_hoa_ma(
-            dong[cot_ma]
+        ket_qua[
+            "san"
+        ] = (
+            bang[
+                cot_san
+            ]
+            .map(
+                _chuan_san
+            )
         )
 
-        if not ma:
-            continue
+    else:
 
-        ten_doanh_nghiep = ""
+        ket_qua[
+            "san"
+        ] = ""
 
-        if (
-            cot_ten
-            and pd.notna(
-                dong[cot_ten]
-            )
-        ):
-
-            ten_doanh_nghiep = str(
-                dong[cot_ten]
-            ).strip()
-
-        san = ""
-
-        if (
-            cot_san
-            and pd.notna(
-                dong[cot_san]
-            )
-        ):
-
-            san = str(
-                dong[cot_san]
-            ).strip().upper()
-
-        ma_nganh = ""
-
-        if (
-            cot_ma_nganh
-            and pd.notna(
-                dong[cot_ma_nganh]
-            )
-        ):
-
-            ma_nganh = str(
-                dong[cot_ma_nganh]
-            ).strip()
-
-        ten_nganh = ""
-
-        if (
-            cot_nganh
-            and pd.notna(
-                dong[cot_nganh]
-            )
-        ):
-
-            ten_nganh = str(
-                dong[cot_nganh]
-            ).strip()
-
-        rows.append(
-            {
-                "ma": ma,
-                "ten_doanh_nghiep": (
-                    ten_doanh_nghiep
-                ),
-                "san": san,
-                "ma_nganh": ma_nganh,
-                "ten_nganh": ten_nganh,
-            }
-        )
-
-    universe = pd.DataFrame(
-        rows
+    cot_von_hoa = _tim_cot(
+        bang,
+        "market_cap",
     )
 
-    if universe.empty:
+    if cot_von_hoa is not None:
 
-        raise RuntimeError(
-            "Universe sau khi chuẩn hóa đang rỗng."
+        ket_qua[
+            "von_hoa"
+        ] = pd.to_numeric(
+            bang[
+                cot_von_hoa
+            ],
+            errors="coerce",
         )
 
-    # --------------------------------------------------------
-    # CHUẨN HÓA SÀN
-    # --------------------------------------------------------
+    else:
 
-    def _chuan_san(
-        value,
-    ):
+        ket_qua[
+            "von_hoa"
+        ] = np.nan
 
-        text = str(
-            value or ""
-        ).strip().upper()
-
-        if text in {
-            "HSX",
-            "HOSE",
-            "HO CHI MINH",
-            "HOCHIMINH",
-        }:
-            return "HOSE"
-
-        if text in {
-            "HNX",
-            "HA NOI",
-            "HANOI",
-        }:
-            return "HNX"
-
-        if text in {
-            "UPCOM",
-        }:
-            return "UPCOM"
-
-        return text
-
-    universe["san"] = (
-        universe["san"]
-        .map(_chuan_san)
-    )
-
-    universe = (
-        universe
+    ket_qua = (
+        ket_qua[
+            ket_qua[
+                "ma"
+            ] != ""
+        ]
         .drop_duplicates(
-            subset=["ma"],
-            keep="first",
+            "ma"
         )
         .reset_index(
             drop=True
@@ -445,346 +385,104 @@ def lay_universe(
     )
 
     # --------------------------------------------------------
-    # BỔ SUNG SÀN TỪ list_by_exchange()
+    # Ghép ngành nếu screener có sector_lv1
     # --------------------------------------------------------
 
-    if (
-        universe["san"]
-        .eq("")
-        .all()
-    ):
+    cot_nganh = _tim_cot(
+        bang,
+        "sector_lv1",
+        "icb_code",
+    )
 
-        try:
+    if cot_nganh is not None:
 
-            bang_san = (
-                reference
-                .equity
-                .list_by_exchange()
+        tmp = pd.DataFrame(
+            {
+                "ma": (
+                    bang[
+                        cot_ma
+                    ]
+                    .map(
+                        _chuan_hoa_ma
+                    )
+                ),
+                "ma_nganh": (
+                    bang[
+                        cot_nganh
+                    ]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                ),
+            }
+        )
+
+        tmp = (
+            tmp[
+                tmp["ma"] != ""
+            ]
+            .drop_duplicates(
+                "ma"
             )
+        )
 
-            if isinstance(
-                bang_san,
-                pd.DataFrame,
-            ):
+        ket_qua = ket_qua.merge(
+            tmp,
+            on="ma",
+            how="left",
+        )
 
-                cot_ma_san = _tim_cot(
-                    bang_san,
-                    "symbol",
-                    "ticker",
-                    "code",
-                )
+    else:
 
-                cot_san_san = _tim_cot(
-                    bang_san,
-                    "exchange",
-                    "exchange_name",
-                    "floor",
-                )
+        ket_qua[
+            "ma_nganh"
+        ] = ""
 
-                if (
-                    cot_ma_san is not None
-                    and cot_san_san is not None
-                ):
+    bang_nganh = _lay_bang_nganh()
 
-                    bang_san = (
-                        bang_san.copy()
-                    )
+    if not bang_nganh.empty:
 
-                    bang_san[
-                        "_ma"
-                    ] = (
-                        bang_san[
-                            cot_ma_san
-                        ]
-                        .map(
-                            _chuan_hoa_ma
-                        )
-                    )
+        ket_qua = ket_qua.merge(
+            bang_nganh,
+            on="ma_nganh",
+            how="left",
+        )
 
-                    bang_san[
-                        "_san"
-                    ] = (
-                        bang_san[
-                            cot_san_san
-                        ]
-                        .map(
-                            _chuan_san
-                        )
-                    )
+    if "ten_nganh" not in ket_qua.columns:
 
-                    bang_san = (
-                        bang_san[
-                            [
-                                "_ma",
-                                "_san",
-                            ]
-                        ]
-                        .drop_duplicates(
-                            "_ma"
-                        )
-                    )
+        ket_qua[
+            "ten_nganh"
+        ] = ""
 
-                    universe = universe.merge(
-                        bang_san,
-                        left_on="ma",
-                        right_on="_ma",
-                        how="left",
-                    )
-
-                    universe[
-                        "san"
-                    ] = (
-                        universe["san"]
-                        .replace(
-                            "",
-                            np.nan,
-                        )
-                        .fillna(
-                            universe["_san"]
-                        )
-                        .fillna("")
-                    )
-
-                    universe = (
-                        universe.drop(
-                            columns=[
-                                "_ma",
-                                "_san",
-                            ],
-                            errors="ignore",
-                        )
-                    )
-
-        except Exception:
-            pass
-
-    # --------------------------------------------------------
-    # BỔ SUNG NGÀNH
-    # --------------------------------------------------------
-
-    if (
-        universe["ten_nganh"]
+    ket_qua[
+        "ten_nganh"
+    ] = (
+        ket_qua[
+            "ten_nganh"
+        ]
         .fillna("")
         .astype(str)
         .str.strip()
-        .eq("")
-        .all()
-    ):
+    )
 
-        try:
+    ket_qua[
+        "ten_doanh_nghiep"
+    ] = ""
 
-            bang_nganh = (
-                reference
-                .equity
-                .list_by_industry(
-                    lang="vi"
-                )
-            )
-
-            if isinstance(
-                bang_nganh,
-                pd.DataFrame,
-            ):
-
-                cot_ma_nganh = _tim_cot(
-                    bang_nganh,
-                    "symbol",
-                    "ticker",
-                    "code",
-                )
-
-                cot_ten_nganh = _tim_cot(
-                    bang_nganh,
-                    "icb_name",
-                    "industry_name",
-                    "industry",
-                )
-
-                if (
-                    cot_ma_nganh
-                    is not None
-                    and cot_ten_nganh
-                    is not None
-                ):
-
-                    bang_nganh = (
-                        bang_nganh.copy()
-                    )
-
-                    bang_nganh[
-                        "_ma"
-                    ] = (
-                        bang_nganh[
-                            cot_ma_nganh
-                        ]
-                        .map(
-                            _chuan_hoa_ma
-                        )
-                    )
-
-                    bang_nganh[
-                        "_ten_nganh"
-                    ] = (
-                        bang_nganh[
-                            cot_ten_nganh
-                        ]
-                        .fillna("")
-                        .astype(str)
-                        .str.strip()
-                    )
-
-                    bang_nganh = (
-                        bang_nganh[
-                            [
-                                "_ma",
-                                "_ten_nganh",
-                            ]
-                        ]
-                        .drop_duplicates(
-                            "_ma"
-                        )
-                    )
-
-                    universe = universe.merge(
-                        bang_nganh,
-                        left_on="ma",
-                        right_on="_ma",
-                        how="left",
-                    )
-
-                    universe[
-                        "ten_nganh"
-                    ] = (
-                        universe[
-                            "ten_nganh"
-                        ]
-                        .replace(
-                            "",
-                            np.nan,
-                        )
-                        .fillna(
-                            universe[
-                                "_ten_nganh"
-                            ]
-                        )
-                        .fillna("")
-                    )
-
-                    universe = (
-                        universe.drop(
-                            columns=[
-                                "_ma",
-                                "_ten_nganh",
-                            ],
-                            errors="ignore",
-                        )
-                    )
-
-        except Exception:
-            pass
-
-    return universe
+    return ket_qua
 
 
 # ============================================================
-# QUOTE BULK
+# CHUẨN HÓA SCREENER
 # ============================================================
 
-def _goi_quote(
-    market,
-    danh_sach_ma,
+def _chuan_hoa_screener(
+    bang,
 ):
-    if not danh_sach_ma:
+    if bang.empty:
         return pd.DataFrame()
 
-    # --------------------------------------------------------
-    # CÁCH CHÍNH:
-    # Market.quote(symbols_list)
-    # --------------------------------------------------------
-
-    try:
-
-        du_lieu = market.quote(
-            danh_sach_ma
-        )
-
-        if (
-            isinstance(
-                du_lieu,
-                pd.DataFrame,
-            )
-            and not du_lieu.empty
-        ):
-
-            return du_lieu.copy()
-
-    except Exception:
-        pass
-
-    # --------------------------------------------------------
-    # FALLBACK:
-    # keyword symbols_list / symbol
-    # --------------------------------------------------------
-
-    try:
-
-        du_lieu = market.quote(
-            symbols_list=danh_sach_ma
-        )
-
-        if (
-            isinstance(
-                du_lieu,
-                pd.DataFrame,
-            )
-            and not du_lieu.empty
-        ):
-
-            return du_lieu.copy()
-
-    except Exception:
-        pass
-
-    try:
-
-        du_lieu = market.quote(
-            symbol=danh_sach_ma
-        )
-
-        if (
-            isinstance(
-                du_lieu,
-                pd.DataFrame,
-            )
-            and not du_lieu.empty
-        ):
-
-            return du_lieu.copy()
-
-    except Exception:
-        pass
-
-    return pd.DataFrame()
-
-
-# ============================================================
-# CHUẨN HÓA QUOTE
-# ============================================================
-
-def _chuan_hoa_quote(
-    du_lieu,
-):
-    if (
-        du_lieu is None
-        or du_lieu.empty
-    ):
-        return pd.DataFrame()
-
-    df = du_lieu.copy()
-
-    # --------------------------------------------------------
-    # Schema chuẩn Vnstock mới
-    # --------------------------------------------------------
+    df = bang.copy()
 
     cot_ma = _tim_cot(
         df,
@@ -796,20 +494,22 @@ def _chuan_hoa_quote(
     if cot_ma is None:
         return pd.DataFrame()
 
-    cot_gia = _tim_cot(
+    cot_san = _tim_cot(
         df,
-        "last_price",
-        "price",
-        "match_price",
-        "current_price",
-        "close",
+        "exchange",
     )
 
-    cot_tham_chieu = _tim_cot(
+    cot_gia = _tim_cot(
         df,
-        "reference_price",
+        "price",
+        "last_price",
+        "match_price",
+    )
+
+    cot_tc = _tim_cot(
+        df,
         "ref_price",
-        "reference",
+        "reference_price",
     )
 
     cot_mo = _tim_cot(
@@ -830,46 +530,85 @@ def _chuan_hoa_quote(
         "low_price",
     )
 
-    cot_thay_doi = _tim_cot(
-        df,
-        "price_change_1d",
-        "change",
-        "price_change",
-        "change_value",
-    )
-
     cot_phan_tram = _tim_cot(
         df,
+        "price_change_percent",
         "price_change_percent_1d",
         "change_percent",
         "change_pct",
-        "price_change_percent",
     )
 
-    cot_volume = _tim_cot(
+    cot_thay_doi = _tim_cot(
         df,
+        "price_change",
+        "change",
+    )
+
+    cot_khoi_luong = _tim_cot(
+        df,
+        "accumulated_volume",
         "volume",
         "match_volume",
-        "accumulated_volume",
-        "total_volume",
     )
 
-    cot_value = _tim_cot(
+    cot_gia_tri = _tim_cot(
         df,
+        "accumulated_value",
         "total_value",
         "value",
         "trading_value",
-        "accumulated_value",
     )
 
-    cot_cao_52w = _tim_cot(
+    cot_tb_khoi_luong = _tim_cot(
         df,
-        "high_52w",
+        "avg_volume_30d",
+        "avg_volume",
     )
 
-    cot_thap_52w = _tim_cot(
+    cot_tb_gia_tri = _tim_cot(
         df,
-        "low_52w",
+        "avg_value_30d",
+        "avg_value",
+    )
+
+    cot_pe = _tim_cot(
+        df,
+        "pe",
+        "ttm_pe",
+    )
+
+    cot_pb = _tim_cot(
+        df,
+        "pb",
+        "ttm_pb",
+    )
+
+    cot_roe = _tim_cot(
+        df,
+        "roe",
+        "ttm_roe",
+    )
+
+    cot_rsi = _tim_cot(
+        df,
+        "rsi",
+    )
+
+    cot_macd = _tim_cot(
+        df,
+        "macd",
+    )
+
+    cot_ema20 = _tim_cot(
+        df,
+        "ema20",
+        "price_ema_20",
+    )
+
+    cot_ema50 = _tim_cot(
+        df,
+        "ema50",
+        "price_ema_50",
     )
 
     cot_von_hoa = _tim_cot(
@@ -882,7 +621,9 @@ def _chuan_hoa_quote(
     for _, dong in df.iterrows():
 
         ma = _chuan_hoa_ma(
-            dong[cot_ma]
+            dong[
+                cot_ma
+            ]
         )
 
         if not ma:
@@ -890,15 +631,19 @@ def _chuan_hoa_quote(
 
         gia = (
             _so(
-                dong[cot_gia]
+                dong[
+                    cot_gia
+                ]
             )
             if cot_gia
             else np.nan
         )
 
-        # Không nhận 0 / âm làm giá hợp lệ.
+        # Screener có thể trả một số mã chưa có giá.
         if (
-            not np.isfinite(gia)
+            not np.isfinite(
+                gia
+            )
             or gia <= 0
         ):
             continue
@@ -906,10 +651,10 @@ def _chuan_hoa_quote(
         tham_chieu = (
             _so(
                 dong[
-                    cot_tham_chieu
+                    cot_tc
                 ]
             )
-            if cot_tham_chieu
+            if cot_tc
             else np.nan
         )
 
@@ -933,9 +678,24 @@ def _chuan_hoa_quote(
             else np.nan
         )
 
-        # ----------------------------------------------------
-        # Tự tính khi nguồn không trả change.
-        # ----------------------------------------------------
+        if (
+            not np.isfinite(
+                phan_tram
+            )
+            and np.isfinite(
+                tham_chieu
+            )
+            and tham_chieu != 0
+        ):
+
+            phan_tram = (
+                (
+                    gia
+                    - tham_chieu
+                )
+                / tham_chieu
+                * 100
+            )
 
         if (
             not np.isfinite(
@@ -951,31 +711,20 @@ def _chuan_hoa_quote(
                 - tham_chieu
             )
 
-        if (
-            not np.isfinite(
-                phan_tram
-            )
-            and np.isfinite(
-                tham_chieu
-            )
-            and tham_chieu != 0
-        ):
-
-            phan_tram = (
-                gia
-                - tham_chieu
-            ) / tham_chieu * 100
-
         rows.append(
             {
                 "ma": ma,
-
-                "gia": gia,
-
-                "gia_tham_chieu": (
-                    tham_chieu
+                "san": (
+                    _chuan_san(
+                        dong[
+                            cot_san
+                        ]
+                    )
+                    if cot_san
+                    else ""
                 ),
-
+                "gia": gia,
+                "gia_tham_chieu": tham_chieu,
                 "gia_mo_cua": (
                     _so(
                         dong[
@@ -985,7 +734,6 @@ def _chuan_hoa_quote(
                     if cot_mo
                     else np.nan
                 ),
-
                 "gia_cao_nhat": (
                     _so(
                         dong[
@@ -995,7 +743,6 @@ def _chuan_hoa_quote(
                     if cot_cao
                     else np.nan
                 ),
-
                 "gia_thap_nhat": (
                     _so(
                         dong[
@@ -1005,55 +752,107 @@ def _chuan_hoa_quote(
                     if cot_thap
                     else np.nan
                 ),
-
-                "thay_doi": (
-                    thay_doi
-                ),
-
-                "thay_doi_pct": (
-                    phan_tram
-                ),
-
+                "thay_doi": thay_doi,
+                "thay_doi_pct": phan_tram,
                 "khoi_luong": (
                     _so(
                         dong[
-                            cot_volume
+                            cot_khoi_luong
                         ]
                     )
-                    if cot_volume
+                    if cot_khoi_luong
                     else np.nan
                 ),
-
                 "gia_tri_giao_dich": (
                     _so(
                         dong[
-                            cot_value
+                            cot_gia_tri
                         ]
                     )
-                    if cot_value
+                    if cot_gia_tri
                     else np.nan
                 ),
-
-                "cao_52_tuan": (
+                "khoi_luong_tb_30d": (
                     _so(
                         dong[
-                            cot_cao_52w
+                            cot_tb_khoi_luong
                         ]
                     )
-                    if cot_cao_52w
+                    if cot_tb_khoi_luong
                     else np.nan
                 ),
-
-                "thap_52_tuan": (
+                "gia_tri_tb_30d": (
                     _so(
                         dong[
-                            cot_thap_52w
+                            cot_tb_gia_tri
                         ]
                     )
-                    if cot_thap_52w
+                    if cot_tb_gia_tri
                     else np.nan
                 ),
-
+                "pe": (
+                    _so(
+                        dong[
+                            cot_pe
+                        ]
+                    )
+                    if cot_pe
+                    else np.nan
+                ),
+                "pb": (
+                    _so(
+                        dong[
+                            cot_pb
+                        ]
+                    )
+                    if cot_pb
+                    else np.nan
+                ),
+                "roe": (
+                    _so(
+                        dong[
+                            cot_roe
+                        ]
+                    )
+                    if cot_roe
+                    else np.nan
+                ),
+                "rsi": (
+                    _so(
+                        dong[
+                            cot_rsi
+                        ]
+                    )
+                    if cot_rsi
+                    else np.nan
+                ),
+                "macd": (
+                    _so(
+                        dong[
+                            cot_macd
+                        ]
+                    )
+                    if cot_macd
+                    else np.nan
+                ),
+                "ema20": (
+                    _so(
+                        dong[
+                            cot_ema20
+                        ]
+                    )
+                    if cot_ema20
+                    else np.nan
+                ),
+                "ema50": (
+                    _so(
+                        dong[
+                            cot_ema50
+                        ]
+                    )
+                    if cot_ema50
+                    else np.nan
+                ),
                 "von_hoa": (
                     _so(
                         dong[
@@ -1084,7 +883,7 @@ def _chuan_hoa_quote(
 
 
 # ============================================================
-# BẢNG GIÁ TOÀN THỊ TRƯỜNG
+# LẤY 60 MÃ THỊ TRƯỜNG
 # ============================================================
 
 @st.cache_data(
@@ -1096,162 +895,133 @@ def lay_bang_gia_toan_thi_truong(
 ):
     _ = force_reload
 
-    market = _tao_market()
+    insights = _tao_insights()
+
+    try:
+
+        bang_goc = (
+            insights
+            .screener
+            .filter(
+                limit=SO_MA_MAC_DINH
+            )
+        )
+
+    except Exception as loi:
+
+        raise RuntimeError(
+            "Không lấy được bảng thị trường từ Screener."
+        ) from loi
+
+    bang_gia = (
+        _chuan_hoa_screener(
+            _df(
+                bang_goc
+            )
+        )
+    )
+
+    if bang_gia.empty:
+
+        raise RuntimeError(
+            "Không có giá hợp lệ sau khi chuẩn hóa Screener."
+        )
 
     universe = lay_universe()
 
     if (
-        universe is None
-        or universe.empty
+        universe is not None
+        and not universe.empty
     ):
 
-        raise RuntimeError(
-            "Universe cổ phiếu đang rỗng."
-        )
-
-    danh_sach_ma = (
-        universe[
-            "ma"
-        ]
-        .dropna()
-        .astype(str)
-        .str.upper()
-        .drop_duplicates()
-        .tolist()
-    )
-
-    if not danh_sach_ma:
-
-        raise RuntimeError(
-            "Không có mã cổ phiếu để lấy quote."
-        )
-
-    # --------------------------------------------------------
-    # BƯỚC 1:
-    # Thử BULK TOÀN BỘ một lần.
-    # --------------------------------------------------------
-
-    quote_goc = _goi_quote(
-        market,
-        danh_sach_ma,
-    )
-
-    # --------------------------------------------------------
-    # BƯỚC 2:
-    # Nếu backend từ chối request lớn,
-    # fallback batch 500 mã.
-    # --------------------------------------------------------
-
-    if (
-        quote_goc is None
-        or quote_goc.empty
-    ):
-
-        cac_quote = []
-
-        for bat_dau in range(
-            0,
-            len(danh_sach_ma),
-            FALLBACK_BATCH_SIZE,
-        ):
-
-            mot_lo = danh_sach_ma[
-                bat_dau:
-                bat_dau
-                + FALLBACK_BATCH_SIZE
+        thong_tin = universe[
+            [
+                "ma",
+                "ten_doanh_nghiep",
+                "san",
+                "ma_nganh",
+                "ten_nganh",
             ]
+        ].copy()
 
-            du_lieu_lo = _goi_quote(
-                market,
-                mot_lo,
-            )
+        bang_gia = bang_gia.merge(
+            thong_tin,
+            on="ma",
+            how="left",
+            suffixes=(
+                "",
+                "_ref",
+            ),
+        )
 
-            if (
-                du_lieu_lo is not None
-                and not du_lieu_lo.empty
-            ):
+        # Nếu screener đã có sàn thì giữ.
+        if "san_ref" in bang_gia.columns:
 
-                cac_quote.append(
-                    du_lieu_lo
+            bang_gia[
+                "san"
+            ] = (
+                bang_gia[
+                    "san"
+                ]
+                .replace(
+                    "",
+                    np.nan,
                 )
-
-        if cac_quote:
-
-            quote_goc = pd.concat(
-                cac_quote,
-                ignore_index=True,
+                .fillna(
+                    bang_gia[
+                        "san_ref"
+                    ]
+                )
+                .fillna("")
             )
 
-    if (
-        quote_goc is None
-        or quote_goc.empty
-    ):
+            bang_gia = (
+                bang_gia.drop(
+                    columns=[
+                        "san_ref"
+                    ]
+                )
+            )
 
-        raise RuntimeError(
-            "Nguồn Market không trả về dữ liệu bảng giá."
-        )
-
-    quote = _chuan_hoa_quote(
-        quote_goc
-    )
-
-    if quote.empty:
-
-        raise RuntimeError(
-            "Không có giá hợp lệ sau khi chuẩn hóa quote."
-        )
-
-    # --------------------------------------------------------
-    # GHÉP THÔNG TIN REFERENCE
-    # --------------------------------------------------------
-
-    bang_tham_chieu = universe[
-        [
-            "ma",
+        for cot in [
             "ten_doanh_nghiep",
-            "san",
             "ma_nganh",
             "ten_nganh",
-        ]
-    ].copy()
+        ]:
 
-    bang_gia = quote.merge(
-        bang_tham_chieu,
-        on="ma",
-        how="left",
-    )
+            if cot not in bang_gia.columns:
+                bang_gia[cot] = ""
 
-    # --------------------------------------------------------
-    # CHUẨN HÓA TEXT
-    # --------------------------------------------------------
-
-    for cot in [
-        "ten_doanh_nghiep",
-        "san",
-        "ma_nganh",
-        "ten_nganh",
-    ]:
-
-        if cot not in bang_gia.columns:
-
-            bang_gia[cot] = ""
-
-        bang_gia[
-            cot
-        ] = (
             bang_gia[
                 cot
-            ]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
+            ] = (
+                bang_gia[
+                    cot
+                ]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+    else:
+
+        bang_gia[
+            "ten_doanh_nghiep"
+        ] = ""
+
+        bang_gia[
+            "ma_nganh"
+        ] = ""
+
+        bang_gia[
+            "ten_nganh"
+        ] = ""
 
     # --------------------------------------------------------
-    # TRẠNG THÁI
+    # Trạng thái
     # --------------------------------------------------------
 
-    thay_doi_pct = pd.to_numeric(
+    bien_dong = pd.to_numeric(
         bang_gia[
             "thay_doi_pct"
         ],
@@ -1262,8 +1032,8 @@ def lay_bang_gia_toan_thi_truong(
         "trang_thai"
     ] = np.select(
         [
-            thay_doi_pct > 0.05,
-            thay_doi_pct < -0.05,
+            bien_dong > 0.05,
+            bien_dong < -0.05,
         ],
         [
             "Tăng",
@@ -1271,32 +1041,6 @@ def lay_bang_gia_toan_thi_truong(
         ],
         default="Đứng giá",
     )
-
-    # --------------------------------------------------------
-    # GIÁ TRỊ GIAO DỊCH
-    # --------------------------------------------------------
-
-    bang_gia[
-        "gia_tri_giao_dich"
-    ] = pd.to_numeric(
-        bang_gia[
-            "gia_tri_giao_dich"
-        ],
-        errors="coerce",
-    )
-
-    bang_gia[
-        "khoi_luong"
-    ] = pd.to_numeric(
-        bang_gia[
-            "khoi_luong"
-        ],
-        errors="coerce",
-    )
-
-    # Không tự nhân price * volume nếu nguồn đã có
-    # total_value nhưng khác đơn vị.
-    # Chỉ giữ giá trị nguồn trả về.
 
     return (
         bang_gia
@@ -1328,10 +1072,6 @@ def loc_bang_gia(
         return pd.DataFrame()
 
     df = bang_gia.copy()
-
-    # --------------------------------------------------------
-    # TỪ KHÓA
-    # --------------------------------------------------------
 
     tu_khoa = str(
         tu_khoa or ""
@@ -1380,25 +1120,21 @@ def loc_bang_gia(
             | mask_ten
         ]
 
-    # --------------------------------------------------------
-    # SÀN
-    # --------------------------------------------------------
-
     if (
         san != "Tất cả"
         and "san" in df.columns
     ):
 
         df = df[
-            df["san"]
+            df[
+                "san"
+            ]
+            .fillna("")
+            .astype(str)
             .eq(
                 str(san).upper()
             )
         ]
-
-    # --------------------------------------------------------
-    # NGÀNH
-    # --------------------------------------------------------
 
     if (
         nganh != "Tất cả"
@@ -1409,14 +1145,12 @@ def loc_bang_gia(
             df[
                 "ten_nganh"
             ]
+            .fillna("")
+            .astype(str)
             .eq(
                 str(nganh)
             )
         ]
-
-    # --------------------------------------------------------
-    # TRẠNG THÁI
-    # --------------------------------------------------------
 
     if (
         huong != "Tất cả"
@@ -1438,7 +1172,7 @@ def loc_bang_gia(
 
 
 # ============================================================
-# THỐNG KÊ TOÀN THỊ TRƯỜNG
+# THỐNG KÊ
 # ============================================================
 
 def thong_ke_thi_truong(
@@ -1457,8 +1191,8 @@ def thong_ke_thi_truong(
             "giam": 0,
             "tong_khoi_luong": np.nan,
             "tong_gia_tri": np.nan,
-            "phan_tram_tang": np.nan,
-            "phan_tram_giam": np.nan,
+            "phan_tram_tang": 0.0,
+            "phan_tram_giam": 0.0,
         }
 
     thay_doi = pd.to_numeric(
@@ -1528,14 +1262,18 @@ def thong_ke_thi_truong(
             )
         ),
         "phan_tram_tang": (
-            tang / tong * 100
+            tang
+            / tong
+            * 100
             if tong
-            else np.nan
+            else 0.0
         ),
         "phan_tram_giam": (
-            giam / tong * 100
+            giam
+            / tong
+            * 100
             if tong
-            else np.nan
+            else 0.0
         ),
     }
 
@@ -1565,8 +1303,12 @@ def tinh_diem_tam_ly(
     diem = (
         50
         + (
-            thong_ke["tang"]
-            - thong_ke["giam"]
+            thong_ke[
+                "tang"
+            ]
+            - thong_ke[
+                "giam"
+            ]
         )
         / tong
         * 50
@@ -1613,32 +1355,190 @@ def nhan_diem_tam_ly(
 
 
 # ============================================================
-# TOP TĂNG
+# RANKING
 # ============================================================
 
-def top_tang(
-    bang_gia,
-    so_luong=20,
+def _lay_ranking(
+    ten_ham,
+    limit=20,
 ):
-    if (
-        bang_gia is None
-        or bang_gia.empty
-    ):
+    insights = _tao_insights()
+
+    try:
+
+        ham = getattr(
+            insights.ranking,
+            ten_ham,
+        )
+
+        bang = ham(
+            limit=limit
+        )
+
+        return _df(
+            bang
+        )
+
+    except Exception:
         return pd.DataFrame()
 
-    df = bang_gia[
-        bang_gia[
-            "thay_doi_pct"
-        ].notna()
-    ].copy()
+
+def _chuan_hoa_ranking(
+    bang,
+):
+    if bang.empty:
+        return pd.DataFrame()
+
+    df = bang.copy()
+
+    cot_ma = _tim_cot(
+        df,
+        "symbol",
+        "ticker",
+        "code",
+    )
+
+    if cot_ma is None:
+        return pd.DataFrame()
+
+    cot_san = _tim_cot(
+        df,
+        "exchange",
+    )
+
+    cot_gia = _tim_cot(
+        df,
+        "last_price",
+        "price",
+        "match_price",
+    )
+
+    cot_thay_doi = _tim_cot(
+        df,
+        "price_change_1d",
+        "change",
+        "price_change",
+    )
+
+    cot_phan_tram = _tim_cot(
+        df,
+        "price_change_pct_1d",
+        "price_change_percent",
+        "change_percent",
+    )
+
+    cot_gia_tri = _tim_cot(
+        df,
+        "total_value",
+        "accumulated_value",
+    )
+
+    cot_khoi_luong = _tim_cot(
+        df,
+        "accumulated_volume",
+        "volume",
+        "total_volume",
+    )
+
+    ket_qua = pd.DataFrame()
+
+    ket_qua[
+        "ma"
+    ] = (
+        df[
+            cot_ma
+        ]
+        .map(
+            _chuan_hoa_ma
+        )
+    )
+
+    ket_qua[
+        "san"
+    ] = (
+        df[
+            cot_san
+        ]
+        .map(
+            _chuan_san
+        )
+        if cot_san
+        else ""
+    )
+
+    ket_qua[
+        "gia"
+    ] = (
+        pd.to_numeric(
+            df[
+                cot_gia
+            ],
+            errors="coerce",
+        )
+        if cot_gia
+        else np.nan
+    )
+
+    ket_qua[
+        "thay_doi"
+    ] = (
+        pd.to_numeric(
+            df[
+                cot_thay_doi
+            ],
+            errors="coerce",
+        )
+        if cot_thay_doi
+        else np.nan
+    )
+
+    ket_qua[
+        "thay_doi_pct"
+    ] = (
+        pd.to_numeric(
+            df[
+                cot_phan_tram
+            ],
+            errors="coerce",
+        )
+        if cot_phan_tram
+        else np.nan
+    )
+
+    ket_qua[
+        "gia_tri_giao_dich"
+    ] = (
+        pd.to_numeric(
+            df[
+                cot_gia_tri
+            ],
+            errors="coerce",
+        )
+        if cot_gia_tri
+        else np.nan
+    )
+
+    ket_qua[
+        "khoi_luong"
+    ] = (
+        pd.to_numeric(
+            df[
+                cot_khoi_luong
+            ],
+            errors="coerce",
+        )
+        if cot_khoi_luong
+        else np.nan
+    )
 
     return (
-        df.sort_values(
-            "thay_doi_pct",
-            ascending=False,
-        )
-        .head(
-            so_luong
+        ket_qua[
+            ket_qua[
+                "ma"
+            ] != ""
+        ]
+        .drop_duplicates(
+            "ma"
         )
         .reset_index(
             drop=True
@@ -1646,114 +1546,139 @@ def top_tang(
     )
 
 
-# ============================================================
-# TOP GIẢM
-# ============================================================
-
-def top_giam(
-    bang_gia,
+def top_tang(
+    bang_gia=None,
     so_luong=20,
 ):
+    bang = _lay_ranking(
+        "gainer",
+        so_luong,
+    )
+
+    if not bang.empty:
+
+        return _chuan_hoa_ranking(
+            bang
+        )
+
     if (
         bang_gia is None
         or bang_gia.empty
     ):
         return pd.DataFrame()
 
-    df = bang_gia[
-        bang_gia[
-            "thay_doi_pct"
-        ].notna()
-    ].copy()
+    return (
+        bang_gia
+        .sort_values(
+            "thay_doi_pct",
+            ascending=False,
+        )
+        .head(
+            so_luong
+        )
+        .copy()
+    )
+
+
+def top_giam(
+    bang_gia=None,
+    so_luong=20,
+):
+    bang = _lay_ranking(
+        "loser",
+        so_luong,
+    )
+
+    if not bang.empty:
+
+        return _chuan_hoa_ranking(
+            bang
+        )
+
+    if (
+        bang_gia is None
+        or bang_gia.empty
+    ):
+        return pd.DataFrame()
 
     return (
-        df.sort_values(
+        bang_gia
+        .sort_values(
             "thay_doi_pct",
             ascending=True,
         )
         .head(
             so_luong
         )
-        .reset_index(
-            drop=True
-        )
+        .copy()
     )
 
 
-# ============================================================
-# TOP KHỐI LƯỢNG
-# ============================================================
-
 def top_khoi_luong(
-    bang_gia,
+    bang_gia=None,
     so_luong=20,
 ):
+    bang = _lay_ranking(
+        "volume",
+        so_luong,
+    )
+
+    if not bang.empty:
+
+        return _chuan_hoa_ranking(
+            bang
+        )
+
     if (
         bang_gia is None
         or bang_gia.empty
     ):
         return pd.DataFrame()
 
-    df = bang_gia[
-        bang_gia[
-            "khoi_luong"
-        ].notna()
-        &
-        (
-            pd.to_numeric(
-                bang_gia[
-                    "khoi_luong"
-                ],
-                errors="coerce",
-            ) > 0
-        )
-    ].copy()
-
     return (
-        df.sort_values(
+        bang_gia
+        .sort_values(
             "khoi_luong",
             ascending=False,
         )
         .head(
             so_luong
         )
-        .reset_index(
-            drop=True
-        )
+        .copy()
     )
 
 
-# ============================================================
-# TOP GIÁ TRỊ GIAO DỊCH
-# ============================================================
-
 def top_gia_tri_giao_dich(
-    bang_gia,
+    bang_gia=None,
     so_luong=20,
 ):
+    bang = _lay_ranking(
+        "value",
+        so_luong,
+    )
+
+    if not bang.empty:
+
+        return _chuan_hoa_ranking(
+            bang
+        )
+
     if (
         bang_gia is None
         or bang_gia.empty
     ):
         return pd.DataFrame()
 
-    df = bang_gia[
-        bang_gia[
-            "gia_tri_giao_dich"
-        ].notna()
-    ].copy()
-
     return (
-        df.sort_values(
+        bang_gia
+        .sort_values(
             "gia_tri_giao_dich",
             ascending=False,
         )
         .head(
             so_luong
         )
-        .reset_index(
-            drop=True
-        )
+        .copy()
     )
 
 
@@ -1772,16 +1697,7 @@ def thong_ke_theo_san(
 
     df = bang_gia.copy()
 
-    df[
-        "thay_doi_pct"
-    ] = pd.to_numeric(
-        df[
-            "thay_doi_pct"
-        ],
-        errors="coerce",
-    )
-
-    ket_qua = (
+    return (
         df.groupby(
             "san",
             dropna=False,
@@ -1832,8 +1748,6 @@ def thong_ke_theo_san(
         .reset_index()
     )
 
-    return ket_qua
-
 
 # ============================================================
 # THEO NGÀNH
@@ -1873,16 +1787,7 @@ def thong_ke_theo_nganh(
     if df.empty:
         return pd.DataFrame()
 
-    df[
-        "thay_doi_pct"
-    ] = pd.to_numeric(
-        df[
-            "thay_doi_pct"
-        ],
-        errors="coerce",
-    )
-
-    ket_qua = (
+    return (
         df.groupby(
             "ten_nganh",
             dropna=False,
@@ -1937,11 +1842,9 @@ def thong_ke_theo_nganh(
         )
     )
 
-    return ket_qua
-
 
 # ============================================================
-# NGOẠI
+# GIAO DỊCH NƯỚC NGOÀI
 # ============================================================
 
 def thong_ke_nuoc_ngoai(
@@ -1958,13 +1861,31 @@ def thong_ke_nuoc_ngoai(
             "rong": np.nan,
         }
 
-    if (
-        "nuoc_ngoai_mua"
-        not in bang_gia.columns
-        or
-        "nuoc_ngoai_ban"
-        not in bang_gia.columns
-    ):
+    insights = _tao_insights()
+
+    mua = pd.DataFrame()
+    ban = pd.DataFrame()
+
+    try:
+
+        mua = _df(
+            insights.ranking.foreign_buy(
+                limit=20
+            )
+        )
+
+        ban = _df(
+            insights.ranking.foreign_sell(
+                limit=20
+            )
+        )
+
+    except Exception:
+        mua = pd.DataFrame()
+        ban = pd.DataFrame()
+
+    if mua.empty and ban.empty:
+
         return {
             "co_du_lieu": False,
             "mua": np.nan,
@@ -1972,52 +1893,42 @@ def thong_ke_nuoc_ngoai(
             "rong": np.nan,
         }
 
-    mua = pd.to_numeric(
-        bang_gia[
-            "nuoc_ngoai_mua"
-        ],
-        errors="coerce",
-    )
-
-    ban = pd.to_numeric(
-        bang_gia[
-            "nuoc_ngoai_ban"
-        ],
-        errors="coerce",
-    )
-
-    if (
-        mua.notna().sum()
-        == 0
-        and ban.notna().sum()
-        == 0
+    def _tong_gia_tri(
+        bang,
     ):
-        return {
-            "co_du_lieu": False,
-            "mua": np.nan,
-            "ban": np.nan,
-            "rong": np.nan,
-        }
 
-    tong_mua = mua.sum(
-        min_count=1
+        if bang.empty:
+            return 0.0
+
+        cot = _tim_cot(
+            bang,
+            "net_value",
+        )
+
+        if cot is None:
+            return 0.0
+
+        return pd.to_numeric(
+            bang[
+                cot
+            ],
+            errors="coerce",
+        ).sum(
+            min_count=1
+        )
+
+    tong_mua = _tong_gia_tri(
+        mua
     )
 
-    tong_ban = ban.sum(
-        min_count=1
+    tong_ban = _tong_gia_tri(
+        ban
     )
 
-    if (
-        np.isfinite(
-            _so(
-                tong_mua
-            )
-        )
-        and np.isfinite(
-            _so(
-                tong_ban
-            )
-        )
+    if np.isfinite(
+        _so(tong_mua)
+    ) and np.isfinite(
+        _so(tong_ban)
     ):
 
         rong = (
@@ -2044,31 +1955,32 @@ def thong_ke_nuoc_ngoai(
 def thong_tin_nguon(
     bang_gia,
 ):
-    if (
-        bang_gia is None
-        or bang_gia.empty
-    ):
-        return {
-            "so_ma": 0,
-            "cap_nhat": None,
-            "nguon": "Vnstock Market",
-        }
-
     return {
-        "so_ma": int(
-            bang_gia[
-                "ma"
-            ].nunique()
+        "so_ma": (
+            int(
+                bang_gia[
+                    "ma"
+                ].nunique()
+            )
+            if (
+                isinstance(
+                    bang_gia,
+                    pd.DataFrame,
+                )
+                and not bang_gia.empty
+                and "ma" in bang_gia.columns
+            )
+            else 0
         ),
         "cap_nhat": pd.Timestamp.now(),
         "nguon": (
-            "Vnstock Market · bảng giá toàn thị trường"
+            "Vnstock Data · Insights Screener/Ranking"
         ),
     }
 
 
 # ============================================================
-# API CHÍNH
+# API TỔNG
 # ============================================================
 
 def lay_market_overview(
@@ -2080,19 +1992,15 @@ def lay_market_overview(
         )
     )
 
-    diem_tam_ly = (
-        tinh_diem_tam_ly(
-            bang_gia
-        )
+    tam_ly = tinh_diem_tam_ly(
+        bang_gia
     )
 
     return {
         "bang_gia": bang_gia,
 
-        "universe": (
-            lay_universe(
-                force_reload=force_reload
-            )
+        "universe": lay_universe(
+            force_reload=force_reload
         ),
 
         "thong_ke": (
@@ -2101,11 +2009,11 @@ def lay_market_overview(
             )
         ),
 
-        "tam_ly": diem_tam_ly,
+        "tam_ly": tam_ly,
 
         "nhan_tam_ly": (
             nhan_diem_tam_ly(
-                diem_tam_ly
+                tam_ly
             )
         ),
 
