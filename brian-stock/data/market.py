@@ -7,10 +7,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ============================================================
-# NGUỒN DỮ LIỆU
-# ============================================================
-
 try:
     from vnstock import Market
 
@@ -21,7 +17,7 @@ except Exception:
 
 
 # ============================================================
-# THỜI GIAN LƯU
+# CẤU HÌNH
 # ============================================================
 
 THOI_GIAN_LUU_CO_PHIEU = 300
@@ -67,7 +63,7 @@ def display_symbol(symbol):
 
 
 # ============================================================
-# KHỞI TẠO NGUỒN
+# KHỞI TẠO NGUỒN DỮ LIỆU
 # ============================================================
 
 @st.cache_resource(
@@ -77,20 +73,20 @@ def _tao_nguon_thi_truong():
 
     if not NGUON_VNSTOCK_CO_SAN:
         raise RuntimeError(
-            "Chưa cài thư viện vnstock. "
-            "Thêm vnstock vào requirements.txt."
+            "Chưa cài vnstock. "
+            "Hãy thêm vnstock vào requirements.txt."
         )
 
     try:
         return Market()
     except Exception as loi:
         raise RuntimeError(
-            f"Không khởi tạo được nguồn dữ liệu thị trường: {loi}"
+            f"Không khởi tạo được nguồn dữ liệu: {loi}"
         )
 
 
 # ============================================================
-# CHUYỂN KHOẢNG THỜI GIAN
+# SỐ NGÀY THEO KHUNG THỜI GIAN
 # ============================================================
 
 def _so_ngay_theo_ky(
@@ -123,11 +119,12 @@ def _so_ngay_theo_ky(
 
 
 # ============================================================
-# CHUẨN HÓA BẢNG DỮ LIỆU
+# CHUẨN HÓA BẢNG GIÁ
 # ============================================================
 
 def _chuan_hoa_bang_gia(
-    du_lieu
+    du_lieu,
+    la_co_phieu=False,
 ):
 
     if du_lieu is None:
@@ -178,7 +175,7 @@ def _chuan_hoa_bang_gia(
         du_lieu.columns = cot_moi
 
     # --------------------------------------------------------
-    # Đổi tên cột
+    # Chuẩn hóa tên cột
     # --------------------------------------------------------
 
     anh_xa = {}
@@ -287,7 +284,7 @@ def _chuan_hoa_bang_gia(
     ].copy()
 
     # --------------------------------------------------------
-    # Bắt buộc OHLC
+    # Kiểm tra cột bắt buộc
     # --------------------------------------------------------
 
     cac_cot_bat_buoc = [
@@ -310,14 +307,14 @@ def _chuan_hoa_bang_gia(
         )
 
     # --------------------------------------------------------
-    # Nếu index không có volume thì tạo 0
+    # Không có Volume thì tạo 0
     # --------------------------------------------------------
 
     if "Volume" not in du_lieu.columns:
         du_lieu["Volume"] = 0.0
 
     # --------------------------------------------------------
-    # Chuyển số
+    # Ép kiểu số
     # --------------------------------------------------------
 
     for cot in [
@@ -333,8 +330,52 @@ def _chuan_hoa_bang_gia(
             errors="coerce",
         )
 
+    # ========================================================
+    # QUAN TRỌNG:
+    # CHUẨN HÓA ĐƠN VỊ GIÁ CỔ PHIẾU
+    #
+    # Một số dữ liệu cổ phiếu Việt Nam trả:
+    #
+    #     MSR = 45
+    #
+    # trong khi giao diện cần:
+    #
+    #     45,000 VND
+    #
+    # Chỉ cổ phiếu mới được xét.
+    # VN-INDEX tuyệt đối không nhân 1,000.
+    # ========================================================
+
+    if la_co_phieu:
+
+        gia_trung_vi = (
+            du_lieu["Close"]
+            .dropna()
+            .median()
+        )
+
+        if (
+            pd.notna(
+                gia_trung_vi
+            )
+            and gia_trung_vi > 0
+            and gia_trung_vi < 1000
+        ):
+
+            for cot in [
+                "Open",
+                "High",
+                "Low",
+                "Close",
+            ]:
+
+                du_lieu[cot] = (
+                    du_lieu[cot]
+                    * 1000
+                )
+
     # --------------------------------------------------------
-    # Loại giá lỗi
+    # Loại dữ liệu giá lỗi
     # --------------------------------------------------------
 
     du_lieu.loc[
@@ -362,6 +403,10 @@ def _chuan_hoa_bang_gia(
         "Volume",
     ] = np.nan
 
+    # --------------------------------------------------------
+    # Loại vô cực
+    # --------------------------------------------------------
+
     du_lieu = du_lieu.replace(
         [
             np.inf,
@@ -369,6 +414,10 @@ def _chuan_hoa_bang_gia(
         ],
         np.nan,
     )
+
+    # --------------------------------------------------------
+    # Chỉ cần OHLC hợp lệ
+    # --------------------------------------------------------
 
     du_lieu = du_lieu.dropna(
         subset=[
@@ -466,17 +515,21 @@ def rsi(
 # ============================================================
 
 def add_indicators(
-    du_lieu
+    du_lieu,
+    la_co_phieu=False,
 ):
 
     du_lieu = _chuan_hoa_bang_gia(
-        du_lieu
+        du_lieu,
+        la_co_phieu=la_co_phieu,
     ).copy()
 
-    gia = du_lieu["Close"]
+    gia = du_lieu[
+        "Close"
+    ]
 
     # --------------------------------------------------------
-    # Lợi suất
+    # Return
     # --------------------------------------------------------
 
     du_lieu["Return"] = (
@@ -636,7 +689,9 @@ def add_indicators(
             f"Volume_SMA{so_phien}"
         ] = (
             du_lieu["Volume"]
-            .rolling(so_phien)
+            .rolling(
+                so_phien
+            )
             .mean()
         )
 
@@ -666,7 +721,7 @@ def add_indicators(
     )
 
     # --------------------------------------------------------
-    # ATR
+    # ATR14
     # --------------------------------------------------------
 
     bien_1 = (
@@ -787,7 +842,7 @@ def add_indicators(
 
 
 # ============================================================
-# DỮ LIỆU CỔ PHIẾU TỪ VNSTOCK
+# LẤY DỮ LIỆU CỔ PHIẾU
 # ============================================================
 
 def _lay_co_phieu_vnstock(
@@ -796,6 +851,10 @@ def _lay_co_phieu_vnstock(
 ):
 
     nguon = _tao_nguon_thi_truong()
+
+    ma = normalize_symbol(
+        ma
+    )
 
     so_ngay = _so_ngay_theo_ky(
         ky_hieu
@@ -821,7 +880,9 @@ def _lay_co_phieu_vnstock(
             ),
             end=(
                 ngay_cuoi
-                + timedelta(days=1)
+                + timedelta(
+                    days=1
+                )
             ).strftime(
                 "%Y-%m-%d"
             ),
@@ -838,12 +899,13 @@ def _lay_co_phieu_vnstock(
         )
 
     return _chuan_hoa_bang_gia(
-        du_lieu
+        du_lieu,
+        la_co_phieu=True,
     )
 
 
 # ============================================================
-# DỮ LIỆU VN-INDEX TỪ VNSTOCK
+# LẤY DỮ LIỆU VN-INDEX
 # ============================================================
 
 def _lay_vnindex_vnstock():
@@ -870,7 +932,9 @@ def _lay_vnindex_vnstock():
             ),
             end=(
                 ngay_cuoi
-                + timedelta(days=1)
+                + timedelta(
+                    days=1
+                )
             ).strftime(
                 "%Y-%m-%d"
             ),
@@ -887,12 +951,16 @@ def _lay_vnindex_vnstock():
         )
 
     du_lieu = _chuan_hoa_bang_gia(
-        du_lieu
+        du_lieu,
+        la_co_phieu=False,
     )
 
-    return add_indicators(
-        du_lieu
+    du_lieu = add_indicators(
+        du_lieu,
+        la_co_phieu=False,
     )
+
+    return du_lieu
 
 
 # ============================================================
@@ -918,11 +986,8 @@ def load_market_data(
         )
 
     if not NGUON_VNSTOCK_CO_SAN:
-
         raise RuntimeError(
-            "Project chưa có vnstock. "
-            "Hãy thêm vnstock vào requirements.txt "
-            "rồi khởi động lại ứng dụng."
+            "Chưa có vnstock trong môi trường."
         )
 
     du_lieu_goc = _lay_co_phieu_vnstock(
@@ -931,15 +996,18 @@ def load_market_data(
     )
 
     du_lieu = add_indicators(
-        du_lieu_goc
+        du_lieu_goc,
+        la_co_phieu=True,
     )
 
     if du_lieu.empty:
         raise ValueError(
-            f"VNSTOCK không có dữ liệu hợp lệ cho {ma}."
+            f"Không có dữ liệu hợp lệ cho {ma}."
         )
 
-    du_lieu.attrs["symbol"] = ma
+    du_lieu.attrs[
+        "symbol"
+    ] = ma
 
     du_lieu.attrs[
         "display_symbol"
@@ -950,6 +1018,11 @@ def load_market_data(
     du_lieu.attrs[
         "source"
     ] = "Vnstock"
+
+    # Cho chart biết đây là cổ phiếu
+    du_lieu.attrs[
+        "la_co_phieu"
+    ] = True
 
     return du_lieu
 
@@ -965,9 +1038,8 @@ def load_market_data(
 def load_vnindex_data():
 
     if not NGUON_VNSTOCK_CO_SAN:
-
         raise RuntimeError(
-            "Project chưa có vnstock."
+            "Chưa có vnstock trong môi trường."
         )
 
     du_lieu = _lay_vnindex_vnstock()
@@ -988,6 +1060,10 @@ def load_vnindex_data():
     du_lieu.attrs[
         "source"
     ] = "Vnstock"
+
+    du_lieu.attrs[
+        "la_co_phieu"
+    ] = False
 
     return du_lieu
 
@@ -1089,16 +1165,11 @@ def market_snapshot(
     )
 
     if len(du_lieu) >= 2:
-
         dong_truoc = (
             du_lieu.iloc[-2]
         )
-
     else:
-
-        dong_truoc = (
-            dong_cuoi
-        )
+        dong_truoc = dong_cuoi
 
     gia = float(
         dong_cuoi[
@@ -1124,7 +1195,7 @@ def market_snapshot(
 
         thay_doi = np.nan
 
-    def _lay_so(
+    def _so(
         ten_cot
     ):
 
@@ -1149,25 +1220,25 @@ def market_snapshot(
     return {
         "price": gia,
         "change_1d": thay_doi,
-        "return_1d": _lay_so(
+        "return_1d": _so(
             "ReturnPct"
         ),
-        "rsi": _lay_so(
+        "rsi": _so(
             "RSI"
         ),
-        "macd": _lay_so(
+        "macd": _so(
             "MACD"
         ),
-        "sma20": _lay_so(
+        "sma20": _so(
             "SMA20"
         ),
-        "sma50": _lay_so(
+        "sma50": _so(
             "SMA50"
         ),
-        "volatility20": _lay_so(
+        "volatility20": _so(
             "Volatility20"
         ),
-        "volume": _lay_so(
+        "volume": _so(
             "Volume"
         ),
     }
@@ -1229,17 +1300,13 @@ def classify_news(
     ]
 
     diem_tich_cuc = sum(
-        tu
-        in van_ban
-        for tu
-        in tu_tich_cuc
+        tu in van_ban
+        for tu in tu_tich_cuc
     )
 
     diem_tieu_cuc = sum(
-        tu
-        in van_ban
-        for tu
-        in tu_tieu_cuc
+        tu in van_ban
+        for tu in tu_tieu_cuc
     )
 
     if (
