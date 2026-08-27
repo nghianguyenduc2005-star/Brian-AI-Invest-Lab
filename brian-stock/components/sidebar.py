@@ -23,12 +23,21 @@ THU_MUC_ASSETS = os.path.join(
 
 
 # ============================================================
-# TÌM FILE ẢNH
+# TÌM LOGO
 # ============================================================
 
-def _tim_tep(
-    danh_sach,
-):
+def _tim_logo():
+
+    danh_sach = [
+        "logo.png",
+        "logo.jpg",
+        "logo.jpeg",
+        "logo.webp",
+        "brian-stock.png",
+        "brian_stock.png",
+        "brian.png",
+    ]
+
     for ten in danh_sach:
 
         duong_dan = os.path.join(
@@ -44,47 +53,44 @@ def _tim_tep(
     return None
 
 
-def _tim_logo():
-
-    return _tim_tep(
-        [
-            "logo.png",
-            "logo.jpg",
-            "logo.jpeg",
-            "logo.webp",
-            "brian-stock.png",
-            "brian_stock.png",
-            "brian.png",
-        ]
-    )
-
+# ============================================================
+# TÌM ẢNH NỀN
+# ============================================================
 
 def _tim_anh_nen():
 
-    tep_anh = _tim_tep(
-        [
-            "background.jpg",
-            "background.jpeg",
-            "background.png",
-            "background.webp",
-            "bg.jpg",
-            "bg.jpeg",
-            "bg.png",
-            "bg.webp",
-            "hero.jpg",
-            "hero.jpeg",
-            "hero.png",
-            "hero.webp",
-            "nen.jpg",
-            "nen.jpeg",
-            "nen.png",
-            "nen.webp",
-        ]
-    )
+    danh_sach = [
+        "background.jpg",
+        "background.jpeg",
+        "background.png",
+        "background.webp",
+        "bg.jpg",
+        "bg.jpeg",
+        "bg.png",
+        "bg.webp",
+        "hero.jpg",
+        "hero.jpeg",
+        "hero.png",
+        "hero.webp",
+        "nen.jpg",
+        "nen.jpeg",
+        "nen.png",
+        "nen.webp",
+    ]
 
-    if tep_anh:
-        return tep_anh
+    for ten in danh_sach:
 
+        duong_dan = os.path.join(
+            THU_MUC_ASSETS,
+            ten,
+        )
+
+        if os.path.isfile(
+            duong_dan
+        ):
+            return duong_dan
+
+    # Tự tìm ảnh đầu tiên trong assets
     if os.path.isdir(
         THU_MUC_ASSETS
     ):
@@ -106,9 +112,11 @@ def _tim_anh_nen():
             ):
                 continue
 
-            if os.path.splitext(
+            duoi = os.path.splitext(
                 ten
-            )[1].lower() in {
+            )[1].lower()
+
+            if duoi in {
                 ".jpg",
                 ".jpeg",
                 ".png",
@@ -137,60 +145,65 @@ def _anh_base64(
             "rb",
         ) as tep:
 
-            du_lieu = base64.b64encode(
-                tep.read()
-            ).decode(
-                "utf-8"
-            )
+            noi_dung = tep.read()
+
+        du_lieu = base64.b64encode(
+            noi_dung
+        ).decode(
+            "utf-8"
+        )
 
         duoi = os.path.splitext(
             duong_dan
         )[1].lower()
 
-        loai_anh = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".webp": "image/webp",
-        }.get(
-            duoi,
-            "image/jpeg",
-        )
+        if duoi == ".png":
+            loai = "image/png"
+
+        elif duoi in {
+            ".jpg",
+            ".jpeg",
+        }:
+            loai = "image/jpeg"
+
+        elif duoi == ".webp":
+            loai = "image/webp"
+
+        else:
+            loai = "image/jpeg"
 
         return (
-            f"data:{loai_anh};base64,"
+            f"data:{loai};base64,"
             f"{du_lieu}"
         )
 
     except Exception:
+
         return None
 
 
 # ============================================================
-# NẠP GIAO DIỆN
+# NẠP CSS
 # ============================================================
 
-def _nap_giao_dien():
+def _nap_css():
 
     anh_nen = _tim_anh_nen()
 
-    du_lieu_anh = _anh_base64(
+    anh_nen_base64 = _anh_base64(
         anh_nen
     )
 
-    if du_lieu_anh:
-
-        nen = (
-            "background-image:"
-            "linear-gradient("
-            "rgba(3,9,16,0.78),"
-            "rgba(3,9,16,0.84)"
-            "),"
-            f"url('{du_lieu_anh}');"
-        )
+    if anh_nen_base64:
 
         css_nen = f"""
-        {nen}
+        background-image:
+            linear-gradient(
+                rgba(3, 9, 16, 0.80),
+                rgba(3, 9, 16, 0.88)
+            ),
+            url("{anh_nen_base64}");
+
         background-size: cover;
         background-position: center center;
         background-repeat: no-repeat;
@@ -212,6 +225,7 @@ def _nap_giao_dien():
     st.markdown(
         f"""
 <style>
+
 .stApp {{
     {css_nen}
     min-height: 100vh;
@@ -232,11 +246,13 @@ def _nap_giao_dien():
 .block-container {{
     background: transparent !important;
     max-width: 1400px;
+    padding-top: 1.5rem;
+    padding-bottom: 3rem;
 }}
 
 [data-testid="stSidebar"] {{
     background:
-        rgba(4, 10, 17, 0.96) !important;
+        rgba(3, 9, 16, 0.96) !important;
     border-right:
         1px solid
         rgba(90, 120, 145, 0.18);
@@ -246,21 +262,21 @@ def _nap_giao_dien():
     background: transparent !important;
 }}
 
-/* Ẩn menu đa trang tự động của Streamlit */
+/* Ẩn navigation tự động của Streamlit */
 [data-testid="stSidebarNav"] {{
     display: none !important;
 }}
 
 .hero {{
     background:
-        rgba(5, 15, 24, 0.58);
+        rgba(5, 15, 24, 0.60);
     border:
         1px solid
         rgba(100, 135, 160, 0.30);
     border-radius: 18px;
     padding: 32px;
     margin-bottom: 26px;
-    backdrop-filter: blur(7px);
+    backdrop-filter: blur(8px);
 }}
 
 .eyebrow {{
@@ -268,22 +284,6 @@ def _nap_giao_dien():
     font-size: 11px;
     font-weight: 800;
     letter-spacing: 2px;
-    margin-bottom: 10px;
-}}
-
-.hero h1 {{
-    color: #ffffff;
-    margin: 0;
-    font-size: 42px;
-    font-weight: 800;
-    line-height: 1.1;
-}}
-
-.hero p {{
-    color: #a9bdcc;
-    font-size: 15px;
-    line-height: 1.6;
-    margin-top: 14px;
 }}
 
 .section-title {{
@@ -296,10 +296,10 @@ def _nap_giao_dien():
 
 [data-testid="stMetric"] {{
     background:
-        rgba(7,22,32,0.80) !important;
+        rgba(7, 22, 32, 0.82) !important;
     border:
         1px solid
-        rgba(75,110,135,0.38);
+        rgba(75, 110, 135, 0.38);
     border-radius: 14px;
     padding: 14px 16px;
 }}
@@ -314,14 +314,12 @@ def _nap_giao_dien():
 
 div[data-baseweb="input"] {{
     background:
-        rgba(39,39,49,0.96) !important;
-    border-radius: 9px;
+        rgba(39, 39, 49, 0.96) !important;
 }}
 
 div[data-baseweb="select"] {{
     background:
-        rgba(39,39,49,0.96) !important;
-    border-radius: 9px;
+        rgba(39, 39, 49, 0.96) !important;
 }}
 
 input {{
@@ -335,10 +333,10 @@ input {{
 
 .news-card {{
     background:
-        rgba(5,19,30,0.82);
+        rgba(5, 19, 30, 0.82);
     border:
         1px solid
-        rgba(75,110,135,0.34);
+        rgba(75, 110, 135, 0.34);
     border-radius: 14px;
     padding: 17px;
     margin-bottom: 12px;
@@ -356,6 +354,7 @@ input {{
     font-size: 12px;
     margin-top: 7px;
 }}
+
 </style>
         """,
         unsafe_allow_html=True,
@@ -368,10 +367,12 @@ input {{
 
 def render_sidebar():
 
-    _nap_giao_dien()
+    _nap_css()
 
     if "page" not in st.session_state:
-        st.session_state["page"] = "Dashboard"
+        st.session_state[
+            "page"
+        ] = "Dashboard"
 
     with st.sidebar:
 
@@ -385,39 +386,21 @@ def render_sidebar():
 
             st.image(
                 logo,
-                width=110,
+                width=100,
             )
 
         st.markdown(
-            """
-<div style="
-    padding: 3px 2px 15px 2px;
-">
-    <div style="
-        color: #ffffff;
-        font-size: 17px;
-        font-weight: 800;
-    ">
-        BRIAN STOCK
-    </div>
-
-    <div style="
-        color: #8499aa;
-        font-size: 10px;
-        letter-spacing: 1px;
-        margin-top: 4px;
-    ">
-        INVESTMENT INTELLIGENCE
-    </div>
-</div>
-            """,
-            unsafe_allow_html=True,
+            "### BRIAN STOCK"
         )
 
-        st.markdown("---")
+        st.caption(
+            "INVESTMENT INTELLIGENCE"
+        )
+
+        st.divider()
 
         # ====================================================
-        # ĐIỀU HƯỚNG
+        # MENU
         # ====================================================
 
         cac_trang = [
@@ -446,14 +429,16 @@ def render_sidebar():
         for ten_trang, ten_hien_thi in cac_trang:
 
             dang_chon = (
-                st.session_state["page"]
+                st.session_state[
+                    "page"
+                ]
                 == ten_trang
             )
 
             if st.button(
                 ten_hien_thi,
                 key=(
-                    "nut_trang_"
+                    "sidebar_nut_"
                     + ten_trang
                 ),
                 width="stretch",
@@ -470,36 +455,28 @@ def render_sidebar():
 
                 st.rerun()
 
-        st.markdown("---")
+        st.divider()
 
         # ====================================================
-        # CHÂN SIDEBAR
+        # THÔNG TIN
         # ====================================================
 
-        st.markdown(
-            """
-<div style="
-    color: #718798;
-    font-size: 10px;
-    line-height: 1.8;
-    padding: 3px;
-">
-    <b style="
-        color: #b9c9d4;
-    ">
-        BRIAN STOCK
-    </b>
-    <br>
-    Investment Research Platform
-    <br><br>
-    Dữ liệu thị trường thật
-    <br>
-    Phân tích kỹ thuật
-    <br>
-    Phân tích định lượng
-    <br>
-    Trợ lý AI
-</div>
-            """,
-            unsafe_allow_html=True,
+        st.caption(
+            "BRIAN STOCK"
+        )
+
+        st.caption(
+            "Dữ liệu thị trường thật"
+        )
+
+        st.caption(
+            "Phân tích kỹ thuật"
+        )
+
+        st.caption(
+            "Phân tích định lượng"
+        )
+
+        st.caption(
+            "Trợ lý AI"
         )
