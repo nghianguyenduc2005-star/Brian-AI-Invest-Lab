@@ -21,9 +21,9 @@ from data.market import (
 # CONFIG
 # ============================================================
 
-CACHE_TTL_DISPLAY = 300
-CACHE_TTL_RESEARCH = 900
-CACHE_TTL_AI = 1800
+DISPLAY_CACHE_TTL = 300
+RESEARCH_CACHE_TTL = 900
+AI_CACHE_TTL = 1800
 
 HORIZONS = {
     "1D": 1,
@@ -50,18 +50,22 @@ PERIOD_PRESETS = {
 MIN_OBSERVATIONS = 60
 TRAIN_RATIO = 0.80
 
-# OLS không nhét toàn bộ biến rất tương quan vào cùng ma trận.
+# OLS không dùng toàn bộ matrix vì các biến như:
+# Close, EMA, SMA, Bollinger... có thể phụ thuộc tuyến tính mạnh.
 MAX_OLS_FEATURES = 15
 OLS_CORR_LIMIT = 0.90
 
-MAX_DISPLAY_FEATURES = 100
+MAX_DISPLAY_FACTORS = 40
 
-# Gemini hiện tại.
-GEMINI_MODEL = "gemini-3.7-flash"
+GEMINI_MODELS = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+]
 
 
 # ============================================================
-# BASIC HELPERS
+# BASIC
 # ============================================================
 
 def num(
@@ -80,22 +84,24 @@ def num(
         return default
 
 
-def text(
+def safe_text(
     value: Any,
-    default: str = "",
+    default="",
 ):
     if value is None:
         return default
 
     try:
-        value = str(value).strip()
+        text = str(value).strip()
     except Exception:
         return default
 
-    return value or default
+    return text if text else default
 
 
-def format_price(value):
+def format_price(
+    value,
+):
     value = num(value)
 
     if value is None:
@@ -104,7 +110,9 @@ def format_price(value):
     return f"{value:,.0f} đồng"
 
 
-def format_percent(value):
+def format_percent(
+    value,
+):
     value = num(value)
 
     if value is None:
@@ -125,7 +133,9 @@ def format_number(
     return f"{value:.{digits}f}"
 
 
-def format_volume(value):
+def format_volume(
+    value,
+):
     value = num(value)
 
     if value is None:
@@ -149,7 +159,9 @@ def format_volume(value):
 # TECHNICAL STATUS
 # ============================================================
 
-def rsi_status(value):
+def rsi_status(
+    value,
+):
     value = num(value)
 
     if value is None:
@@ -176,10 +188,7 @@ def ma_status(
     if price is None:
         return "Không xác định"
 
-    if (
-        sma20 is not None
-        and sma50 is not None
-    ):
+    if sma20 is not None and sma50 is not None:
 
         if price > sma20 > sma50:
             return "Xu hướng tăng"
@@ -200,7 +209,9 @@ def ma_status(
     return "Không xác định"
 
 
-def macd_status(value):
+def macd_status(
+    value,
+):
     value = num(value)
 
     if value is None:
@@ -216,14 +227,13 @@ def macd_status(value):
 
 
 # ============================================================
-# DATE HELPERS
+# DATE
 # ============================================================
 
-def normalize_index(df):
-    if (
-        df is None
-        or df.empty
-    ):
+def normalize_index(
+    df,
+):
+    if df is None or df.empty:
         return pd.DataFrame()
 
     work = df.copy()
@@ -253,12 +263,6 @@ def slice_date_range(
     start_date,
     end_date,
 ):
-    if (
-        df is None
-        or df.empty
-    ):
-        return pd.DataFrame()
-
     work = normalize_index(df)
 
     if work.empty:
@@ -271,7 +275,8 @@ def slice_date_range(
     end_ts = (
         pd.Timestamp(
             end_date
-        ).normalize()
+        )
+        .normalize()
         + pd.Timedelta(days=1)
         - pd.Timedelta(microseconds=1)
     )
@@ -282,13 +287,9 @@ def slice_date_range(
     ].copy()
 
 
-def actual_range(df):
-    if (
-        df is None
-        or df.empty
-    ):
-        return None, None
-
+def actual_range(
+    df,
+):
     work = normalize_index(df)
 
     if work.empty:
@@ -301,7 +302,7 @@ def actual_range(df):
 
 
 # ============================================================
-# FEATURE GROUP
+# FACTOR GROUP
 # ============================================================
 
 def feature_group(
@@ -332,6 +333,7 @@ def feature_group(
             "trading_value",
             "dollar_volume",
             "obv",
+            "flow",
         ]
     ):
         return "Dòng tiền"
@@ -339,7 +341,9 @@ def feature_group(
     return "Kỹ thuật"
 
 
-def group_features(features):
+def group_features(
+    features,
+):
     groups = {
         "Kỹ thuật": [],
         "Dòng tiền": [],
@@ -350,10 +354,7 @@ def group_features(features):
     }
 
     for feature in features:
-
-        group = feature_group(
-            feature
-        )
+        group = feature_group(feature)
 
         groups.setdefault(
             group,
@@ -369,7 +370,9 @@ def group_features(features):
 # TARGET
 # ============================================================
 
-def ensure_targets(df):
+def ensure_targets(
+    df,
+):
     work = normalize_index(df)
 
     if (
@@ -403,14 +406,13 @@ def ensure_targets(df):
 
 
 # ============================================================
-# ALL FEATURES
+# ALL NUMERIC FEATURES
 # ============================================================
 
-def get_all_features(df):
-    if (
-        df is None
-        or df.empty
-    ):
+def get_all_features(
+    df,
+):
+    if df is None or df.empty:
         return []
 
     excluded = {
@@ -431,9 +433,13 @@ def get_all_features(df):
         if name in excluded:
             continue
 
-        if name.lower().startswith(
-            "target_"
-        ):
+        if name.lower().startswith("target_"):
+            continue
+
+        if name in {
+            "Time",
+            "Date",
+        }:
             continue
 
         if not pd.api.types.is_numeric_dtype(
@@ -441,19 +447,15 @@ def get_all_features(df):
         ):
             continue
 
-        features.append(
-            column
-        )
+        features.append(column)
 
     return list(
-        dict.fromkeys(
-            features
-        )
+        dict.fromkeys(features)
     )
 
 
 # ============================================================
-# PREPARE X / Y
+# PREPARE XY
 # ============================================================
 
 def prepare_xy(
@@ -482,9 +484,7 @@ def prepare_xy(
     ].copy()
 
     y = pd.to_numeric(
-        df[
-            target_column
-        ],
+        df[target_column],
         errors="coerce",
     )
 
@@ -504,21 +504,23 @@ def prepare_xy(
         np.nan,
     )
 
-    # Median fill.
+    # --------------------------------------------------------
+    # Median fill
+    # --------------------------------------------------------
+
     for column in X.columns:
 
-        median = X[
-            column
-        ].median()
+        X[column] = pd.to_numeric(
+            X[column],
+            errors="coerce",
+        )
 
-        if pd.isna(
-            median
-        ):
+        median = X[column].median()
+
+        if pd.isna(median):
             median = 0.0
 
-        X[
-            column
-        ] = X[
+        X[column] = X[
             column
         ].fillna(
             median
@@ -526,41 +528,34 @@ def prepare_xy(
 
     valid = y.notna()
 
-    X = X.loc[
-        valid
-    ]
-
-    y = y.loc[
-        valid
-    ]
+    X = X.loc[valid]
+    y = y.loc[valid]
 
     if X.empty:
         return None
 
-    # Chỉ loại variance=0 khỏi model matrix.
+    # --------------------------------------------------------
+    # Drop only zero variance from model matrix.
+    #
+    # Dataset itself vẫn giữ nguyên tất cả biến.
+    # --------------------------------------------------------
+
     usable = []
 
     for column in X.columns:
 
         try:
-
             variance = float(
-                X[
-                    column
-                ].var(
+                X[column].var(
                     ddof=0
                 )
             )
 
             if (
-                np.isfinite(
-                    variance
-                )
+                np.isfinite(variance)
                 and variance > 0
             ):
-                usable.append(
-                    column
-                )
+                usable.append(column)
 
         except Exception:
             continue
@@ -569,9 +564,7 @@ def prepare_xy(
         return None
 
     return (
-        X[
-            usable
-        ].astype(float),
+        X[usable].astype(float),
         y.astype(float),
     )
 
@@ -584,6 +577,9 @@ def correlation_table(
     X,
     y,
 ):
+    if X is None or X.empty:
+        return pd.DataFrame()
+
     rows = []
 
     for column in X.columns:
@@ -605,41 +601,30 @@ def correlation_table(
             & np.isfinite(yy)
         )
 
-        x2 = x.loc[
-            valid
-        ]
-
-        y2 = yy.loc[
-            valid
-        ]
+        x2 = x.loc[valid]
+        y2 = yy.loc[valid]
 
         if len(x2) < 20:
             continue
 
         try:
-
             pearson = float(
                 x2.corr(
                     y2,
                     method="pearson",
                 )
             )
-
         except Exception:
-
             pearson = np.nan
 
         try:
-
             spearman = float(
                 x2.corr(
                     y2,
                     method="spearman",
                 )
             )
-
         except Exception:
-
             spearman = np.nan
 
         rows.append(
@@ -656,9 +641,7 @@ def correlation_table(
     if not rows:
         return pd.DataFrame()
 
-    result = pd.DataFrame(
-        rows
-    )
+    result = pd.DataFrame(rows)
 
     result[
         "AbsSpearman"
@@ -673,92 +656,72 @@ def correlation_table(
             ascending=False,
             na_position="last",
         )
-        .reset_index(
-            drop=True
-        )
+        .reset_index(drop=True)
     )
 
 
 # ============================================================
-# OLS FEATURE SELECTION
+# OLS SAFE FEATURE SELECTION
 # ============================================================
 
 def select_ols_features(
     X,
     y,
 ):
-    if (
-        X is None
-        or X.empty
-    ):
+    if X is None or X.empty:
         return []
 
-    corr = correlation_table(
+    correlation = correlation_table(
         X,
         y,
     )
 
-    if corr.empty:
-
-        return list(
-            X.columns[
-                :MAX_OLS_FEATURES
-            ]
-        )
-
-    ranked = corr[
-        "Biến"
-    ].tolist()
+    ranked = (
+        correlation["Biến"].tolist()
+        if not correlation.empty
+        else list(X.columns)
+    )
 
     selected = []
 
     for feature in ranked:
 
-        if len(
-            selected
-        ) >= MAX_OLS_FEATURES:
+        if len(selected) >= MAX_OLS_FEATURES:
             break
 
         if not selected:
-
-            selected.append(
-                feature
-            )
-
+            selected.append(feature)
             continue
 
-        okay = True
+        independent_enough = True
 
         for existing in selected:
 
             try:
-
-                pair = abs(
+                corr = abs(
                     float(
-                        X[
-                            feature
-                        ].corr(
-                            X[
-                                existing
-                            ]
+                        X[feature].corr(
+                            X[existing]
                         )
                     )
                 )
 
             except Exception:
+                corr = 0.0
 
-                pair = 0.0
+            if corr >= OLS_CORR_LIMIT:
 
-            if pair >= OLS_CORR_LIMIT:
-
-                okay = False
+                independent_enough = False
                 break
 
-        if okay:
+        if independent_enough:
+            selected.append(feature)
 
-            selected.append(
-                feature
-            )
+    if not selected:
+
+        selected = list(
+            X.columns[:MAX_OLS_FEATURES]
+        )
 
     return selected
 
@@ -779,24 +742,59 @@ def run_safe_ols(
             StandardScaler,
         )
 
-        selected = select_ols_features(
+        features = select_ols_features(
             X_train,
             y_train,
         )
 
-        if not selected:
-
+        if not features:
             return {
                 "model": None,
                 "table": pd.DataFrame(),
                 "features": [],
-                "r2": np.nan,
-                "adj_r2": np.nan,
             }
 
         X = X_train[
-            selected
+            features
         ].copy()
+
+        # ----------------------------------------------------
+        # Remove exact constant columns
+        # ----------------------------------------------------
+
+        variable_features = []
+
+        for feature in X.columns:
+
+            try:
+
+                if (
+                    X[feature].nunique(
+                        dropna=False
+                    )
+                    > 1
+                ):
+                    variable_features.append(
+                        feature
+                    )
+
+            except Exception:
+                pass
+
+        X = X[
+            variable_features
+        ]
+
+        features = list(
+            X.columns
+        )
+
+        if not features:
+            return {
+                "model": None,
+                "table": pd.DataFrame(),
+                "features": [],
+            }
 
         scaler = StandardScaler()
 
@@ -806,7 +804,7 @@ def run_safe_ols(
 
         X_scaled = pd.DataFrame(
             X_scaled,
-            columns=selected,
+            columns=features,
             index=X.index,
         )
 
@@ -824,7 +822,7 @@ def run_safe_ols(
 
         rows = []
 
-        for feature in selected:
+        for feature in features:
 
             beta = num(
                 model.params.get(
@@ -862,29 +860,26 @@ def run_safe_ols(
             )
 
         table = (
-            pd.DataFrame(
-                rows
-            )
+            pd.DataFrame(rows)
             .sort_values(
                 "AbsBeta",
                 ascending=False,
                 na_position="last",
             )
-            .reset_index(
-                drop=True
-            )
+            .reset_index(drop=True)
         )
 
         return {
             "model": model,
             "table": table,
-            "features": selected,
+            "features": features,
             "r2": num(
                 model.rsquared
             ),
             "adj_r2": num(
                 model.rsquared_adj
             ),
+            "scaler": scaler,
         }
 
     except Exception as error:
@@ -895,9 +890,7 @@ def run_safe_ols(
             "features": [],
             "r2": np.nan,
             "adj_r2": np.nan,
-            "error": str(
-                error
-            ),
+            "error": str(error),
         }
 
 
@@ -927,13 +920,36 @@ def run_vif(
             np.nan,
         )
 
-        clean = clean.fillna(
-            clean.median()
-        )
+        for column in clean.columns:
 
-        values = clean.values.astype(
+            median = clean[column].median()
+
+            if pd.isna(median):
+                median = 0.0
+
+            clean[column] = clean[
+                column
+            ].fillna(
+                median
+            )
+
+        # Drop constant columns only for VIF.
+        keep = [
+            column
+            for column in clean.columns
+            if clean[column].nunique(
+                dropna=False
+            ) > 1
+        ]
+
+        clean = clean[keep]
+
+        if clean.empty:
+            return pd.DataFrame()
+
+        matrix = clean.astype(
             float
-        )
+        ).values
 
         rows = []
 
@@ -943,16 +959,16 @@ def run_vif(
 
             try:
 
-                vif = float(
+                value = float(
                     variance_inflation_factor(
-                        values,
+                        matrix,
                         index,
                     )
                 )
 
             except Exception:
 
-                vif = np.inf
+                value = np.inf
 
             rows.append(
                 {
@@ -960,31 +976,26 @@ def run_vif(
                     "Nhóm": feature_group(
                         column
                     ),
-                    "VIF": vif,
+                    "VIF": value,
                 }
             )
 
         return (
-            pd.DataFrame(
-                rows
-            )
+            pd.DataFrame(rows)
             .sort_values(
                 "VIF",
                 ascending=False,
                 na_position="last",
             )
-            .reset_index(
-                drop=True
-            )
+            .reset_index(drop=True)
         )
 
     except Exception:
-
         return pd.DataFrame()
 
 
 # ============================================================
-# MODELS
+# ML MODELS
 # ============================================================
 
 def run_models(
@@ -1022,11 +1033,7 @@ def run_models(
         )
 
     except Exception:
-
-        return (
-            pd.DataFrame(),
-            {},
-        )
+        return pd.DataFrame(), {}
 
     models = [
         (
@@ -1126,7 +1133,7 @@ def run_models(
         )
     )
 
-    baseline = np.repeat(
+    baseline_prediction = np.repeat(
         train_mean,
         len(actual),
     )
@@ -1135,7 +1142,7 @@ def run_models(
         np.sqrt(
             mean_squared_error(
                 actual,
-                baseline,
+                baseline_prediction,
             )
         )
     )
@@ -1171,9 +1178,7 @@ def run_models(
             )
 
             rmse = float(
-                np.sqrt(
-                    mse
-                )
+                np.sqrt(mse)
             )
 
             try:
@@ -1193,6 +1198,7 @@ def run_models(
                 {
                     "Mô hình": name,
                     "MAE": mae,
+                    "MSE": mse,
                     "RMSE": rmse,
                     "R²": r2,
                     "Baseline_RMSE": baseline_rmse,
@@ -1204,24 +1210,16 @@ def run_models(
                 }
             )
 
-            fitted[
-                name
-            ] = model
+            fitted[name] = model
 
         except Exception:
             continue
 
     if not rows:
+        return pd.DataFrame(), {}
 
-        return (
-            pd.DataFrame(),
-            {},
-        )
-
-    return (
-        pd.DataFrame(
-            rows
-        )
+    result = (
+        pd.DataFrame(rows)
         .sort_values(
             [
                 "RMSE",
@@ -1229,15 +1227,14 @@ def run_models(
             ],
             ascending=True,
         )
-        .reset_index(
-            drop=True
-        ),
-        fitted,
+        .reset_index(drop=True)
     )
+
+    return result, fitted
 
 
 # ============================================================
-# PERMUTATION IMPORTANCE
+# PERMUTATION
 # ============================================================
 
 def run_permutation(
@@ -1291,13 +1288,10 @@ def run_permutation(
                 "AbsPermutation",
                 ascending=False,
             )
-            .reset_index(
-                drop=True
-            )
+            .reset_index(drop=True)
         )
 
     except Exception:
-
         return pd.DataFrame()
 
 
@@ -1331,10 +1325,9 @@ def run_tree_importance(
             raw_model,
             "feature_importances_",
         ):
-
             return pd.DataFrame()
 
-        importance = np.asarray(
+        values = np.asarray(
             raw_model.feature_importances_,
             dtype=float,
         )
@@ -1342,7 +1335,7 @@ def run_tree_importance(
         table = pd.DataFrame(
             {
                 "Biến": features,
-                "TreeImportance": importance,
+                "TreeImportance": values,
             }
         )
 
@@ -1360,13 +1353,10 @@ def run_tree_importance(
                 "TreeImportance",
                 ascending=False,
             )
-            .reset_index(
-                drop=True
-            )
+            .reset_index(drop=True)
         )
 
     except Exception:
-
         return pd.DataFrame()
 
 
@@ -1374,23 +1364,22 @@ def run_tree_importance(
 # FACTOR RANKING
 # ============================================================
 
-def _percentile(
+def _percentile_score(
     series,
 ):
-    values = pd.to_numeric(
+    series = pd.to_numeric(
         series,
         errors="coerce",
     )
 
-    if values.notna().sum() <= 1:
-
+    if series.notna().sum() <= 1:
         return pd.Series(
             0.0,
-            index=values.index,
+            index=series.index,
         )
 
     return (
-        values.rank(
+        series.rank(
             pct=True,
             na_option="keep",
         )
@@ -1408,14 +1397,9 @@ def build_factor_ranking(
         correlation is None
         or correlation.empty
     ):
-
         return pd.DataFrame()
 
     result = correlation.copy()
-
-    # --------------------------------------------------------
-    # OLS
-    # --------------------------------------------------------
 
     if (
         isinstance(
@@ -1440,21 +1424,9 @@ def build_factor_ranking(
 
     else:
 
-        result[
-            "Beta"
-        ] = np.nan
-
-        result[
-            "p-value"
-        ] = np.nan
-
-        result[
-            "AbsBeta"
-        ] = np.nan
-
-    # --------------------------------------------------------
-    # PERMUTATION
-    # --------------------------------------------------------
+        result["Beta"] = np.nan
+        result["p-value"] = np.nan
+        result["AbsBeta"] = np.nan
 
     if (
         isinstance(
@@ -1478,17 +1450,8 @@ def build_factor_ranking(
 
     else:
 
-        result[
-            "Permutation"
-        ] = np.nan
-
-        result[
-            "AbsPermutation"
-        ] = np.nan
-
-    # --------------------------------------------------------
-    # TREE
-    # --------------------------------------------------------
+        result["Permutation"] = np.nan
+        result["AbsPermutation"] = np.nan
 
     if (
         isinstance(
@@ -1511,44 +1474,30 @@ def build_factor_ranking(
 
     else:
 
-        result[
-            "TreeImportance"
-        ] = np.nan
-
-    # --------------------------------------------------------
-    # Scores
-    # --------------------------------------------------------
+        result["TreeImportance"] = np.nan
 
     result[
         "CorrScore"
-    ] = _percentile(
-        result[
-            "AbsSpearman"
-        ]
+    ] = _percentile_score(
+        result["AbsSpearman"]
     )
 
     result[
         "BetaScore"
-    ] = _percentile(
-        result[
-            "AbsBeta"
-        ]
+    ] = _percentile_score(
+        result["AbsBeta"]
     )
 
     result[
         "PermutationScore"
-    ] = _percentile(
-        result[
-            "AbsPermutation"
-        ]
+    ] = _percentile_score(
+        result["AbsPermutation"]
     )
 
     result[
         "TreeScore"
-    ] = _percentile(
-        result[
-            "TreeImportance"
-        ]
+    ] = _percentile_score(
+        result["TreeImportance"]
     )
 
     result[
@@ -1556,59 +1505,42 @@ def build_factor_ranking(
     ] = (
         result[
             "CorrScore"
-        ].fillna(0)
-        * 0.20
+        ].fillna(0) * 0.20
         + result[
             "BetaScore"
-        ].fillna(0)
-        * 0.20
+        ].fillna(0) * 0.20
         + result[
             "PermutationScore"
-        ].fillna(0)
-        * 0.30
+        ].fillna(0) * 0.30
         + result[
             "TreeScore"
-        ].fillna(0)
-        * 0.30
+        ].fillna(0) * 0.30
     )
 
-    # --------------------------------------------------------
-    # Direction
-    # --------------------------------------------------------
-
-    def direction(
-        row
+    def get_direction(
+        row,
     ):
         beta = num(
-            row.get(
-                "Beta"
-            )
+            row.get("Beta")
         )
 
         spear = num(
-            row.get(
-                "Spearman"
-            )
+            row.get("Spearman")
         )
 
-        if beta is not None:
-
-            value = beta
-
-        else:
-
-            value = spear
+        value = (
+            beta
+            if beta is not None
+            else spear
+        )
 
         if value is None:
-
             return "Không xác định"
 
         if value > 0:
-
             return "Cùng chiều"
 
         if value < 0:
-
             return "Ngược chiều"
 
         return "Trung tính"
@@ -1616,26 +1548,20 @@ def build_factor_ranking(
     result[
         "Quan hệ"
     ] = result.apply(
-        direction,
+        get_direction,
         axis=1,
     )
 
-    # --------------------------------------------------------
-    # Significance
-    # --------------------------------------------------------
-
     def significance(
-        value
+        value,
     ):
-        p = num(
-            value
-        )
+        p = num(value)
 
         if p is None:
             return "Không có p-value"
 
         if p < 0.01:
-            return "Rất mạnh"
+            return "Rất mạnh (<1%)"
 
         if p < 0.05:
             return "Có ý nghĩa 5%"
@@ -1656,13 +1582,14 @@ def build_factor_ranking(
     return (
         result
         .sort_values(
-            "Score",
+            [
+                "Score",
+                "AbsSpearman",
+            ],
             ascending=False,
             na_position="last",
         )
-        .reset_index(
-            drop=True
-        )
+        .reset_index(drop=True)
     )
 
 
@@ -1710,14 +1637,12 @@ def group_summary(
             ],
             ascending=False,
         )
-        .reset_index(
-            drop=True
-        )
+        .reset_index(drop=True)
     )
 
 
 # ============================================================
-# TESTS
+# STATISTICAL TESTS
 # ============================================================
 
 def run_tests(
@@ -1737,34 +1662,33 @@ def run_tests(
             adfuller,
         )
 
-        values = np.asarray(
-            y_train,
-            dtype=float,
+        value = adfuller(
+            np.asarray(
+                y_train,
+                dtype=float,
+            ),
+            autolag="AIC",
         )
 
-        if len(values) >= 20:
-
-            result = adfuller(
-                values,
-                autolag="AIC",
-            )
-
-            tests[
-                "ADF"
-            ] = {
-                "statistic": float(
-                    result[0]
-                ),
-                "p_value": float(
-                    result[1]
-                ),
-            }
+        tests[
+            "ADF"
+        ] = {
+            "statistic": float(
+                value[0]
+            ),
+            "p_value": float(
+                value[1]
+            ),
+            "nobs": int(
+                value[3]
+            ),
+        }
 
     except Exception:
         pass
 
     # --------------------------------------------------------
-    # RESIDUALS
+    # OLS residual
     # --------------------------------------------------------
 
     residuals = None
@@ -1789,7 +1713,7 @@ def run_tests(
         return tests
 
     # --------------------------------------------------------
-    # JARQUE BERA
+    # Jarque-Bera
     # --------------------------------------------------------
 
     try:
@@ -1798,7 +1722,7 @@ def run_tests(
             jarque_bera,
         )
 
-        result = jarque_bera(
+        value = jarque_bera(
             residuals
         )
 
@@ -1806,10 +1730,10 @@ def run_tests(
             "Jarque-Bera"
         ] = {
             "statistic": float(
-                result[0]
+                value[0]
             ),
             "p_value": float(
-                result[1]
+                value[1]
             ),
         }
 
@@ -1817,7 +1741,7 @@ def run_tests(
         pass
 
     # --------------------------------------------------------
-    # DURBIN WATSON
+    # Durbin-Watson
     # --------------------------------------------------------
 
     try:
@@ -1833,14 +1757,14 @@ def run_tests(
                 durbin_watson(
                     residuals
                 )
-            ),
+            )
         }
 
     except Exception:
         pass
 
     # --------------------------------------------------------
-    # LJUNG BOX
+    # Ljung-Box
     # --------------------------------------------------------
 
     try:
@@ -1853,13 +1777,11 @@ def run_tests(
             10,
             max(
                 1,
-                len(
-                    residuals
-                ) // 10,
+                len(residuals) // 10,
             ),
         )
 
-        result = acorr_ljungbox(
+        lb = acorr_ljungbox(
             residuals,
             lags=[lag],
             return_df=True,
@@ -1870,12 +1792,12 @@ def run_tests(
         ] = {
             "lag": lag,
             "statistic": float(
-                result[
+                lb[
                     "lb_stat"
                 ].iloc[-1]
             ),
             "p_value": float(
-                result[
+                lb[
                     "lb_pvalue"
                 ].iloc[-1]
             ),
@@ -1885,7 +1807,7 @@ def run_tests(
         pass
 
     # --------------------------------------------------------
-    # BREUSCH PAGAN
+    # Breusch-Pagan
     # --------------------------------------------------------
 
     try:
@@ -1896,32 +1818,25 @@ def run_tests(
             het_breuschpagan,
         )
 
-        ols_features = (
-            ols_result.get(
-                "features",
-                [],
-            )
+        ols_features = ols_result.get(
+            "features",
+            [],
         )
 
         selected = [
             column
-            for column
-            in ols_features
+            for column in ols_features
             if column in X_train.columns
         ]
 
         if selected:
 
-            X_bp = X_train[
-                selected
-            ]
-
             X_bp = sm.add_constant(
-                X_bp,
+                X_train[selected],
                 has_constant="add",
             )
 
-            result = het_breuschpagan(
+            bp = het_breuschpagan(
                 residuals,
                 X_bp,
             )
@@ -1930,10 +1845,10 @@ def run_tests(
                 "Breusch-Pagan"
             ] = {
                 "statistic": float(
-                    result[0]
+                    bp[0]
                 ),
                 "p_value": float(
-                    result[1]
+                    bp[1]
                 ),
             }
 
@@ -1941,9 +1856,10 @@ def run_tests(
         pass
 
     # --------------------------------------------------------
-    # WHITE
+    # White
     #
-    # Chỉ dùng OLS features để tránh bùng ma trận.
+    # Chỉ chạy nếu matrix OLS nhỏ,
+    # tránh bùng số biến chéo.
     # --------------------------------------------------------
 
     try:
@@ -1954,34 +1870,25 @@ def run_tests(
             het_white,
         )
 
-        ols_features = (
-            ols_result.get(
-                "features",
-                [],
-            )
+        ols_features = ols_result.get(
+            "features",
+            [],
         )
 
         selected = [
             column
-            for column
-            in ols_features
+            for column in ols_features
             if column in X_train.columns
         ]
 
-        selected = selected[
-            :10
-        ]
-
-        if selected:
+        if 1 <= len(selected) <= 10:
 
             X_white = sm.add_constant(
-                X_train[
-                    selected
-                ],
+                X_train[selected],
                 has_constant="add",
             )
 
-            result = het_white(
+            white = het_white(
                 residuals,
                 X_white,
             )
@@ -1990,11 +1897,12 @@ def run_tests(
                 "White"
             ] = {
                 "statistic": float(
-                    result[0]
+                    white[0]
                 ),
                 "p_value": float(
-                    result[1]
+                    white[1]
                 ),
+                "features": selected,
             }
 
     except Exception:
@@ -2009,12 +1917,12 @@ def run_tests(
 
 def execute_one_horizon(
     df,
-    features,
+    all_features,
     horizon,
 ):
     xy = prepare_xy(
         df,
-        features,
+        all_features,
         f"Target_{horizon}",
     )
 
@@ -2054,7 +1962,7 @@ def execute_one_horizon(
     ].copy()
 
     # --------------------------------------------------------
-    # Correlation: ALL FEATURES
+    # Correlation
     # --------------------------------------------------------
 
     correlations = correlation_table(
@@ -2077,7 +1985,7 @@ def execute_one_horizon(
     )
 
     # --------------------------------------------------------
-    # ALL FEATURES MODELS
+    # ML
     # --------------------------------------------------------
 
     models, fitted = run_models(
@@ -2086,10 +1994,6 @@ def execute_one_horizon(
         y_train,
         y_test,
     )
-
-    # --------------------------------------------------------
-    # BEST MODEL
-    # --------------------------------------------------------
 
     best_name = None
     best_model = None
@@ -2105,9 +2009,7 @@ def execute_one_horizon(
         best_name = str(
             models.iloc[
                 0
-            ][
-                "Mô hình"
-            ]
+            ]["Mô hình"]
         )
 
         best_model = fitted.get(
@@ -2115,7 +2017,7 @@ def execute_one_horizon(
         )
 
     # --------------------------------------------------------
-    # PERMUTATION
+    # Permutation
     # --------------------------------------------------------
 
     permutation = pd.DataFrame()
@@ -2129,7 +2031,7 @@ def execute_one_horizon(
         )
 
     # --------------------------------------------------------
-    # TREE
+    # Tree importance
     # --------------------------------------------------------
 
     tree = pd.DataFrame()
@@ -2142,7 +2044,7 @@ def execute_one_horizon(
         )
 
     # --------------------------------------------------------
-    # FACTOR RANKING
+    # Ranking
     # --------------------------------------------------------
 
     ranking = build_factor_ranking(
@@ -2153,7 +2055,7 @@ def execute_one_horizon(
     )
 
     # --------------------------------------------------------
-    # GROUP
+    # Group
     # --------------------------------------------------------
 
     groups = group_summary(
@@ -2164,12 +2066,12 @@ def execute_one_horizon(
     # VIF
     # --------------------------------------------------------
 
-    vif = pd.DataFrame()
-
     ols_features = ols.get(
         "features",
         [],
     )
+
+    vif = pd.DataFrame()
 
     if ols_features:
 
@@ -2180,7 +2082,7 @@ def execute_one_horizon(
         )
 
     # --------------------------------------------------------
-    # TESTS
+    # Tests
     # --------------------------------------------------------
 
     tests = run_tests(
@@ -2190,15 +2092,13 @@ def execute_one_horizon(
     )
 
     # --------------------------------------------------------
-    # FORECAST
+    # Forecast
     # --------------------------------------------------------
 
     current_price = num(
         df[
             "Close"
-        ].iloc[
-            -1
-        ]
+        ].iloc[-1]
     )
 
     predicted_return = None
@@ -2230,14 +2130,10 @@ def execute_one_horizon(
                     column
                 ].median()
 
-                if pd.isna(
-                    median
-                ):
+                if pd.isna(median):
                     median = 0.0
 
-                latest[
-                    column
-                ] = latest[
+                latest[column] = latest[
                     column
                 ].fillna(
                     median
@@ -2265,7 +2161,7 @@ def execute_one_horizon(
             pass
 
     # --------------------------------------------------------
-    # QUALITY
+    # Model quality
     # --------------------------------------------------------
 
     quality = "Chưa đánh giá"
@@ -2289,61 +2185,44 @@ def execute_one_horizon(
         if r2 is not None:
 
             if r2 < 0:
-
                 quality = "Yếu"
 
             elif r2 < 0.10:
-
                 quality = "Thấp"
 
             elif r2 < 0.25:
-
                 quality = "Trung bình"
 
             else:
-
                 quality = "Khá"
+
 
     return {
         "horizon": horizon,
         "observations": len(X),
         "train": len(X_train),
         "test": len(X_test),
-
         "features_used": list(
             X.columns
         ),
-
         "ols_features": ols_features,
-
         "correlations": correlations,
-
         "ols": ols,
-
         "ols_table": ols_table,
-
         "models": models,
-
+        "fitted": fitted,
         "best_model": best_name,
-
         "permutation": permutation,
-
         "tree": tree,
-
         "ranking": ranking,
-
         "groups": groups,
-
         "vif": vif,
-
         "tests": tests,
-
         "forecast": {
             "current_price": current_price,
             "predicted_return": predicted_return,
             "predicted_price": predicted_price,
         },
-
         "quality": quality,
     }
 
@@ -2353,7 +2232,7 @@ def execute_one_horizon(
 # ============================================================
 
 @st.cache_data(
-    ttl=CACHE_TTL_RESEARCH,
+    ttl=RESEARCH_CACHE_TTL,
     show_spinner=False,
 )
 def execute_full_research(
@@ -2405,9 +2284,7 @@ def execute_full_research(
 
         return {
             "ok": False,
-            "error": (
-                "Không có horizon nào đủ dữ liệu."
-            ),
+            "error": "Không có horizon nào đủ dữ liệu.",
         }
 
     return {
@@ -2426,7 +2303,7 @@ def execute_full_research(
 # ============================================================
 
 @st.cache_data(
-    ttl=CACHE_TTL_DISPLAY,
+    ttl=DISPLAY_CACHE_TTL,
     show_spinner=False,
 )
 def load_display_data(
@@ -2439,7 +2316,7 @@ def load_display_data(
 
 
 # ============================================================
-# RENDER FORECAST
+# FORECAST UI
 # ============================================================
 
 def render_forecast(
@@ -2509,11 +2386,12 @@ def render_forecast(
 
         st.metric(
             "Model",
-            str(
+            safe_text(
                 item.get(
                     "best_model",
                     "—",
-                )
+                ),
+                "—",
             ),
         )
 
@@ -2522,28 +2400,28 @@ def render_forecast(
         if predicted_return > 0:
 
             st.success(
-                f"Mô hình nghiêng về **TĂNG** "
+                f"Mô hình đang nghiêng về **TĂNG** "
                 f"{predicted_return * 100:+.2f}% "
-                f"trong {item['horizon']}."
+                f"cho horizon {item['horizon']}."
             )
 
         elif predicted_return < 0:
 
             st.warning(
-                f"Mô hình nghiêng về **GIẢM** "
+                f"Mô hình đang nghiêng về **GIẢM** "
                 f"{predicted_return * 100:+.2f}% "
-                f"trong {item['horizon']}."
+                f"cho horizon {item['horizon']}."
             )
 
         else:
 
             st.info(
-                "Mô hình nghiêng về đi ngang."
+                "Mô hình đang nghiêng về đi ngang."
             )
 
 
 # ============================================================
-# GROUPS
+# GROUP UI
 # ============================================================
 
 def render_groups(
@@ -2575,6 +2453,24 @@ def render_groups(
         }
     )
 
+    show[
+        "Score TB"
+    ] = pd.to_numeric(
+        show[
+            "Score TB"
+        ],
+        errors="coerce",
+    ).round(1)
+
+    show[
+        "Score cao nhất"
+    ] = pd.to_numeric(
+        show[
+            "Score cao nhất"
+        ],
+        errors="coerce",
+    ).round(1)
+
     st.dataframe(
         show,
         width="stretch",
@@ -2586,15 +2482,13 @@ def render_groups(
     ]
 
     st.info(
-        f"Nhóm nổi bật nhất: "
-        f"**{strongest['Nhóm']}** "
-        f"với Score TB "
-        f"{strongest['Score_TB']:.1f}/100."
+        f"Nhóm nổi bật nhất là **{strongest['Nhóm']}**, "
+        f"Score trung bình {strongest['Score_TB']:.1f}/100."
     )
 
 
 # ============================================================
-# FACTORS
+# FACTOR UI
 # ============================================================
 
 def render_factors(
@@ -2619,14 +2513,14 @@ def render_factors(
         return
 
     st.subheader(
-        "🏆 Yếu tố ảnh hưởng / dự báo"
+        "🏆 Yếu tố liên hệ / dự báo"
     )
 
     show = ranking.head(
-        MAX_DISPLAY_FEATURES
+        MAX_DISPLAY_FACTORS
     ).copy()
 
-    columns = [
+    display_columns = [
         "Biến",
         "Nhóm",
         "Score",
@@ -2640,15 +2534,32 @@ def render_factors(
         "Ý nghĩa",
     ]
 
-    columns = [
+    display_columns = [
         column
-        for column in columns
+        for column in display_columns
         if column in show.columns
     ]
 
+    for column in [
+        "Score",
+        "Pearson",
+        "Spearman",
+        "Beta",
+        "p-value",
+        "Permutation",
+        "TreeImportance",
+    ]:
+
+        if column in show.columns:
+
+            show[column] = pd.to_numeric(
+                show[column],
+                errors="coerce",
+            )
+
     st.dataframe(
         show[
-            columns
+            display_columns
         ],
         width="stretch",
         hide_index=True,
@@ -2658,29 +2569,23 @@ def render_factors(
         "#### 🎯 5 yếu tố nổi bật nhất"
     )
 
-    for _, row in ranking.head(
-        5
-    ).iterrows():
+    for _, row in ranking.head(5).iterrows():
 
-        feature = text(
-            row.get(
-                "Biến"
-            )
+        feature = safe_text(
+            row.get("Biến"),
+            "Không xác định",
         )
 
-        group = text(
-            row.get(
-                "Nhóm"
-            )
+        group = safe_text(
+            row.get("Nhóm"),
+            "Không xác định",
         )
 
         score = num(
-            row.get(
-                "Score"
-            )
+            row.get("Score")
         )
 
-        direction = text(
+        direction = safe_text(
             row.get(
                 "Quan hệ"
             ),
@@ -2693,46 +2598,57 @@ def render_factors(
             )
         )
 
+        beta = num(
+            row.get(
+                "Beta"
+            )
+        )
+
         pvalue = num(
             row.get(
                 "p-value"
             )
         )
 
-        line = (
-            f"**{feature}** "
-            f"({group})"
+        text = (
+            f"**{feature}** ({group})"
         )
 
         if score is not None:
 
-            line += (
-                f" · Score {score:.1f}"
+            text += (
+                f" · Score {score:.1f}/100"
             )
 
-        line += (
+        text += (
             f" · {direction}"
         )
 
         if spear is not None:
 
-            line += (
+            text += (
                 f" · Spearman {spear:+.4f}"
+            )
+
+        if beta is not None:
+
+            text += (
+                f" · Beta {beta:+.4f}"
             )
 
         if pvalue is not None:
 
-            line += (
+            text += (
                 f" · p-value {pvalue:.5f}"
             )
 
         st.markdown(
-            "• " + line
+            "• " + text
         )
 
 
 # ============================================================
-# MODELS
+# MODEL UI
 # ============================================================
 
 def render_models(
@@ -2760,8 +2676,25 @@ def render_models(
 
         return
 
+    show = models.copy()
+
+    for column in [
+        "MAE",
+        "MSE",
+        "RMSE",
+        "R²",
+        "Baseline_RMSE",
+    ]:
+
+        if column in show.columns:
+
+            show[column] = pd.to_numeric(
+                show[column],
+                errors="coerce",
+            ).round(6)
+
     st.dataframe(
-        models,
+        show,
         width="stretch",
         hide_index=True,
     )
@@ -2782,22 +2715,58 @@ def render_models(
         )
     )
 
+    baseline = num(
+        best.get(
+            "Baseline_RMSE"
+        )
+    )
+
+    status = safe_text(
+        best.get(
+            "So_baseline"
+        ),
+        "Không rõ",
+    )
+
     st.info(
         f"Model tốt nhất theo RMSE: "
         f"**{best['Mô hình']}** · "
-        f"RMSE {rmse:.6f} · "
-        f"R² {r2:.4f}"
-        if (
-            rmse is not None
-            and r2 is not None
-        )
-        else
-        f"Model tốt nhất: **{best['Mô hình']}**"
+        f"RMSE {format_number(rmse, 6)} · "
+        f"R² {format_number(r2, 4)} · "
+        f"so benchmark: **{status}**"
     )
+
+    if (
+        baseline is not None
+        and rmse is not None
+    ):
+
+        if rmse < baseline:
+
+            improvement = (
+                (
+                    baseline - rmse
+                )
+                / baseline
+                * 100
+                if baseline != 0
+                else 0
+            )
+
+            st.success(
+                f"Model tốt hơn benchmark khoảng "
+                f"{improvement:.2f}% theo RMSE."
+            )
+
+        else:
+
+            st.warning(
+                "Model không vượt benchmark trung bình trên tập test."
+            )
 
 
 # ============================================================
-# OLS
+# OLS UI
 # ============================================================
 
 def render_ols(
@@ -2826,7 +2795,7 @@ def render_ols(
     ):
 
         st.info(
-            "OLS không chạy được."
+            "OLS không chạy được trên mẫu này."
         )
 
         return
@@ -2877,21 +2846,36 @@ def render_ols(
         and not table.empty
     ):
 
+        show = table.copy()
+
+        for column in [
+            "Beta",
+            "p-value",
+            "Std Error",
+        ]:
+
+            if column in show.columns:
+
+                show[column] = pd.to_numeric(
+                    show[column],
+                    errors="coerce",
+                ).round(6)
+
         st.dataframe(
-            table,
+            show,
             width="stretch",
             hide_index=True,
         )
 
     st.caption(
-        "OLS dùng tập biến an toàn hơn để tránh ma trận suy hạng; "
-        "các biến còn lại vẫn được giữ trong phân tích correlation "
-        "và machine learning."
+        "OLS dùng tập biến đã giảm đa cộng tuyến để hệ số "
+        "ổn định hơn; các biến còn lại vẫn được giữ trong "
+        "dataset và các mô hình máy học."
     )
 
 
 # ============================================================
-# VIF
+# VIF UI
 # ============================================================
 
 def render_vif(
@@ -2911,45 +2895,46 @@ def render_vif(
         return
 
     st.subheader(
-        "🔗 VIF"
+        "🔗 Đa cộng tuyến — VIF"
     )
 
-    st.dataframe(
-        vif.head(30),
-        width="stretch",
-        hide_index=True,
-    )
+    show = vif.copy()
 
-    finite = vif[
-        "VIF"
-    ].replace(
+    show["VIF"] = pd.to_numeric(
+        show["VIF"],
+        errors="coerce",
+    ).replace(
         [
             np.inf,
             -np.inf,
         ],
         np.nan,
+    ).round(3)
+
+    st.dataframe(
+        show,
+        width="stretch",
+        hide_index=True,
     )
 
     max_vif = num(
-        finite.max()
+        show["VIF"].max()
     )
 
-    if (
-        max_vif is not None
-        and max_vif >= 10
-    ):
+    if max_vif is None:
 
-        st.warning(
+        return
+
+    if max_vif >= 10:
+
+        st.error(
             f"VIF cao nhất {max_vif:.2f}: "
             "đa cộng tuyến mạnh."
         )
 
-    elif (
-        max_vif is not None
-        and max_vif >= 5
-    ):
+    elif max_vif >= 5:
 
-        st.info(
+        st.warning(
             f"VIF cao nhất {max_vif:.2f}: "
             "có đa cộng tuyến đáng chú ý."
         )
@@ -2957,13 +2942,42 @@ def render_vif(
     else:
 
         st.success(
-            "VIF của tập OLS không cho thấy đa cộng tuyến quá mạnh."
+            f"VIF cao nhất {max_vif:.2f}: "
+            "chưa thấy đa cộng tuyến quá mạnh trong tập OLS."
         )
 
 
 # ============================================================
-# TESTS
+# TEST UI
 # ============================================================
+
+def _render_pvalue_status(
+    pvalue,
+    good_text,
+    bad_text,
+):
+    pvalue = num(
+        pvalue
+    )
+
+    if pvalue is None:
+
+        st.info(
+            "Không đủ dữ liệu để kết luận."
+        )
+
+    elif pvalue < 0.05:
+
+        st.warning(
+            bad_text
+        )
+
+    else:
+
+        st.success(
+            good_text
+        )
+
 
 def render_tests(
     item,
@@ -2974,6 +2988,11 @@ def render_tests(
     )
 
     if not tests:
+
+        st.info(
+            "Chưa có kiểm định khả dụng."
+        )
+
         return
 
     st.subheader(
@@ -3000,7 +3019,7 @@ def render_tests(
         )
 
         with st.expander(
-            "ADF — Augmented Dickey-Fuller",
+            "ADF — tính dừng",
             expanded=False,
         ):
 
@@ -3020,17 +3039,17 @@ def render_tests(
             ):
 
                 st.success(
-                    "Bác bỏ nghiệm đơn vị ở mức 5%."
+                    "Bác bỏ giả thuyết nghiệm đơn vị ở mức 5%."
                 )
 
             else:
 
                 st.info(
-                    "Chưa đủ bằng chứng bác bỏ nghiệm đơn vị."
+                    "Chưa đủ bằng chứng bác bỏ nghiệm đơn vị ở mức 5%."
                 )
 
     # --------------------------------------------------------
-    # JB
+    # Jarque-Bera
     # --------------------------------------------------------
 
     jb = tests.get(
@@ -3042,14 +3061,8 @@ def render_tests(
         dict,
     ):
 
-        p = num(
-            jb.get(
-                "p_value"
-            )
-        )
-
         with st.expander(
-            "Jarque-Bera",
+            "Jarque-Bera — phân phối phần dư",
             expanded=False,
         ):
 
@@ -3060,7 +3073,13 @@ def render_tests(
 
             st.write(
                 f"p-value: "
-                f"{format_number(p, 6)}"
+                f"{format_number(jb.get('p_value'), 6)}"
+            )
+
+            p = num(
+                jb.get(
+                    "p_value"
+                )
             )
 
             if (
@@ -3069,17 +3088,17 @@ def render_tests(
             ):
 
                 st.warning(
-                    "Phần dư lệch khỏi giả định chuẩn."
+                    "Phần dư có dấu hiệu lệch khỏi phân phối chuẩn."
                 )
 
             else:
 
                 st.success(
-                    "Chưa có bằng chứng mạnh chống lại giả định chuẩn."
+                    "Chưa thấy bằng chứng mạnh chống lại giả định chuẩn."
                 )
 
     # --------------------------------------------------------
-    # BP
+    # Breusch-Pagan
     # --------------------------------------------------------
 
     bp = tests.get(
@@ -3091,20 +3110,20 @@ def render_tests(
         dict,
     ):
 
-        p = num(
-            bp.get(
-                "p_value"
-            )
-        )
-
         with st.expander(
-            "Breusch-Pagan",
+            "Breusch-Pagan — phương sai thay đổi",
             expanded=False,
         ):
 
             st.write(
                 f"Statistic: "
                 f"{format_number(bp.get('statistic'), 5)}"
+            )
+
+            p = num(
+                bp.get(
+                    "p_value"
+                )
             )
 
             st.write(
@@ -3124,11 +3143,11 @@ def render_tests(
             else:
 
                 st.success(
-                    "Chưa thấy phương sai thay đổi rõ."
+                    "Chưa thấy bằng chứng rõ về phương sai thay đổi."
                 )
 
     # --------------------------------------------------------
-    # WHITE
+    # White
     # --------------------------------------------------------
 
     white = tests.get(
@@ -3140,20 +3159,20 @@ def render_tests(
         dict,
     ):
 
-        p = num(
-            white.get(
-                "p_value"
-            )
-        )
-
         with st.expander(
-            "White Test",
+            "White Test — phương sai thay đổi",
             expanded=False,
         ):
 
             st.write(
                 f"Statistic: "
                 f"{format_number(white.get('statistic'), 5)}"
+            )
+
+            p = num(
+                white.get(
+                    "p_value"
+                )
             )
 
             st.write(
@@ -3167,17 +3186,17 @@ def render_tests(
             ):
 
                 st.warning(
-                    "Có bằng chứng phương sai thay đổi."
+                    "White Test cho thấy dấu hiệu phương sai thay đổi."
                 )
 
             else:
 
                 st.success(
-                    "Chưa thấy phương sai thay đổi rõ."
+                    "White Test chưa cho thấy phương sai thay đổi rõ."
                 )
 
     # --------------------------------------------------------
-    # DW
+    # Durbin-Watson
     # --------------------------------------------------------
 
     dw = tests.get(
@@ -3189,16 +3208,16 @@ def render_tests(
         dict,
     ):
 
-        value = num(
-            dw.get(
-                "statistic"
-            )
-        )
-
         with st.expander(
-            "Durbin-Watson",
+            "Durbin-Watson — tự tương quan",
             expanded=False,
         ):
+
+            value = num(
+                dw.get(
+                    "statistic"
+                )
+            )
 
             st.metric(
                 "Statistic",
@@ -3213,7 +3232,8 @@ def render_tests(
                 if 1.5 <= value <= 2.5:
 
                     st.success(
-                        "Chưa thấy tự tương quan mạnh."
+                        "Statistic tương đối gần 2; "
+                        "chưa thấy tự tương quan mạnh."
                     )
 
                 elif value < 1.5:
@@ -3229,7 +3249,7 @@ def render_tests(
                     )
 
     # --------------------------------------------------------
-    # LJUNG BOX
+    # Ljung Box
     # --------------------------------------------------------
 
     lb = tests.get(
@@ -3241,14 +3261,8 @@ def render_tests(
         dict,
     ):
 
-        p = num(
-            lb.get(
-                "p_value"
-            )
-        )
-
         with st.expander(
-            "Ljung-Box",
+            "Ljung-Box — tự tương quan phần dư",
             expanded=False,
         ):
 
@@ -3259,6 +3273,12 @@ def render_tests(
             st.write(
                 f"Statistic: "
                 f"{format_number(lb.get('statistic'), 5)}"
+            )
+
+            p = num(
+                lb.get(
+                    "p_value"
+                )
             )
 
             st.write(
@@ -3272,7 +3292,7 @@ def render_tests(
             ):
 
                 st.warning(
-                    "Còn tự tương quan trong phần dư."
+                    "Có bằng chứng tự tương quan còn lại trong phần dư."
                 )
 
             else:
@@ -3283,7 +3303,7 @@ def render_tests(
 
 
 # ============================================================
-# CONCLUSION
+# HORIZON CONCLUSION
 # ============================================================
 
 def render_conclusion(
@@ -3294,7 +3314,7 @@ def render_conclusion(
     )
 
     st.subheader(
-        "🧠 Kết luận"
+        "🧠 Kết luận của horizon"
     )
 
     if (
@@ -3306,7 +3326,7 @@ def render_conclusion(
     ):
 
         st.info(
-            "Chưa đủ dữ liệu để kết luận."
+            "Chưa đủ kết quả để kết luận."
         )
 
         return
@@ -3315,16 +3335,18 @@ def render_conclusion(
         0
     ]
 
-    factor = text(
+    factor = safe_text(
         top.get(
             "Biến"
-        )
+        ),
+        "Không xác định",
     )
 
-    group = text(
+    group = safe_text(
         top.get(
             "Nhóm"
-        )
+        ),
+        "Không xác định",
     )
 
     score = num(
@@ -3333,11 +3355,17 @@ def render_conclusion(
         )
     )
 
-    direction = text(
+    relation = safe_text(
         top.get(
             "Quan hệ"
         ),
         "Không xác định",
+    )
+
+    pvalue = num(
+        top.get(
+            "p-value"
+        )
     )
 
     spear = num(
@@ -3346,58 +3374,54 @@ def render_conclusion(
         )
     )
 
-    p = num(
-        top.get(
-            "p-value"
-        )
-    )
-
-    line = (
-        f"**Yếu tố nổi bật nhất:** "
-        f"{factor} ({group})"
+    text = (
+        f"Yếu tố nổi bật nhất là "
+        f"**{factor}** ({group})"
     )
 
     if score is not None:
 
-        line += (
-            f" · Score {score:.1f}/100"
+        text += (
+            f", Score {score:.1f}/100"
         )
 
-    line += (
-        f" · {direction}"
+    text += (
+        f", quan hệ {relation.lower()}"
     )
 
     if spear is not None:
 
-        line += (
-            f" · Spearman {spear:+.4f}"
+        text += (
+            f", Spearman {spear:+.4f}"
         )
 
-    if p is not None:
+    if pvalue is not None:
 
-        line += (
-            f" · p-value {p:.5f}"
+        text += (
+            f", p-value {pvalue:.5f}"
         )
+
+    text += "."
 
     st.markdown(
-        "• " + line
+        "• " + text
     )
 
     if (
-        p is not None
-        and p < 0.05
+        pvalue is not None
+        and pvalue < 0.05
     ):
 
         st.markdown(
             f"• **{factor}** có bằng chứng "
-            "thống kê ở mức 5% trong OLS."
+            "thống kê trong mô hình OLS ở mức 5%."
         )
 
     else:
 
         st.markdown(
             f"• **{factor}** có tín hiệu nổi bật "
-            "nhưng chưa đủ bằng chứng để xem là quan hệ nhân quả."
+            "nhưng chưa đủ bằng chứng để gọi là quan hệ nhân quả."
         )
 
     models = item.get(
@@ -3416,62 +3440,75 @@ def render_conclusion(
             0
         ]
 
-        r2 = num(
-            best.get(
-                "R²"
-            )
-        )
-
         rmse = num(
-            best.get(
-                "RMSE"
-            )
+            best.get("RMSE")
         )
 
-        model_name = text(
+        r2 = num(
+            best.get("R²")
+        )
+
+        model_name = safe_text(
             best.get(
                 "Mô hình"
+            ),
+            "Không xác định",
+        )
+
+        baseline = num(
+            best.get(
+                "Baseline_RMSE"
             )
+        )
+
+        comparison = safe_text(
+            best.get(
+                "So_baseline"
+            ),
+            "Không rõ",
+        )
+
+        line = (
+            f"• Model tốt nhất: **{model_name}**"
+        )
+
+        if rmse is not None:
+
+            line += (
+                f", RMSE {rmse:.6f}"
+            )
+
+        if r2 is not None:
+
+            line += (
+                f", R² {r2:.4f}"
+            )
+
+        line += (
+            f", {comparison.lower()} benchmark."
+        )
+
+        st.markdown(
+            line
         )
 
         if (
-            rmse is not None
-            and r2 is not None
+            baseline is not None
+            and rmse is not None
+            and rmse >= baseline
         ):
 
-            st.markdown(
-                f"• Model tốt nhất: **{model_name}** "
-                f"(RMSE {rmse:.6f}, R² {r2:.4f})."
+            st.warning(
+                "Model chưa vượt benchmark trên tập test."
             )
 
-            if r2 < 0:
+        elif (
+            baseline is not None
+            and rmse is not None
+        ):
 
-                st.warning(
-                    "Model chưa vượt benchmark trên tập test."
-                )
-
-            elif r2 < 0.10:
-
-                st.info(
-                    "Khả năng giải thích/dự báo còn thấp."
-                )
-
-            elif r2 < 0.25:
-
-                st.info(
-                    "Có tín hiệu nhưng sức giải thích vừa phải."
-                )
-
-            else:
-
-                st.success(
-                    "Model có sức giải thích đáng chú ý trên mẫu test."
-                )
-
-        else:
-
-            st.markdown(
-                f"• Model tốt nhất: **{model_name}**."
+            st.success(
+                "Model đã vượt benchmark trên tập test."
             )
 
     forecast = item.get(
@@ -3479,7 +3516,7 @@ def render_conclusion(
         {},
     )
 
-    predicted = num(
+    predicted_return = num(
         forecast.get(
             "predicted_return"
         )
@@ -3492,15 +3529,14 @@ def render_conclusion(
     )
 
     if (
-        predicted is not None
+        predicted_return is not None
         and predicted_price is not None
     ):
 
         st.markdown(
-            f"• Dự báo {item['horizon']}: "
-            f"**{predicted * 100:+.2f}%** "
-            f"→ giá khoảng "
-            f"**{predicted_price:,.0f} đồng**."
+            f"• Dự báo theo model: "
+            f"**{predicted_return * 100:+.2f}%** "
+            f"→ khoảng **{predicted_price:,.0f} đồng**."
         )
 
 
@@ -3514,7 +3550,7 @@ def render_cross_horizon(
     st.divider()
 
     st.header(
-        "🏆 Yếu tố nhất quán 1D / 5D / 20D"
+        "🏆 Yếu tố nhất quán giữa 1D / 5D / 20D"
     )
 
     rows = []
@@ -3548,9 +3584,7 @@ def render_cross_horizon(
             continue
 
         for rank, (_, row) in enumerate(
-            ranking.head(
-                20
-            ).iterrows(),
+            ranking.head(20).iterrows(),
             start=1,
         ):
 
@@ -3573,6 +3607,11 @@ def render_cross_horizon(
             )
 
     if not rows:
+
+        st.info(
+            "Chưa có đủ dữ liệu để so sánh các horizon."
+        )
+
         return
 
     work = pd.DataFrame(
@@ -3614,23 +3653,20 @@ def render_cross_horizon(
                 True,
             ],
         )
+        .reset_index(drop=True)
     )
 
     stable[
         "Rank_TB"
     ] = stable[
         "Rank_TB"
-    ].round(
-        2
-    )
+    ].round(2)
 
     stable[
         "Score_TB"
     ] = stable[
         "Score_TB"
-    ].round(
-        1
-    )
+    ].round(1)
 
     stable.columns = [
         "Biến",
@@ -3641,42 +3677,30 @@ def render_cross_horizon(
     ]
 
     st.dataframe(
-        stable.head(
-            30
-        ),
+        stable.head(30),
         width="stretch",
         hide_index=True,
     )
 
-    if not stable.empty:
+    best = stable.iloc[
+        0
+    ]
 
-        best = stable.iloc[
-            0
-        ]
-
-        st.success(
-            f"Yếu tố nhất quán nhất: "
-            f"**{best['Biến']}** "
-            f"({int(best['Số horizon'])} horizon)."
-        )
+    st.success(
+        f"Yếu tố ổn định nhất: **{best['Biến']}** "
+        f"({int(best['Số horizon'])} horizon)."
+    )
 
 
 # ============================================================
-# RESEARCH AI
+# AI
 # ============================================================
-
-CACHE_TTL_AI = 1800
-
-RESEARCH_AI_MODELS = [
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash-lite",
-]
-
 
 def get_gemini_api_key():
     try:
-        key = st.secrets.get("GEMINI_API_KEY")
+        key = st.secrets.get(
+            "GEMINI_API_KEY"
+        )
     except Exception:
         key = None
 
@@ -3688,26 +3712,17 @@ def get_gemini_api_key():
     return key if key else None
 
 
-def _safe_text(value, default=""):
-    if value is None:
-        return default
-
-    try:
-        value = str(value).strip()
-    except Exception:
-        return default
-
-    return value if value else default
-
-
 def dataframe_to_ai_text(
     df,
     columns=None,
-    limit=15,
+    limit=25,
 ):
     if (
         df is None
-        or not isinstance(df, pd.DataFrame)
+        or not isinstance(
+            df,
+            pd.DataFrame,
+        )
         or df.empty
     ):
         return "Không có dữ liệu."
@@ -3715,6 +3730,7 @@ def dataframe_to_ai_text(
     work = df.copy()
 
     if columns:
+
         selected = [
             column
             for column in columns
@@ -3724,7 +3740,9 @@ def dataframe_to_ai_text(
         if selected:
             work = work[selected]
 
-    work = work.head(limit).copy()
+    work = work.head(
+        limit
+    ).copy()
 
     for column in work.columns:
 
@@ -3732,8 +3750,12 @@ def dataframe_to_ai_text(
             work[column]
         ):
 
-            work[column] = pd.to_numeric(
-                work[column],
+            work[
+                column
+            ] = pd.to_numeric(
+                work[
+                    column
+                ],
                 errors="coerce",
             ).round(6)
 
@@ -3751,7 +3773,7 @@ def build_research_ai_context(
     blocks = []
 
     blocks.append(
-        "=== NGHIÊN CỨU ĐỊNH LƯỢNG ==="
+        "=== RESEARCH SCOPE ==="
     )
 
     blocks.append(
@@ -3759,7 +3781,7 @@ def build_research_ai_context(
     )
 
     blocks.append(
-        f"Khoảng dữ liệu: "
+        f"Khoảng nghiên cứu: "
         f"{start_date} → {end_date}"
     )
 
@@ -3769,8 +3791,7 @@ def build_research_ai_context(
     )
 
     blocks.append(
-        f"Tổng số biến nghiên cứu: "
-        f"{len(all_features)}"
+        f"Tổng số biến: {len(all_features)}"
     )
 
     groups = result.get(
@@ -3834,12 +3855,22 @@ def build_research_ai_context(
             f"{item.get('test')}"
         )
 
+        blocks.append(
+            f"Model tốt nhất: "
+            f"{item.get('best_model')}"
+        )
+
+        blocks.append(
+            f"Quality: "
+            f"{item.get('quality')}"
+        )
+
         # ----------------------------------------------------
-        # FACTORS
+        # TOP FACTORS
         # ----------------------------------------------------
 
         blocks.append(
-            "\nTOP YẾU TỐ"
+            "\nTOP FACTORS"
         )
 
         blocks.append(
@@ -3869,7 +3900,7 @@ def build_research_ai_context(
         # ----------------------------------------------------
 
         blocks.append(
-            "\nNHÓM YẾU TỐ"
+            "\nFACTOR GROUPS"
         )
 
         blocks.append(
@@ -3888,6 +3919,32 @@ def build_research_ai_context(
         )
 
         # ----------------------------------------------------
+        # MODELS
+        # ----------------------------------------------------
+
+        blocks.append(
+            "\nMODEL PERFORMANCE"
+        )
+
+        blocks.append(
+            dataframe_to_ai_text(
+                item.get(
+                    "models"
+                ),
+                [
+                    "Mô hình",
+                    "MAE",
+                    "MSE",
+                    "RMSE",
+                    "R²",
+                    "Baseline_RMSE",
+                    "So_baseline",
+                ],
+                10,
+            )
+        )
+
+        # ----------------------------------------------------
         # OLS
         # ----------------------------------------------------
 
@@ -3901,21 +3958,19 @@ def build_research_ai_context(
         ):
 
             blocks.append(
-                "\nOLS"
+                "\nOLS SUMMARY"
             )
 
             blocks.append(
-                f"R²: "
-                f"{num(ols.get('r2'))}"
+                f"R²: {ols.get('r2')}"
             )
 
             blocks.append(
-                f"Adjusted R²: "
-                f"{num(ols.get('adj_r2'))}"
+                f"Adjusted R²: {ols.get('adj_r2')}"
             )
 
             blocks.append(
-                "Biến OLS: "
+                "OLS features: "
                 + ", ".join(
                     map(
                         str,
@@ -3928,7 +3983,7 @@ def build_research_ai_context(
             )
 
         blocks.append(
-            "\nHỆ SỐ OLS"
+            "\nOLS COEFFICIENTS"
         )
 
         blocks.append(
@@ -3944,31 +3999,6 @@ def build_research_ai_context(
                     "Std Error",
                 ],
                 20,
-            )
-        )
-
-        # ----------------------------------------------------
-        # MODELS
-        # ----------------------------------------------------
-
-        blocks.append(
-            "\nHIỆU SUẤT MODEL"
-        )
-
-        blocks.append(
-            dataframe_to_ai_text(
-                item.get(
-                    "models"
-                ),
-                [
-                    "Mô hình",
-                    "MAE",
-                    "RMSE",
-                    "R²",
-                    "Baseline_RMSE",
-                    "So_baseline",
-                ],
-                10,
             )
         )
 
@@ -3990,12 +4020,12 @@ def build_research_ai_context(
                     "Nhóm",
                     "VIF",
                 ],
-                15,
+                20,
             )
         )
 
         # ----------------------------------------------------
-        # TEST
+        # TESTS
         # ----------------------------------------------------
 
         tests = item.get(
@@ -4003,18 +4033,15 @@ def build_research_ai_context(
             {},
         )
 
-        if tests:
+        blocks.append(
+            "\nSTATISTICAL TESTS"
+        )
+
+        for test_name, value in tests.items():
 
             blocks.append(
-                "\nKIỂM ĐỊNH"
+                f"{test_name}: {value}"
             )
-
-            for test_name, test_value in tests.items():
-
-                blocks.append(
-                    f"{test_name}: "
-                    f"{test_value}"
-                )
 
         # ----------------------------------------------------
         # FORECAST
@@ -4026,27 +4053,22 @@ def build_research_ai_context(
         )
 
         blocks.append(
-            "\nDỰ BÁO"
+            "\nFORECAST"
         )
 
         blocks.append(
-            f"Giá hiện tại: "
-            f"{num(forecast.get('current_price'))}"
+            f"Current price: "
+            f"{forecast.get('current_price')}"
         )
 
         blocks.append(
-            f"Lợi suất dự báo: "
-            f"{num(forecast.get('predicted_return'))}"
+            f"Predicted return: "
+            f"{forecast.get('predicted_return')}"
         )
 
         blocks.append(
-            f"Giá dự báo: "
-            f"{num(forecast.get('predicted_price'))}"
-        )
-
-        blocks.append(
-            f"Model tốt nhất: "
-            f"{item.get('best_model')}"
+            f"Predicted price: "
+            f"{forecast.get('predicted_price')}"
         )
 
     return "\n".join(
@@ -4056,91 +4078,92 @@ def build_research_ai_context(
 
 def build_research_ai_prompt(
     context,
-    user_question="",
+    question,
 ):
-    question = _safe_text(
-        user_question
+    question = safe_text(
+        question
     )
 
     if question:
 
-        question_text = f"""
-CÂU HỎI CỦA NGƯỜI DÙNG:
+        question_block = f"""
+CÂU HỎI CỤ THỂ CỦA NGƯỜI DÙNG:
 {question}
 """.strip()
 
     else:
 
-        question_text = """
-Không có câu hỏi riêng.
-Hãy tự đọc nghiên cứu và chỉ ra những điểm quan trọng nhất.
+        question_block = """
+Không có câu hỏi cụ thể.
+Hãy tự đọc toàn bộ nghiên cứu và chỉ ra kết luận quan trọng nhất.
 """.strip()
 
     return f"""
-Bạn là Brian AI, chuyên viên đọc nghiên cứu định lượng
+Bạn là Brian AI, một chuyên viên đọc nghiên cứu định lượng
 cổ phiếu Việt Nam.
 
 Bạn KHÔNG chạy lại mô hình.
-Bạn CHỈ đọc các kết quả thống kê đã được cung cấp.
+Bạn CHỈ đọc các kết quả nghiên cứu đã được cung cấp.
 
-{question_text}
+{question_block}
 
 ============================================================
 MỤC TIÊU
 ============================================================
 
-Người đọc phải hiểu nhanh:
+Người đọc phải hiểu ngay:
 
-1. Giá/lợi suất cổ phiếu đang có quan hệ mạnh nhất với yếu tố nào?
-2. Yếu tố đó cùng chiều hay ngược chiều?
-3. Bằng chứng thống kê mạnh hay yếu?
-4. 1D, 5D, 20D có cho kết quả giống nhau không?
-5. Model có dự báo tốt hơn benchmark không?
-6. Có vấn đề về VIF, heteroskedasticity hoặc autocorrelation không?
-7. Nói đơn giản nghiên cứu này đang chỉ ra điều gì?
+- Giá/lợi suất đang liên hệ mạnh nhất với yếu tố nào?
+- Yếu tố đó thuộc nhóm nào?
+- Cùng chiều hay ngược chiều?
+- Bằng chứng thống kê có mạnh không?
+- Kết quả có ổn định giữa 1D / 5D / 20D không?
+- Model dự báo có thực sự tốt hơn benchmark không?
+- Có vấn đề đa cộng tuyến, phương sai thay đổi,
+  tự tương quan hoặc phân phối phần dư không?
+- Nói đơn giản nghiên cứu này đang cho thấy điều gì?
 
 ============================================================
 QUY TẮC
 ============================================================
 
-- Chỉ dùng số liệu đã cung cấp.
-- Không bịa thêm số liệu.
-- Không bịa thêm biến.
-- Không biến correlation thành quan hệ nhân quả.
-- Không nói "X làm giá tăng" nếu chỉ có bằng chứng tương quan.
-- p-value < 0.05 mới được gọi là có ý nghĩa thống kê ở mức 5%.
-- Nếu R² test âm, phải nói rõ model kém benchmark.
-- Nếu VIF cao, phải cảnh báo đa cộng tuyến.
-- Nếu BP/White có p < 0.05, nói có dấu hiệu phương sai thay đổi.
-- Nếu DW/Ljung-Box cho thấy tự tương quan, phải nói.
-- Không liệt kê hàng chục biến.
-- Chọn 3–5 yếu tố quan trọng nhất.
-- Ưu tiên yếu tố được nhiều phương pháp cùng xác nhận.
-- Ưu tiên yếu tố ổn định qua nhiều horizon.
-- Viết tiếng Việt tự nhiên, ngắn gọn.
-- Không viết như giáo trình.
-- Không khuyến nghị mua/bán.
+1. Chỉ dùng số liệu được cung cấp.
+2. Không tự bịa thêm dữ liệu.
+3. Không bịa biến.
+4. Không biến correlation thành quan hệ nhân quả.
+5. Không nói "X làm giá tăng" nếu dữ liệu chỉ cho correlation.
+6. p-value < 0.05 mới gọi là có ý nghĩa thống kê ở mức 5%.
+7. Nếu R² âm thì nói thẳng model không vượt benchmark.
+8. Không nhồi hàng chục biến vào câu trả lời.
+9. Chỉ chọn 3–5 yếu tố thực sự đáng chú ý.
+10. Ưu tiên yếu tố được nhiều phương pháp cùng chỉ ra.
+11. Ưu tiên yếu tố ổn định qua nhiều horizon.
+12. Nếu không đủ bằng chứng phải nói rõ.
+13. Viết tiếng Việt tự nhiên, như một chuyên viên đang
+    giải thích cho nhà đầu tư.
+14. Không viết kiểu giáo trình.
+15. Không khuyến nghị mua/bán.
+16. Không cần liệt kê kiểm định nếu chúng không ảnh hưởng
+    đến kết luận chính.
 
 ============================================================
-ĐỊNH DẠNG
+FORMAT
 ============================================================
 
 # 🧠 Brian AI — Đọc nghiên cứu
 
 ## Kết luận chính
 
-Viết 3–4 câu.
+3–4 câu.
 
-Phải nói thẳng:
-- yếu tố nào nổi bật nhất
-- mức độ bằng chứng
-- model có đáng tin không
+Nói thẳng yếu tố nổi bật nhất và nghiên cứu có đáng tin
+cho việc dự báo hay không.
 
-## 🎯 Giá đang phụ thuộc vào gì?
+## 🎯 Giá đang liên hệ với gì?
 
-Chọn tối đa 5 biến.
+Chọn tối đa 5 yếu tố.
 
-Mỗi biến:
+Mỗi yếu tố:
 
 **Tên biến — Nhóm**
 - Quan hệ:
@@ -4151,29 +4174,29 @@ Mỗi biến:
 
 ## 📈 1D / 5D / 20D
 
-Viết ngắn:
-- 1D:
-- 5D:
-- 20D:
-- Yếu tố nhất quán nhất:
+Chỉ ra điểm khác biệt quan trọng giữa các horizon.
+
+Nêu yếu tố nào lặp lại nhiều nhất.
 
 ## 🤖 Model
 
-Nêu:
+Nói:
 - Model tốt nhất
 - RMSE
 - R²
-- So với baseline
-- Có đáng tin cho dự báo hay không
+- So với benchmark
+- Có nên xem đây là model dự báo mạnh hay chỉ là tín hiệu tham khảo
 
-## ⚠️ Điểm cần lưu ý
+## ⚠️ Điều cần lưu ý
 
-Chỉ nêu các vấn đề thật sự xuất hiện trong số liệu.
+Chỉ nêu các vấn đề thật sự xuất hiện.
 
 ## Nói đơn giản
 
-Viết 3–5 câu như đang giải thích cho một người đầu tư
-không chuyên thống kê.
+3–5 câu.
+
+Giải thích nghiên cứu này như đang nói chuyện với
+một người đầu tư không chuyên thống kê.
 
 ============================================================
 DỮ LIỆU NGHIÊN CỨU
@@ -4183,57 +4206,51 @@ DỮ LIỆU NGHIÊN CỨU
 """.strip()
 
 
-def _call_research_ai_model(
+def _call_gemini(
     api_key,
     model,
     prompt,
 ):
-    try:
+    from google import genai
 
-        from google import genai
+    client = genai.Client(
+        api_key=api_key
+    )
 
-        client = genai.Client(
-            api_key=api_key
+    response = (
+        client
+        .models
+        .generate_content(
+            model=model,
+            contents=prompt,
+        )
+    )
+
+    text = safe_text(
+        getattr(
+            response,
+            "text",
+            "",
+        )
+    )
+
+    if not text:
+
+        raise RuntimeError(
+            "Gemini trả về nội dung rỗng."
         )
 
-        response = (
-            client
-            .models
-            .generate_content(
-                model=model,
-                contents=prompt,
-            )
-        )
-
-        output = _safe_text(
-            getattr(
-                response,
-                "text",
-                "",
-            )
-        )
-
-        if not output:
-
-            raise RuntimeError(
-                "Model không trả về nội dung."
-            )
-
-        return output
-
-    except Exception as error:
-
-        raise error
+    return text
 
 
-def _is_retryable_ai_error(
+def _is_temporary_ai_error(
     error,
 ):
-    message = str(
+    text = str(
         error
     ).lower()
 
-    retry_tokens = [
+    tokens = [
         "503",
         "unavailable",
         "high demand",
@@ -4246,32 +4263,31 @@ def _is_retryable_ai_error(
     ]
 
     return any(
-        token in message
-        for token in retry_tokens
+        token in text
+        for token in tokens
     )
 
 
 def _is_fatal_ai_error(
     error,
 ):
-    message = str(
+    text = str(
         error
     ).lower()
 
-    fatal_tokens = [
+    tokens = [
         "401",
         "403",
         "invalid api key",
         "api key not valid",
         "permission denied",
         "unauthenticated",
-        "quota exceeded",
         "billing",
     ]
 
     return any(
-        token in message
-        for token in fatal_tokens
+        token in text
+        for token in tokens
     )
 
 
@@ -4288,8 +4304,23 @@ def generate_research_ai(
             "text": "",
             "model": None,
             "error": (
-                "Thiếu GEMINI_API_KEY "
-                "trong Streamlit Secrets."
+                "Thiếu GEMINI_API_KEY trong Streamlit Secrets."
+            ),
+        }
+
+    try:
+
+        import google.genai  # noqa: F401
+
+    except Exception as error:
+
+        return {
+            "ok": False,
+            "text": "",
+            "model": None,
+            "error": (
+                "Chưa cài google-genai: "
+                f"{error}"
             ),
         }
 
@@ -4300,11 +4331,11 @@ def generate_research_ai(
 
     errors = []
 
-    for model in RESEARCH_AI_MODELS:
+    for model in GEMINI_MODELS:
 
         try:
 
-            output = _call_research_ai_model(
+            output = _call_gemini(
                 api_key,
                 model,
                 prompt,
@@ -4327,8 +4358,6 @@ def generate_research_ai(
                 f"{model}: {error_text}"
             )
 
-            # Lỗi key/quyền/quota:
-            # dừng ngay.
             if _is_fatal_ai_error(
                 error
             ):
@@ -4340,15 +4369,12 @@ def generate_research_ai(
                     "error": error_text,
                 }
 
-            # 503 / high demand:
-            # thử model kế tiếp.
-            if _is_retryable_ai_error(
+            if _is_temporary_ai_error(
                 error
             ):
+
                 continue
 
-            # Lỗi khác:
-            # không spam API.
             return {
                 "ok": False,
                 "text": "",
@@ -4361,7 +4387,7 @@ def generate_research_ai(
         "text": "",
         "model": None,
         "error": (
-            "Các model AI hiện tại đều không khả dụng.\n\n"
+            "Không có model Gemini nào khả dụng.\n\n"
             + "\n".join(
                 errors
             )
@@ -4370,7 +4396,7 @@ def generate_research_ai(
 
 
 @st.cache_data(
-    ttl=CACHE_TTL_AI,
+    ttl=AI_CACHE_TTL,
     show_spinner=False,
 )
 def research_ai_cached(
@@ -4382,6 +4408,10 @@ def research_ai_cached(
         question,
     )
 
+
+# ============================================================
+# RESEARCH AI PANEL
+# ============================================================
 
 def render_research_ai(
     result,
@@ -4397,7 +4427,7 @@ def render_research_ai(
 
     st.caption(
         "AI đọc kết quả định lượng đã chạy và giải thích "
-        "ngắn gọn yếu tố nào đang liên hệ mạnh nhất với lợi suất."
+        "yếu tố nào đang liên hệ mạnh với lợi suất cổ phiếu."
     )
 
     if (
@@ -4417,34 +4447,35 @@ def render_research_ai(
 
         return
 
-    # ========================================================
-    # CUSTOM QUESTION
-    # ========================================================
+    # --------------------------------------------------------
+    # USER PROMPT
+    # --------------------------------------------------------
 
     question = st.text_area(
         "Hỏi Brian AI",
         placeholder=(
             "Ví dụ:\n"
             "Biến nào ảnh hưởng giá mạnh nhất?\n"
-            "Khối ngoại có ảnh hưởng đáng kể không?\n"
-            "Yếu tố thị trường chung có quan trọng không?\n"
+            "Khối ngoại có tác động đáng kể không?\n"
+            "Dòng tiền hay kỹ thuật quan trọng hơn?\n"
+            "Thị trường chung có ảnh hưởng mạnh không?\n"
             "1D, 5D hay 20D đáng tin hơn?\n"
-            "Nói đơn giản nghiên cứu này đang cho thấy gì?\n"
-            "Tại sao model có R² âm?"
+            "Tại sao R² lại âm?\n"
+            "Nói ngắn gọn nghiên cứu này đang cho thấy gì?"
         ),
-        height=120,
+        height=130,
         key="research_ai_question",
     ).strip()
 
-    # ========================================================
+    # --------------------------------------------------------
     # QUICK QUESTIONS
-    # ========================================================
+    # --------------------------------------------------------
 
     st.markdown(
         "#### ⚡ Hỏi nhanh"
     )
 
-    q1, q2, q3 = st.columns(3)
+    q1, q2, q3, q4 = st.columns(4)
 
     quick_question = None
 
@@ -4452,48 +4483,62 @@ def render_research_ai(
 
         if st.button(
             "🎯 Yếu tố mạnh nhất",
-            key="research_ai_quick_1",
+            key="research_ai_q1",
             width="stretch",
         ):
 
             quick_question = (
-                "Yếu tố nào có quan hệ mạnh nhất "
-                "với lợi suất cổ phiếu và bằng chứng mạnh tới đâu?"
+                "Yếu tố nào đang liên hệ mạnh nhất với lợi suất "
+                "cổ phiếu? Hãy nói rõ nhóm yếu tố, chiều tác động "
+                "và bằng chứng thống kê."
             )
 
     with q2:
 
         if st.button(
-            "📈 Giá phụ thuộc vào gì?",
-            key="research_ai_quick_2",
+            "💰 Dòng tiền",
+            key="research_ai_q2",
             width="stretch",
         ):
 
             quick_question = (
-                "Nói đơn giản giá cổ phiếu đang phụ thuộc "
-                "vào 3 đến 5 yếu tố nào nhiều nhất?"
+                "Dòng tiền, khối ngoại và tự doanh có vai trò "
+                "gì trong nghiên cứu? Hãy chỉ ra yếu tố đáng chú ý nhất."
             )
 
     with q3:
 
         if st.button(
-            "🔬 Độ tin cậy nghiên cứu",
-            key="research_ai_quick_3",
+            "📈 1D / 5D / 20D",
+            key="research_ai_q3",
             width="stretch",
         ):
 
             quick_question = (
-                "Nghiên cứu này đáng tin đến đâu? "
-                "Hãy xem model, R², baseline, VIF và các kiểm định."
+                "So sánh 1D, 5D và 20D. Horizon nào cho tín hiệu "
+                "ổn định nhất và yếu tố nào xuất hiện lặp lại?"
+            )
+
+    with q4:
+
+        if st.button(
+            "🔬 Độ tin cậy",
+            key="research_ai_q4",
+            width="stretch",
+        ):
+
+            quick_question = (
+                "Đọc toàn bộ model và kiểm định rồi đánh giá "
+                "nghiên cứu đáng tin ở mức nào. Nói thẳng điểm mạnh "
+                "và điểm yếu."
             )
 
     if quick_question:
-
         question = quick_question
 
-    # ========================================================
+    # --------------------------------------------------------
     # RUN
-    # ========================================================
+    # --------------------------------------------------------
 
     if st.button(
         "🤖 AI đọc toàn bộ nghiên cứu",
@@ -4510,7 +4555,7 @@ def render_research_ai(
         )
 
         with st.spinner(
-            "Brian AI đang đọc kết quả nghiên cứu..."
+            "Brian AI đang đọc số liệu nghiên cứu..."
         ):
 
             ai_result = research_ai_cached(
@@ -4534,9 +4579,13 @@ def render_research_ai(
             "research_ai_question_used"
         ] = question
 
-    # ========================================================
+    # --------------------------------------------------------
     # RESULT
-    # ========================================================
+    # --------------------------------------------------------
+
+    ai_result = st.session_state.get(
+        "research_ai_result"
+    )
 
     saved_scope = st.session_state.get(
         "research_ai_scope"
@@ -4548,17 +4597,13 @@ def render_research_ai(
         str(end_date),
     )
 
-    ai_result = st.session_state.get(
-        "research_ai_result"
-    )
-
     if (
         ai_result is None
         or saved_scope != current_scope
     ):
 
         st.info(
-            "Đặt câu hỏi hoặc để trống rồi bấm "
+            "Nhập câu hỏi hoặc để trống rồi bấm "
             "“AI đọc toàn bộ nghiên cứu”."
         )
 
@@ -4573,21 +4618,21 @@ def render_research_ai(
             "Brian AI chưa chạy được."
         )
 
-        error = ai_result.get(
-            "error",
-            "",
+        error = safe_text(
+            ai_result.get(
+                "error"
+            )
         )
 
         if error:
-
-            st.code(
-                error
-            )
+            st.code(error)
 
         return
 
-    model = ai_result.get(
-        "model"
+    model = safe_text(
+        ai_result.get(
+            "model"
+        )
     )
 
     if model:
@@ -4596,26 +4641,28 @@ def render_research_ai(
             f"Model: {model}"
         )
 
-    question_used = st.session_state.get(
-        "research_ai_question_used",
-        "",
+    used_question = safe_text(
+        st.session_state.get(
+            "research_ai_question_used",
+            ""
+        )
     )
 
-    if question_used:
+    if used_question:
 
         with st.container(
             border=True
         ):
 
             st.caption(
-                "Câu hỏi:"
+                "Câu hỏi đã gửi:"
             )
 
             st.write(
-                question_used
+                used_question
             )
 
-    output = _safe_text(
+    output = safe_text(
         ai_result.get(
             "text"
         )
@@ -4631,18 +4678,733 @@ def render_research_ai(
                 output
             )
 
+
+# ============================================================
+# MAIN PAGE
+# ============================================================
+
+def render_stock_analysis():
+
     # ========================================================
-    # SAMPLE
+    # HEADER
+    # ========================================================
+
+    st.caption(
+        "BRIAN STOCK · STOCK RESEARCH"
+    )
+
+    st.title(
+        "📈 Phân tích cổ phiếu"
+    )
+
+    st.write(
+        "Phân tích kỹ thuật, nghiên cứu định lượng, "
+        "dòng tiền, khối ngoại, tự doanh, thị trường chung "
+        "và nhóm ngành."
+    )
+
+    # ========================================================
+    # SYMBOL
+    # ========================================================
+
+    current_symbol = st.session_state.get(
+        "stock_analysis_symbol",
+        "HPG",
+    )
+
+    symbol_input = st.text_input(
+        "Mã cổ phiếu",
+        value=current_symbol,
+        placeholder="Ví dụ HPG, FPT, VNM...",
+        key="stock_analysis_symbol_input",
+    )
+
+    if st.button(
+        "🔄 Tải dữ liệu",
+        type="primary",
+        key="stock_analysis_load_button",
+    ):
+
+        clean_symbol = normalize_symbol(
+            symbol_input
+        )
+
+        if not clean_symbol:
+
+            st.warning(
+                "Vui lòng nhập mã cổ phiếu."
+            )
+
+            return
+
+        st.session_state[
+            "stock_analysis_symbol"
+        ] = clean_symbol
+
+        # Clear old research
+        for key in [
+            "stock_research_result",
+            "stock_research_symbol",
+            "stock_research_dates",
+            "research_ai_result",
+            "research_ai_scope",
+            "research_ai_question_used",
+        ]:
+
+            st.session_state.pop(
+                key,
+                None,
+            )
+
+        st.rerun()
+
+    symbol = normalize_symbol(
+        st.session_state.get(
+            "stock_analysis_symbol",
+            symbol_input,
+        )
+    )
+
+    # ========================================================
+    # DISPLAY DATA
+    # ========================================================
+
+    try:
+
+        display_data = load_display_data(
+            symbol
+        )
+
+    except Exception as error:
+
+        st.error(
+            f"Không thể tải dữ liệu "
+            f"{display_symbol(symbol)}."
+        )
+
+        st.code(
+            str(error)
+        )
+
+        return
+
+    if (
+        display_data is None
+        or display_data.empty
+    ):
+
+        st.warning(
+            "Không có dữ liệu."
+        )
+
+        return
+
+    # ========================================================
+    # SNAPSHOT
+    # ========================================================
+
+    snapshot = market_snapshot(
+        display_data
+    )
+
+    price = num(
+        snapshot.get("price")
+    )
+
+    change = num(
+        snapshot.get("change_1d")
+    )
+
+    rsi_value = num(
+        snapshot.get("rsi")
+    )
+
+    volume = num(
+        snapshot.get("volume")
+    )
+
+    sma20 = num(
+        snapshot.get("sma20")
+    )
+
+    sma50 = num(
+        snapshot.get("sma50")
+    )
+
+    macd = num(
+        snapshot.get("macd")
+    )
+
+    volatility = num(
+        snapshot.get("volatility20")
+    )
+
+    last = display_data.iloc[
+        -1
+    ]
+
+    atr14 = num(
+        last.get("ATR14")
+    )
+
+    volume_sma20 = num(
+        last.get("Volume_SMA20")
+    )
+
+    relative_volume = None
+
+    if (
+        volume is not None
+        and volume_sma20 is not None
+        and volume_sma20 != 0
+    ):
+
+        relative_volume = (
+            volume
+            / volume_sma20
+        )
+
+    # ========================================================
+    # STOCK HEADER
+    # ========================================================
+
+    st.subheader(
+        f"📈 {display_symbol(symbol)}"
+    )
+
+    a, b, c, d = st.columns(4)
+
+    with a:
+
+        st.metric(
+            "Giá",
+            format_price(
+                price
+            ),
+        )
+
+    with b:
+
+        st.metric(
+            "Thay đổi 1D",
+            format_percent(
+                change
+            ),
+        )
+
+    with c:
+
+        st.metric(
+            "RSI",
+            format_number(
+                rsi_value,
+                1,
+            ),
+        )
+
+    with d:
+
+        st.metric(
+            "Khối lượng",
+            format_volume(
+                volume
+            ),
+        )
+
+    # ========================================================
+    # INDICATORS
+    # ========================================================
+
+    a, b, c, d = st.columns(4)
+
+    with a:
+
+        st.metric(
+            "MA20",
+            format_price(
+                sma20
+            ),
+        )
+
+    with b:
+
+        st.metric(
+            "MA50",
+            format_price(
+                sma50
+            ),
+        )
+
+    with c:
+
+        st.metric(
+            "MACD",
+            format_number(
+                macd,
+                3,
+            ),
+        )
+
+    with d:
+
+        st.metric(
+            "Biến động 20 phiên",
+            (
+                f"{volatility:.2f}%"
+                if volatility is not None
+                else "—"
+            ),
+        )
+
+    # ========================================================
+    # STATUS
+    # ========================================================
+
+    st.subheader(
+        "🧭 Trạng thái kỹ thuật"
+    )
+
+    a, b, c, d = st.columns(4)
+
+    with a:
+
+        st.metric(
+            "Xu hướng",
+            ma_status(
+                price,
+                sma20,
+                sma50,
+            ),
+        )
+
+    with b:
+
+        st.metric(
+            "RSI",
+            rsi_status(
+                rsi_value
+            ),
+        )
+
+    with c:
+
+        st.metric(
+            "MACD",
+            macd_status(
+                macd
+            ),
+        )
+
+    with d:
+
+        st.metric(
+            "Thanh khoản",
+            (
+                f"{relative_volume:.2f}x TB20"
+                if relative_volume is not None
+                else "—"
+            ),
+        )
+
+    # ========================================================
+    # EXTRA
+    # ========================================================
+
+    st.subheader(
+        "📋 Chỉ báo bổ sung"
+    )
+
+    a, b, c, d = st.columns(4)
+
+    with a:
+
+        st.metric(
+            "ATR14",
+            format_price(
+                atr14
+            ),
+        )
+
+    with b:
+
+        st.metric(
+            "Volume TB20",
+            format_volume(
+                volume_sma20
+            ),
+        )
+
+    with c:
+
+        st.metric(
+            "Giá mở cửa",
+            format_price(
+                num(
+                    last.get("Open")
+                )
+            ),
+        )
+
+    with d:
+
+        high = num(
+            last.get("High")
+        )
+
+        low = num(
+            last.get("Low")
+        )
+
+        close = num(
+            last.get("Close")
+        )
+
+        if (
+            high is not None
+            and low is not None
+            and close is not None
+            and high != low
+        ):
+
+            position = (
+                (
+                    close - low
+                )
+                / (
+                    high - low
+                )
+                * 100
+            )
+
+            st.metric(
+                "Vị trí biên ngày",
+                f"{position:.1f}%",
+            )
+
+        else:
+
+            st.metric(
+                "Vị trí biên ngày",
+                "—",
+            )
+
+    # ========================================================
+    # CHART
+    # ========================================================
+
+    st.subheader(
+        "📊 Biểu đồ kỹ thuật"
+    )
+
+    try:
+
+        chart = price_volume_chart(
+            display_data
+        )
+
+        if chart is not None:
+
+            st.plotly_chart(
+                chart,
+                width="stretch",
+                config={
+                    "displaylogo": False,
+                },
+            )
+
+    except Exception as error:
+
+        st.warning(
+            f"Không thể hiển thị biểu đồ: {error}"
+        )
+
+    # ========================================================
+    # QUANTITATIVE RESEARCH
+    # ========================================================
+
+    st.divider()
+
+    st.header(
+        "🧪 Nghiên cứu định lượng"
+    )
+
+    st.write(
+        "Chọn đúng mẫu dữ liệu trước khi chạy. "
+        "Hệ thống chỉ tải dữ liệu multifactor khi bấm "
+        "“Chạy toàn bộ nghiên cứu”."
+    )
+
+    mode = st.radio(
+        "Kiểu chọn mẫu",
+        [
+            "Preset",
+            "Khoảng ngày tùy chọn",
+        ],
+        horizontal=True,
+        key="research_mode",
+    )
+
+    today = (
+        pd.Timestamp.today()
+        .date()
+    )
+
+    if mode == "Preset":
+
+        preset = st.selectbox(
+            "Khoảng thời gian",
+            list(
+                PERIOD_PRESETS.keys()
+            ),
+            index=3,
+            key="research_preset",
+        )
+
+        start_date = (
+            pd.Timestamp(
+                today
+            )
+            - pd.Timedelta(
+                days=PERIOD_PRESETS[
+                    preset
+                ]
+            )
+        ).date()
+
+        end_date = today
+
+    else:
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            start_date = st.date_input(
+                "Từ ngày",
+                value=(
+                    pd.Timestamp(
+                        today
+                    )
+                    - pd.Timedelta(
+                        days=365
+                    )
+                ).date(),
+                max_value=today,
+                key="research_start_date",
+            )
+
+        with c2:
+
+            end_date = st.date_input(
+                "Đến ngày",
+                value=today,
+                max_value=today,
+                key="research_end_date",
+            )
+
+        preset = "Tùy chọn"
+
+    if start_date > end_date:
+
+        st.error(
+            "Ngày bắt đầu phải nhỏ hơn hoặc bằng ngày kết thúc."
+        )
+
+        return
+
+    st.info(
+        f"Mẫu yêu cầu: "
+        f"{start_date.strftime('%d/%m/%Y')}"
+        f" → "
+        f"{end_date.strftime('%d/%m/%Y')}"
+    )
+
+    # ========================================================
+    # RUN
+    # ========================================================
+
+    run_research = st.button(
+        "🚀 Chạy toàn bộ nghiên cứu",
+        type="primary",
+        width="stretch",
+        key="run_stock_research",
+    )
+
+    if run_research:
+
+        st.session_state.pop(
+            "stock_research_result",
+            None,
+        )
+
+        # AI cũ không được dùng cho sample mới.
+        st.session_state.pop(
+            "research_ai_result",
+            None,
+        )
+
+        st.session_state.pop(
+            "research_ai_scope",
+            None,
+        )
+
+        st.session_state.pop(
+            "research_ai_question_used",
+            None,
+        )
+
+        with st.status(
+            "Đang nghiên cứu...",
+            expanded=True,
+        ) as status:
+
+            st.write(
+                "1/3 Đang tải dữ liệu kỹ thuật, dòng tiền, khối ngoại, "
+                "tự doanh, thị trường và nhóm ngành..."
+            )
+
+            try:
+
+                research_data = (
+                    load_multifactor_research_history(
+                        symbol,
+                        start_date,
+                        end_date,
+                    )
+                )
+
+            except Exception as error:
+
+                status.update(
+                    label="Không lấy được dữ liệu nghiên cứu",
+                    state="error",
+                )
+
+                st.error(
+                    "Không thể tải dữ liệu nghiên cứu."
+                )
+
+                st.code(
+                    str(error)
+                )
+
+                return
+
+            st.write(
+                "2/3 Đã tải dữ liệu. Đang chuẩn hóa toàn bộ biến..."
+            )
+
+            sample = slice_date_range(
+                research_data,
+                start_date,
+                end_date,
+            )
+
+            if sample.empty:
+
+                status.update(
+                    label="Không có phiên giao dịch",
+                    state="error",
+                )
+
+                st.error(
+                    "Không có phiên giao dịch trong khoảng đã chọn."
+                )
+
+                return
+
+            st.write(
+                f"Mẫu thực tế: {len(sample):,} quan sát."
+            )
+
+            st.write(
+                "3/3 Đang chạy 1D, 5D, 20D + model + kiểm định..."
+            )
+
+            result = execute_full_research(
+                sample
+            )
+
+            status.update(
+                label="Đã hoàn tất nghiên cứu",
+                state="complete",
+            )
+
+        st.session_state[
+            "stock_research_result"
+        ] = result
+
+        st.session_state[
+            "stock_research_symbol"
+        ] = symbol
+
+        st.session_state[
+            "stock_research_dates"
+        ] = (
+            start_date,
+            end_date,
+        )
+
+    # ========================================================
+    # LOAD SAVED RESULT
+    # ========================================================
+
+    result = st.session_state.get(
+        "stock_research_result"
+    )
+
+    saved_symbol = st.session_state.get(
+        "stock_research_symbol"
+    )
+
+    saved_dates = st.session_state.get(
+        "stock_research_dates"
+    )
+
+    current_dates = (
+        start_date,
+        end_date,
+    )
+
+    if (
+        result is None
+        or saved_symbol != symbol
+        or saved_dates != current_dates
+    ):
+
+        if result is not None:
+
+            st.caption(
+                "Mẫu hiện tại đã thay đổi. "
+                "Bấm “Chạy toàn bộ nghiên cứu” để chạy mẫu mới."
+            )
+
+        return
+
+    if not result.get(
+        "ok",
+        False,
+    ):
+
+        st.error(
+            result.get(
+                "error",
+                "Nghiên cứu thất bại.",
+            )
+        )
+
+        return
+
+    # ========================================================
+    # SAMPLE SUMMARY
     # ========================================================
 
     research_data = result.get(
         "data"
     )
 
-    actual_start, actual_end = (
-        actual_range(
-            research_data
-        )
+    actual_start, actual_end = actual_range(
+        research_data
     )
 
     st.divider()
@@ -4695,15 +5457,15 @@ def render_research_ai(
 
     if len(research_data) < 60:
 
-        st.warning(
-            "Mẫu dưới 60 quan sát: "
-            "kết luận định lượng cần rất thận trọng."
+        st.error(
+            "Mẫu dưới 60 quan sát. "
+            "Kết luận định lượng cần cực kỳ thận trọng."
         )
 
     elif len(research_data) < 120:
 
-        st.info(
-            "Mẫu đủ cho nghiên cứu cơ bản."
+        st.warning(
+            "Mẫu đủ cho phân tích cơ bản nhưng chưa thật dài."
         )
 
     else:
@@ -4713,7 +5475,7 @@ def render_research_ai(
         )
 
     # ========================================================
-    # VARIABLES
+    # ALL VARIABLES
     # ========================================================
 
     all_features = result.get(
@@ -4727,14 +5489,10 @@ def render_research_ai(
     )
 
     st.header(
-        "🧬 Toàn bộ biến"
+        "🧬 Toàn bộ biến nghiên cứu"
     )
 
-    total_groups = len(
-        groups
-    )
-
-    a, b, c = st.columns(3)
+    a, b, c, d, e, f = st.columns(6)
 
     with a:
 
@@ -4746,33 +5504,71 @@ def render_research_ai(
     with b:
 
         st.metric(
-            "Nhóm yếu tố",
-            total_groups,
+            "Kỹ thuật",
+            len(
+                groups.get(
+                    "Kỹ thuật",
+                    [],
+                )
+            ),
         )
 
     with c:
 
         st.metric(
-            "Biến market / sector / flow",
-            sum(
-                len(
-                    groups.get(
-                        name,
-                        [],
-                    )
-                )
-                for name in [
-                    "Khối ngoại",
-                    "Tự doanh",
-                    "Thị trường chung",
-                    "Nhóm ngành",
+            "Dòng tiền",
+            len(
+                groups.get(
                     "Dòng tiền",
-                ]
+                    [],
+                )
+            ),
+        )
+
+    with d:
+
+        st.metric(
+            "Khối ngoại",
+            len(
+                groups.get(
+                    "Khối ngoại",
+                    [],
+                )
+            ),
+        )
+
+    with e:
+
+        st.metric(
+            "Tự doanh",
+            len(
+                groups.get(
+                    "Tự doanh",
+                    [],
+                )
+            ),
+        )
+
+    with f:
+
+        st.metric(
+            "Market + Sector",
+            len(
+                groups.get(
+                    "Thị trường chung",
+                    [],
+                )
+            )
+            + len(
+                groups.get(
+                    "Nhóm ngành",
+                    [],
+                )
             ),
         )
 
     with st.expander(
-        "Xem toàn bộ biến",
+        "Xem toàn bộ danh sách biến",
         expanded=False,
     ):
 
@@ -4786,10 +5582,10 @@ def render_research_ai(
 
                 st.write(
                     ", ".join(
-                        str(
-                            item
+                        map(
+                            str,
+                            values,
                         )
-                        for item in values
                     )
                 )
 
@@ -4800,7 +5596,7 @@ def render_research_ai(
                 )
 
     # ========================================================
-    # HORIZONS
+    # EACH HORIZON
     # ========================================================
 
     for horizon in [
@@ -4851,37 +5647,130 @@ def render_research_ai(
         with d:
 
             st.metric(
-                "Biến model",
+                "Số biến",
                 f"{len(item['features_used']):,}",
             )
+
+        # ----------------------------------------------------
+        # Best factor BEFORE details
+        # ----------------------------------------------------
+
+        ranking = item.get(
+            "ranking"
+        )
+
+        if (
+            isinstance(
+                ranking,
+                pd.DataFrame,
+            )
+            and not ranking.empty
+        ):
+
+            top = ranking.iloc[
+                0
+            ]
+
+            factor = safe_text(
+                top.get(
+                    "Biến"
+                ),
+                "Không xác định",
+            )
+
+            group = safe_text(
+                top.get(
+                    "Nhóm"
+                ),
+                "Không xác định",
+            )
+
+            score = num(
+                top.get(
+                    "Score"
+                )
+            )
+
+            direction = safe_text(
+                top.get(
+                    "Quan hệ"
+                ),
+                "Không xác định",
+            )
+
+            if score is not None:
+
+                st.success(
+                    f"🎯 Yếu tố nổi bật nhất: **{factor}** "
+                    f"({group}) · Score {score:.1f}/100 · {direction}"
+                )
+
+            else:
+
+                st.info(
+                    f"🎯 Yếu tố nổi bật nhất: "
+                    f"**{factor}** ({group})"
+                )
+
+        # ----------------------------------------------------
+        # Forecast
+        # ----------------------------------------------------
 
         render_forecast(
             item
         )
 
+        # ----------------------------------------------------
+        # Group
+        # ----------------------------------------------------
+
         render_groups(
             item
         )
+
+        # ----------------------------------------------------
+        # Factors
+        # ----------------------------------------------------
 
         render_factors(
             item
         )
 
+        # ----------------------------------------------------
+        # Models
+        # ----------------------------------------------------
+
         render_models(
             item
         )
+
+        # ----------------------------------------------------
+        # OLS
+        # ----------------------------------------------------
 
         render_ols(
             item
         )
 
+        # ----------------------------------------------------
+        # VIF
+        # ----------------------------------------------------
+
         render_vif(
             item
         )
 
+        # ----------------------------------------------------
+        # Tests
+        # ----------------------------------------------------
+
         render_tests(
             item
         )
+
+        # ----------------------------------------------------
+        # Conclusion
+        # ----------------------------------------------------
 
         render_conclusion(
             item
@@ -4902,7 +5791,7 @@ def render_research_ai(
     st.divider()
 
     st.header(
-        "🎯 Tóm tắt kết quả"
+        "🎯 Kết luận cuối cùng"
     )
 
     final_rows = []
@@ -4944,13 +5833,13 @@ def render_research_ai(
             0
         ]
 
-        pred = num(
+        predicted = num(
             forecast.get(
                 "predicted_return"
             )
         )
 
-        price_forecast = num(
+        predicted_price = num(
             forecast.get(
                 "predicted_price"
             )
@@ -4973,12 +5862,22 @@ def render_research_ai(
                         "Score"
                     )
                 ),
+                "Spearman": num(
+                    top.get(
+                        "Spearman"
+                    )
+                ),
+                "p-value": num(
+                    top.get(
+                        "p-value"
+                    )
+                ),
                 "Dự báo %": (
-                    pred * 100
-                    if pred is not None
+                    predicted * 100
+                    if predicted is not None
                     else np.nan
                 ),
-                "Giá dự báo": price_forecast,
+                "Giá dự báo": predicted_price,
             }
         )
 
@@ -4992,25 +5891,31 @@ def render_research_ai(
             "Score"
         ] = summary[
             "Score"
-        ].round(
-            1
-        )
+        ].round(1)
+
+        summary[
+            "Spearman"
+        ] = summary[
+            "Spearman"
+        ].round(4)
+
+        summary[
+            "p-value"
+        ] = summary[
+            "p-value"
+        ].round(5)
 
         summary[
             "Dự báo %"
         ] = summary[
             "Dự báo %"
-        ].round(
-            2
-        )
+        ].round(2)
 
         summary[
             "Giá dự báo"
         ] = summary[
             "Giá dự báo"
-        ].round(
-            0
-        )
+        ].round(0)
 
         st.dataframe(
             summary,
@@ -5018,13 +5923,31 @@ def render_research_ai(
             hide_index=True,
         )
 
-    st.warning(
-        "Các kết quả trên là quan hệ thống kê và khả năng dự báo "
-        "trong mẫu đã chọn, không phải bằng chứng nhân quả."
-    )
+        factor_counts = (
+            summary[
+                "Yếu tố"
+            ]
+            .value_counts()
+        )
+
+        if not factor_counts.empty:
+
+            common_factor = str(
+                factor_counts.index[0]
+            )
+
+            common_count = int(
+                factor_counts.iloc[0]
+            )
+
+            st.success(
+                f"Yếu tố xuất hiện nhiều nhất giữa các horizon: "
+                f"**{common_factor}** "
+                f"({common_count}/{len(summary)} horizon)."
+            )
 
     # ========================================================
-    # RESEARCH AI
+    # AI RESEARCH READER
     # ========================================================
 
     render_research_ai(
@@ -5034,10 +5957,20 @@ def render_research_ai(
         end_date=end_date,
     )
 
+    # ========================================================
+    # FINAL WARNING
+    # ========================================================
+
+    st.warning(
+        "Kết quả phản ánh quan hệ thống kê và khả năng dự báo "
+        "trên mẫu đã chọn; không phải bằng chứng nhân quả và "
+        "không phải cam kết giá tương lai."
+    )
+
 
 # ============================================================
 # COMPATIBILITY
 # ============================================================
 
 def render_analysis():
-    render_stock_analysis()
+    return render_stock_analysis()
