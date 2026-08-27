@@ -8,6 +8,7 @@ from pages.stock_analysis import render_stock_analysis
 from pages.market_news import render_market_news
 from pages.portfolio import render_portfolio
 from pages.ai_assistant import render_ai_assistant
+from pages.market import render_market
 
 
 st.set_page_config(
@@ -42,6 +43,9 @@ elif trang == "Danh mục":
 
 elif trang == "AI Assistant":
     render_ai_assistant()
+    
+elif trang == "Thị trường":
+    render_market()
 
 else:
     st.session_state["page"] = "Dashboard"
