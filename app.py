@@ -7,7 +7,9 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 import statsmodels.api as sm
+import streamlit as st
 
+gemini_key = st.secrets["gen-lang-client-0003449349"]
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from sklearn.ensemble import RandomForestRegressor
