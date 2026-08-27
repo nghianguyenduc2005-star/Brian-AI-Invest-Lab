@@ -1,792 +1,1123 @@
-# data/market.py
-
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import requests
+import numpy as np
 import pandas as pd
+import requests
+import streamlit as st
 
 
 # ============================================================
-# DNSE CONFIG
+# CẤU HÌNH DNSE
 # ============================================================
 
-DNSE_BASE_URL = "https://api.dnse.com.vn"
+ĐỊA_CHỈ_DNSE = "https://api.dnse.com.vn/market-data/v1"
 
-OHLC_ENDPOINT = f"{DNSE_BASE_URL}/market-data/v1/price/ohlc"
+THỜI_GIAN_CHỜ = 20
 
-REQUEST_TIMEOUT = 20
+ĐỘ_PHÂN_GIẢI_NGÀY = "1D"
+
+SỐ_NGÀY_MẶC_ĐỊNH = {
+    "1 tháng": 31,
+    "3 tháng": 93,
+    "6 tháng": 186,
+    "1 năm": 366,
+    "2 năm": 731,
+    "3 năm": 1096,
+    "5 năm": 1826,
+}
 
 
 # ============================================================
-# SYMBOL
+# CHUẨN HÓA MÃ
 # ============================================================
 
-def normalize_symbol(symbol: str) -> str:
+def chuẩn_hóa_mã(mã: str) -> str:
     """
-    Chuẩn hóa mã cổ phiếu.
+    Chuẩn hóa mã cổ phiếu theo định dạng DNSE.
 
     Ví dụ:
-        HPG       -> HPG.VN
-        hpg       -> HPG.VN
-        HPG.VN    -> HPG.VN
-        FPT       -> FPT.VN
+        HPG      -> HPG
+        hpg      -> HPG
+        HPG.VN   -> HPG
+        " HPG "  -> HPG
     """
 
-    if not symbol:
+    if mã is None:
         return ""
 
-    symbol = str(symbol).strip().upper()
+    mã_sạch = str(mã).strip().upper()
 
-    # Loại bỏ các hậu tố thường gặp
-    for suffix in [".VN", ".HOSE", ".HNX", ".UPCOM"]:
-        if symbol.endswith(suffix):
-            symbol = symbol[: -len(suffix)]
+    mã_sạch = mã_sạch.replace(" ", "")
+    mã_sạch = mã_sạch.replace(".VN", "")
 
-    symbol = symbol.strip()
-
-    if not symbol:
-        return ""
-
-    return f"{symbol}.VN"
+    return mã_sạch
 
 
-def dnse_symbol(symbol: str) -> str:
+def hiển_thị_mã(mã: str) -> str:
     """
-    Chuyển symbol nội bộ về symbol DNSE.
-
-    HPG.VN -> HPG
-    HPG    -> HPG
+    Trả về mã sạch để hiển thị trên giao diện.
     """
 
-    symbol = normalize_symbol(symbol)
-
-    if not symbol:
-        return ""
-
-    return symbol.replace(".VN", "")
+    return chuẩn_hóa_mã(mã)
 
 
 # ============================================================
-# HTTP
+# CHUYỂN THỜI GIAN
 # ============================================================
 
-def _request_dnse(
-    url: str,
-    params: dict[str, Any],
-) -> Any:
+def chuyển_sang_dấu_thời_gian(ngày_giờ: datetime) -> int:
     """
-    Gọi DNSE API.
-
-    Không dùng vnstock.
-    Không dùng Yahoo Finance.
-    Không dùng dữ liệu random.
+    Chuyển thời gian sang Unix timestamp tính bằng giây.
     """
 
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": (
-            "BrianStock/1.0 "
-            "(Investment Research Dashboard)"
-        ),
-    }
+    if ngày_giờ.tzinfo is None:
+        ngày_giờ = ngày_giờ.replace(tzinfo=timezone.utc)
 
-    response = requests.get(
-        url,
-        params=params,
-        headers=headers,
-        timeout=REQUEST_TIMEOUT,
+    return int(ngày_giờ.timestamp())
+
+
+def xác_định_khoảng_thời_gian(khoảng_dữ_liệu: str) -> tuple[int, int]:
+    """
+    Xác định thời gian bắt đầu và kết thúc.
+    """
+
+    số_ngày = SỐ_NGÀY_MẶC_ĐỊNH.get(
+        khoảng_dữ_liệu,
+        366,
     )
 
-    if response.status_code == 429:
-        raise RuntimeError(
-            "DNSE đang giới hạn request (HTTP 429). "
-            "Hãy thử lại sau vài giây."
+    thời_gian_kết_thúc = datetime.now(timezone.utc)
+    thời_gian_bắt_đầu = (
+        thời_gian_kết_thúc
+        - timedelta(days=số_ngày)
+    )
+
+    return (
+        chuyển_sang_dấu_thời_gian(thời_gian_bắt_đầu),
+        chuyển_sang_dấu_thời_gian(thời_gian_kết_thúc),
+    )
+
+
+# ============================================================
+# GỌI DNSE
+# ============================================================
+
+def gọi_dnse(
+    mã: str,
+    độ_phân_giải: str = "1D",
+    dấu_thời_gian_bắt_đầu: int | None = None,
+    dấu_thời_gian_kết_thúc: int | None = None,
+) -> Any:
+    """
+    Gọi API OHLC của DNSE.
+
+    Không sử dụng vnstock.
+    Không sử dụng Yahoo Finance.
+    Không tạo dữ liệu giả.
+    """
+
+    mã_sạch = chuẩn_hóa_mã(mã)
+
+    if not mã_sạch:
+        raise ValueError("Mã cổ phiếu đang trống.")
+
+    if dấu_thời_gian_bắt_đầu is None:
+        dấu_thời_gian_bắt_đầu = chuyển_sang_dấu_thời_gian(
+            datetime.now(timezone.utc) - timedelta(days=366)
         )
 
-    if response.status_code == 400:
+    if dấu_thời_gian_kết_thúc is None:
+        dấu_thời_gian_kết_thúc = chuyển_sang_dấu_thời_gian(
+            datetime.now(timezone.utc)
+        )
+
+    địa_chỉ = f"{ĐỊA_CHỈ_DNSE}/price/ohlc"
+
+    tham_số = {
+        "symbol": mã_sạch,
+        "resolution": độ_phân_giải,
+        "from": dấu_thời_gian_bắt_đầu,
+        "to": dấu_thời_gian_kết_thúc,
+    }
+
+    tiêu_đề = {
+        "Accept": "application/json",
+        "User-Agent": "Brian-Stock-Investment-Research/1.0",
+    }
+
+    lỗi_cuối = None
+
+    for lần_thử in range(3):
+
         try:
-            detail = response.json()
-        except Exception:
-            detail = response.text
 
-        raise RuntimeError(
-            f"DNSE từ chối request (HTTP 400): {detail}"
-        )
+            phản_hồi = requests.get(
+                địa_chỉ,
+                params=tham_số,
+                headers=tiêu_đề,
+                timeout=THỜI_GIAN_CHỜ,
+            )
 
-    if response.status_code == 401:
-        raise RuntimeError(
-            "DNSE yêu cầu xác thực cho endpoint này."
-        )
+            if phản_hồi.status_code == 200:
+                return phản_hồi.json()
 
-    if response.status_code == 403:
-        raise RuntimeError(
-            "DNSE từ chối quyền truy cập endpoint."
-        )
+            if phản_hồi.status_code in (429, 500, 502, 503, 504):
+                lỗi_cuối = (
+                    f"DNSE trả HTTP {phản_hồi.status_code}: "
+                    f"{phản_hồi.text[:500]}"
+                )
 
-    if response.status_code >= 500:
-        raise RuntimeError(
-            f"DNSE server error: HTTP {response.status_code}"
-        )
+                time.sleep(1.5 * (lần_thử + 1))
+                continue
 
-    response.raise_for_status()
+            raise ValueError(
+                f"DNSE HTTP {phản_hồi.status_code}: "
+                f"{phản_hồi.text[:1000]}"
+            )
 
-    try:
-        return response.json()
-    except Exception as exc:
-        raise RuntimeError(
-            "DNSE trả về dữ liệu không phải JSON."
-        ) from exc
+        except requests.RequestException as lỗi:
+
+            lỗi_cuối = str(lỗi)
+
+            time.sleep(1.5 * (lần_thử + 1))
+
+    raise ConnectionError(
+        f"Không thể kết nối DNSE sau 3 lần thử. "
+        f"Chi tiết: {lỗi_cuối}"
+    )
 
 
 # ============================================================
-# RESPONSE PARSER
+# TÌM DANH SÁCH NẾN TRONG PHẢN HỒI
 # ============================================================
 
-def _find_records(data: Any) -> list[dict[str, Any]]:
+def tìm_danh_sách_nến(dữ_liệu: Any) -> list:
     """
-    DNSE có thể trả JSON với nhiều cấu trúc khác nhau.
-
-    Hàm này cố gắng tìm danh sách OHLC
-    mà không phụ thuộc cứng vào một key duy nhất.
+    DNSE có thể trả dữ liệu qua nhiều lớp cấu trúc.
+    Hàm này tìm danh sách nến một cách an toàn.
     """
 
-    if isinstance(data, list):
-        return [
-            x for x in data
-            if isinstance(x, dict)
+    if isinstance(dữ_liệu, list):
+        return dữ_liệu
+
+    if isinstance(dữ_liệu, dict):
+
+        khóa_ưu_tiên = [
+            "data",
+            "items",
+            "content",
+            "result",
+            "results",
+            "candles",
+            "ohlc",
         ]
 
-    if not isinstance(data, dict):
-        return []
+        for khóa in khóa_ưu_tiên:
 
-    # Các key thường gặp
-    possible_keys = [
-        "data",
-        "items",
-        "content",
-        "results",
-        "candles",
-        "ohlc",
-        "rows",
-    ]
+            giá_trị = dữ_liệu.get(khóa)
 
-    for key in possible_keys:
-        value = data.get(key)
+            if isinstance(giá_trị, list):
+                return giá_trị
 
-        if isinstance(value, list):
-            records = [
-                x for x in value
-                if isinstance(x, dict)
-            ]
+            if isinstance(giá_trị, dict):
+                danh_sách = tìm_danh_sách_nến(giá_trị)
 
-            if records:
-                return records
-
-        if isinstance(value, dict):
-            nested = _find_records(value)
-
-            if nested:
-                return nested
-
-    # Tìm sâu hơn trong dictionary
-    for value in data.values():
-
-        if isinstance(value, dict):
-            nested = _find_records(value)
-
-            if nested:
-                return nested
-
-        elif isinstance(value, list):
-
-            records = [
-                x for x in value
-                if isinstance(x, dict)
-            ]
-
-            if records:
-                return records
+                if danh_sách:
+                    return danh_sách
 
     return []
 
 
 # ============================================================
-# COLUMN NORMALIZATION
+# CHUẨN HÓA MỘT DÒNG DỮ LIỆU
 # ============================================================
 
-def _normalize_history(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Chuẩn hóa dữ liệu OHLCV thành:
+def lấy_giá_trị(dòng: Any, *tên: str) -> Any:
 
-        Date
-        Open
-        High
-        Low
-        Close
-        Volume
+    if isinstance(dòng, dict):
+
+        for khóa in tên:
+
+            if khóa in dòng:
+                return dòng[khóa]
+
+        return None
+
+    if isinstance(dòng, (list, tuple)):
+
+        return None
+
+    return None
+
+
+def chuẩn_hóa_lịch_sử(dữ_liệu: Any) -> pd.DataFrame:
+    """
+    Chuyển dữ liệu DNSE về bảng chuẩn.
     """
 
-    if df is None or df.empty:
+    danh_sách_nến = tìm_danh_sách_nến(dữ_liệu)
+
+    if not danh_sách_nến:
         return pd.DataFrame()
 
-    df = df.copy()
+    các_dòng = []
 
-    # --------------------------------------------------------
-    # Normalize column names
-    # --------------------------------------------------------
+    for dòng in danh_sách_nến:
 
-    rename_map = {}
+        if isinstance(dòng, dict):
 
-    for col in df.columns:
-
-        raw = str(col).strip()
-
-        key = (
-            raw
-            .lower()
-            .replace("_", "")
-            .replace("-", "")
-            .replace(" ", "")
-        )
-
-        mapping = {
-            "time": "Date",
-            "timestamp": "Date",
-            "datetime": "Date",
-            "date": "Date",
-            "tradingdate": "Date",
-            "tradingtime": "Date",
-
-            "open": "Open",
-            "openprice": "Open",
-
-            "high": "High",
-            "highprice": "High",
-
-            "low": "Low",
-            "lowprice": "Low",
-
-            "close": "Close",
-            "closeprice": "Close",
-            "lastprice": "Close",
-
-            "volume": "Volume",
-            "totalvolume": "Volume",
-            "matchvolume": "Volume",
-        }
-
-        if key in mapping:
-            rename_map[col] = mapping[key]
-
-    df = df.rename(columns=rename_map)
-
-    # --------------------------------------------------------
-    # Date
-    # --------------------------------------------------------
-
-    if "Date" not in df.columns:
-
-        # Một số API trả time dưới dạng index
-        if isinstance(df.index, pd.DatetimeIndex):
-            df = df.reset_index()
-
-            if "index" in df.columns:
-                df = df.rename(
-                    columns={"index": "Date"}
-                )
-
-    if "Date" in df.columns:
-
-        # Unix timestamp
-        if pd.api.types.is_numeric_dtype(df["Date"]):
-
-            sample = df["Date"].dropna()
-
-            if not sample.empty:
-
-                median_value = float(
-                    sample.abs().median()
-                )
-
-                if median_value > 10**12:
-                    unit = "ms"
-
-                elif median_value > 10**9:
-                    unit = "s"
-
-                else:
-                    unit = None
-
-                if unit:
-                    df["Date"] = pd.to_datetime(
-                        df["Date"],
-                        unit=unit,
-                        errors="coerce",
-                    )
-
-        else:
-            df["Date"] = pd.to_datetime(
-                df["Date"],
-                errors="coerce",
+            thời_gian = lấy_giá_trị(
+                dòng,
+                "t",
+                "time",
+                "timestamp",
+                "datetime",
+                "date",
             )
 
-    # --------------------------------------------------------
-    # Numeric columns
-    # --------------------------------------------------------
+            giá_mở = lấy_giá_trị(
+                dòng,
+                "o",
+                "open",
+                "Open",
+            )
 
-    for col in [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume",
+            giá_cao = lấy_giá_trị(
+                dòng,
+                "h",
+                "high",
+                "High",
+            )
+
+            giá_thấp = lấy_giá_trị(
+                dòng,
+                "l",
+                "low",
+                "Low",
+            )
+
+            giá_đóng = lấy_giá_trị(
+                dòng,
+                "c",
+                "close",
+                "Close",
+            )
+
+            khối_lượng = lấy_giá_trị(
+                dòng,
+                "v",
+                "volume",
+                "Volume",
+            )
+
+            các_dòng.append(
+                {
+                    "Thời gian": thời_gian,
+                    "Mở cửa": giá_mở,
+                    "Cao nhất": giá_cao,
+                    "Thấp nhất": giá_thấp,
+                    "Đóng cửa": giá_đóng,
+                    "Khối lượng": khối_lượng,
+                }
+            )
+
+    bảng = pd.DataFrame(các_dòng)
+
+    if bảng.empty:
+        return bảng
+
+    bảng["Thời gian"] = pd.to_numeric(
+        bảng["Thời gian"],
+        errors="coerce",
+    )
+
+    # DNSE trả thời gian Unix.
+    bảng["Ngày"] = pd.to_datetime(
+        bảng["Thời gian"],
+        unit="s",
+        errors="coerce",
+        utc=True,
+    ).dt.tz_convert("Asia/Ho_Chi_Minh").dt.tz_localize(None)
+
+    for cột in [
+        "Mở cửa",
+        "Cao nhất",
+        "Thấp nhất",
+        "Đóng cửa",
+        "Khối lượng",
+    ]:
+        bảng[cột] = pd.to_numeric(
+            bảng[cột],
+            errors="coerce",
+        )
+
+    bảng = bảng.dropna(
+        subset=[
+            "Ngày",
+            "Mở cửa",
+            "Cao nhất",
+            "Thấp nhất",
+            "Đóng cửa",
+        ]
+    )
+
+    bảng = bảng.sort_values("Ngày")
+    bảng = bảng.drop_duplicates(
+        subset=["Ngày"],
+        keep="last",
+    )
+
+    bảng = bảng.set_index("Ngày")
+
+    return bảng[
+        [
+            "Mở cửa",
+            "Cao nhất",
+            "Thấp nhất",
+            "Đóng cửa",
+            "Khối lượng",
+        ]
+    ].copy()
+
+
+# ============================================================
+# CHUẨN HÓA ĐƠN VỊ GIÁ
+# ============================================================
+
+def chuẩn_hóa_đơn_vị_giá(bảng: pd.DataFrame) -> pd.DataFrame:
+
+    bảng = bảng.copy()
+
+    for cột in [
+        "Mở cửa",
+        "Cao nhất",
+        "Thấp nhất",
+        "Đóng cửa",
     ]:
 
-        if col in df.columns:
+        if cột not in bảng.columns:
+            continue
 
-            df[col] = pd.to_numeric(
-                df[col],
-                errors="coerce",
-            )
+        trung_vị = bảng[cột].median()
 
-    # --------------------------------------------------------
-    # Remove invalid rows
-    # --------------------------------------------------------
+        # Một số nguồn dữ liệu có thể trả giá theo nghìn đồng.
+        # Nếu trung vị < 1000 thì chuyển về đồng.
+        if pd.notna(trung_vị) and 0 < trung_vị < 1000:
+            bảng[cột] = bảng[cột] * 1000
 
-    required = [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-    ]
-
-    existing_required = [
-        col
-        for col in required
-        if col in df.columns
-    ]
-
-    if existing_required:
-
-        df = df.dropna(
-            subset=existing_required
-        )
-
-    # --------------------------------------------------------
-    # Sort
-    # --------------------------------------------------------
-
-    if "Date" in df.columns:
-
-        df = df.sort_values(
-            "Date"
-        )
-
-        df = df.drop_duplicates(
-            subset=["Date"],
-            keep="last",
-        )
-
-    else:
-        df = df.reset_index(drop=True)
-
-    return df
+    return bảng
 
 
 # ============================================================
-# DNSE PRICE UNIT
+# TÍNH CHỈ BÁO
 # ============================================================
 
-def _normalize_price_unit(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    DNSE có thể trả giá cổ phiếu ở đơn vị nghìn VND
-    trong một số dữ liệu.
+def thêm_chỉ_báo(bảng: pd.DataFrame) -> pd.DataFrame:
 
-    Ví dụ:
+    bảng = bảng.copy()
 
-        22.2 -> 22,200 VND
-
-    Nhưng nếu API đã trả:
-
-        22,200
-
-    thì KHÔNG nhân thêm.
-
-    Dùng median để tránh bị một dòng lỗi làm sai toàn bộ dữ liệu.
-    """
-
-    if df is None or df.empty:
-        return df
-
-    df = df.copy()
-
-    price_columns = [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-    ]
-
-    existing = [
-        col
-        for col in price_columns
-        if col in df.columns
-    ]
-
-    if not existing:
-        return df
-
-    # Lấy median Close trước
-    reference_col = (
-        "Close"
-        if "Close" in df.columns
-        else existing[0]
-    )
-
-    median_price = pd.to_numeric(
-        df[reference_col],
-        errors="coerce",
-    ).median()
-
-    if pd.isna(median_price):
-        return df
+    đóng = bảng["Đóng cửa"]
+    cao = bảng["Cao nhất"]
+    thấp = bảng["Thấp nhất"]
+    khối_lượng = bảng["Khối lượng"]
 
     # --------------------------------------------------------
-    # Giá cổ phiếu Việt Nam:
-    #
-    # 22.2       => khả năng cao là 22,200 VND
-    # 22,200     => đã là VND
-    #
-    # Không dùng < 1000 một cách mù quáng cho mọi loại asset.
-    # Chỉ xử lý khoảng giá hợp lý của cổ phiếu Việt Nam.
+    # THAY ĐỔI GIÁ
     # --------------------------------------------------------
 
-    if 0 < median_price < 1000:
+    bảng["Thay đổi"] = đóng.diff()
 
-        for col in existing:
+    bảng["Tỷ suất 1 ngày"] = đóng.pct_change()
 
-            df[col] = (
-                pd.to_numeric(
-                    df[col],
-                    errors="coerce",
-                )
-                * 1000
-            )
+    bảng["Tỷ suất 5 ngày"] = đóng.pct_change(5)
 
-    return df
+    bảng["Tỷ suất 10 ngày"] = đóng.pct_change(10)
 
+    bảng["Tỷ suất 20 ngày"] = đóng.pct_change(20)
 
-# ============================================================
-# INDICATORS
-# ============================================================
+    bảng["Tỷ suất 60 ngày"] = đóng.pct_change(60)
 
-def add_indicators(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Thêm:
+    bảng["Tỷ suất 120 ngày"] = đóng.pct_change(120)
 
-        Return
-        SMA20
-        SMA50
-        RSI
-    """
+    bảng["Tỷ suất 252 ngày"] = đóng.pct_change(252)
 
-    if df is None or df.empty:
-        return df
+    # --------------------------------------------------------
+    # LỢI NHUẬN TÍCH LŨY
+    # --------------------------------------------------------
 
-    df = df.copy()
-
-    if "Close" not in df.columns:
-        return df
-
-    close = pd.to_numeric(
-        df["Close"],
-        errors="coerce",
+    bảng["Lợi nhuận tích lũy"] = (
+        (1 + bảng["Tỷ suất 1 ngày"].fillna(0)).cumprod() - 1
     )
 
     # --------------------------------------------------------
-    # Daily return
+    # TRUNG BÌNH ĐỘNG ĐƠN
     # --------------------------------------------------------
 
-    df["Return"] = close.pct_change()
+    for số_ngày in [
+        5,
+        10,
+        20,
+        50,
+        100,
+        150,
+        200,
+    ]:
+
+        bảng[f"Trung bình động {số_ngày}"] = (
+            đóng.rolling(số_ngày).mean()
+        )
 
     # --------------------------------------------------------
-    # Moving averages
+    # TRUNG BÌNH ĐỘNG LŨY THỪA
     # --------------------------------------------------------
 
-    df["SMA20"] = (
-        close
-        .rolling(
-            window=20,
-            min_periods=1,
+    for số_ngày in [
+        5,
+        10,
+        12,
+        20,
+        26,
+        50,
+        100,
+        200,
+    ]:
+
+        bảng[f"Trung bình lũy thừa {số_ngày}"] = (
+            đóng.ewm(
+                span=số_ngày,
+                adjust=False,
+            ).mean()
+        )
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
+    chênh_lệch = đóng.diff()
+
+    tăng = chênh_lệch.clip(lower=0)
+
+    giảm = -chênh_lệch.clip(upper=0)
+
+    trung_bình_tăng = tăng.ewm(
+        alpha=1 / 14,
+        adjust=False,
+    ).mean()
+
+    trung_bình_giảm = giảm.ewm(
+        alpha=1 / 14,
+        adjust=False,
+    ).mean()
+
+    tỷ_số_sức_mạnh = (
+        trung_bình_tăng
+        / trung_bình_giảm.replace(0, np.nan)
+    )
+
+    bảng["RSI 14"] = (
+        100 - 100 / (1 + tỷ_số_sức_mạnh)
+    )
+
+    # --------------------------------------------------------
+    # MACD
+    # --------------------------------------------------------
+
+    trung_bình_12 = đóng.ewm(
+        span=12,
+        adjust=False,
+    ).mean()
+
+    trung_bình_26 = đóng.ewm(
+        span=26,
+        adjust=False,
+    ).mean()
+
+    bảng["MACD"] = trung_bình_12 - trung_bình_26
+
+    bảng["Đường tín hiệu MACD"] = (
+        bảng["MACD"]
+        .ewm(
+            span=9,
+            adjust=False,
         )
         .mean()
     )
 
-    df["SMA50"] = (
-        close
-        .rolling(
-            window=50,
-            min_periods=1,
+    bảng["Biểu đồ MACD"] = (
+        bảng["MACD"]
+        - bảng["Đường tín hiệu MACD"]
+    )
+
+    # --------------------------------------------------------
+    # DẢI BOLLINGER
+    # --------------------------------------------------------
+
+    trung_bình_20 = đóng.rolling(20).mean()
+
+    độ_lệch_20 = đóng.rolling(20).std()
+
+    bảng["Dải giữa Bollinger"] = trung_bình_20
+
+    bảng["Dải trên Bollinger"] = (
+        trung_bình_20 + 2 * độ_lệch_20
+    )
+
+    bảng["Dải dưới Bollinger"] = (
+        trung_bình_20 - 2 * độ_lệch_20
+    )
+
+    bảng["Độ rộng Bollinger"] = (
+        (
+            bảng["Dải trên Bollinger"]
+            - bảng["Dải dưới Bollinger"]
         )
+        / trung_bình_20
+    )
+
+    bảng["Vị trí trong Bollinger"] = (
+        (
+            đóng
+            - bảng["Dải dưới Bollinger"]
+        )
+        / (
+            bảng["Dải trên Bollinger"]
+            - bảng["Dải dưới Bollinger"]
+        )
+    )
+
+    # --------------------------------------------------------
+    # TRUE RANGE / ATR
+    # --------------------------------------------------------
+
+    biên_độ_1 = cao - thấp
+
+    biên_độ_2 = (
+        cao - đóng.shift(1)
+    ).abs()
+
+    biên_độ_3 = (
+        thấp - đóng.shift(1)
+    ).abs()
+
+    biên_độ_thật = pd.concat(
+        [
+            biên_độ_1,
+            biên_độ_2,
+            biên_độ_3,
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    bảng["Biên độ thật"] = biên_độ_thật
+
+    bảng["ATR 14"] = (
+        biên_độ_thật
+        .rolling(14)
         .mean()
     )
 
+    bảng["ATR 20"] = (
+        biên_độ_thật
+        .rolling(20)
+        .mean()
+    )
+
+    bảng["ATR phần trăm"] = (
+        bảng["ATR 14"] / đóng * 100
+    )
+
     # --------------------------------------------------------
-    # RSI 14
+    # STOCHASTIC
     # --------------------------------------------------------
 
-    delta = close.diff()
+    thấp_14 = thấp.rolling(14).min()
 
-    gain = delta.clip(
-        lower=0
-    )
+    cao_14 = cao.rolling(14).max()
 
-    loss = -delta.clip(
-        upper=0
-    )
-
-    avg_gain = gain.ewm(
-        alpha=1 / 14,
-        adjust=False,
-        min_periods=14,
-    ).mean()
-
-    avg_loss = loss.ewm(
-        alpha=1 / 14,
-        adjust=False,
-        min_periods=14,
-    ).mean()
-
-    rs = avg_gain / avg_loss.replace(
-        0,
-        pd.NA,
-    )
-
-    df["RSI"] = (
+    bảng["Stochastic K"] = (
         100
-        - (
-            100
-            / (1 + rs)
+        * (đóng - thấp_14)
+        / (cao_14 - thấp_14)
+    )
+
+    bảng["Stochastic D"] = (
+        bảng["Stochastic K"]
+        .rolling(3)
+        .mean()
+    )
+
+    # --------------------------------------------------------
+    # WILLIAMS %R
+    # --------------------------------------------------------
+
+    bảng["Williams R"] = (
+        -100
+        * (cao_14 - đóng)
+        / (cao_14 - thấp_14)
+    )
+
+    # --------------------------------------------------------
+    # CCI
+    # --------------------------------------------------------
+
+    giá_điển_hình = (
+        cao + thấp + đóng
+    ) / 3
+
+    trung_bình_cci = (
+        giá_điển_hình
+        .rolling(20)
+        .mean()
+    )
+
+    độ_lệch_cci = (
+        giá_điển_hình
+        .rolling(20)
+        .apply(
+            lambda x: np.mean(
+                np.abs(x - np.mean(x))
+            ),
+            raw=True,
         )
     )
 
-    # Trường hợp loss = 0
-    df.loc[
-        (avg_loss == 0)
-        & (avg_gain > 0),
-        "RSI",
-    ] = 100
+    bảng["CCI 20"] = (
+        (
+            giá_điển_hình
+            - trung_bình_cci
+        )
+        / (
+            0.015
+            * độ_lệch_cci
+        )
+    )
 
-    # Trường hợp cả gain và loss = 0
-    df.loc[
-        (avg_gain == 0)
-        & (avg_loss == 0),
-        "RSI",
-    ] = 50
+    # --------------------------------------------------------
+    # ROC / ĐỘNG LƯỢNG
+    # --------------------------------------------------------
 
-    return df
+    bảng["Động lượng 10"] = (
+        đóng - đóng.shift(10)
+    )
+
+    bảng["Động lượng 20"] = (
+        đóng - đóng.shift(20)
+    )
+
+    bảng["ROC 10"] = (
+        đóng.pct_change(10) * 100
+    )
+
+    bảng["ROC 20"] = (
+        đóng.pct_change(20) * 100
+    )
+
+    # --------------------------------------------------------
+    # BIẾN ĐỘNG
+    # --------------------------------------------------------
+
+    lợi_nhuận_ngày = bảng["Tỷ suất 1 ngày"]
+
+    for số_ngày in [
+        5,
+        10,
+        20,
+        30,
+        60,
+        120,
+        252,
+    ]:
+
+        bảng[f"Biến động {số_ngày} ngày"] = (
+            lợi_nhuận_ngày
+            .rolling(số_ngày)
+            .std()
+            * np.sqrt(252)
+            * 100
+        )
+
+    # --------------------------------------------------------
+    # KHỐI LƯỢNG
+    # --------------------------------------------------------
+
+    for số_ngày in [
+        5,
+        10,
+        20,
+        50,
+    ]:
+
+        bảng[f"Khối lượng trung bình {số_ngày}"] = (
+            khối_lượng
+            .rolling(số_ngày)
+            .mean()
+        )
+
+    bảng["Thay đổi khối lượng"] = (
+        khối_lượng.pct_change()
+    )
+
+    bảng["Tỷ lệ khối lượng"] = (
+        khối_lượng
+        / bảng["Khối lượng trung bình 20"]
+    )
+
+    # --------------------------------------------------------
+    # OBV
+    # --------------------------------------------------------
+
+    hướng_giá = np.sign(
+        đóng.diff().fillna(0)
+    )
+
+    bảng["OBV"] = (
+        hướng_giá * khối_lượng
+    ).cumsum()
+
+    # --------------------------------------------------------
+    # MỨC CAO / THẤP
+    # --------------------------------------------------------
+
+    for số_ngày in [
+        20,
+        50,
+        100,
+        200,
+        252,
+    ]:
+
+        bảng[f"Cao nhất {số_ngày} ngày"] = (
+            cao.rolling(số_ngày).max()
+        )
+
+        bảng[f"Thấp nhất {số_ngày} ngày"] = (
+            thấp.rolling(số_ngày).min()
+        )
+
+    # --------------------------------------------------------
+    # VỊ TRÍ SO VỚI ĐỈNH / ĐÁY
+    # --------------------------------------------------------
+
+    đỉnh_252 = bảng["Cao nhất 252 ngày"]
+
+    đáy_252 = bảng["Thấp nhất 252 ngày"]
+
+    bảng["Khoảng cách đỉnh 252 ngày"] = (
+        đóng / đỉnh_252 - 1
+    ) * 100
+
+    bảng["Khoảng cách đáy 252 ngày"] = (
+        đóng / đáy_252 - 1
+    ) * 100
+
+    # --------------------------------------------------------
+    # ADX / DI
+    # --------------------------------------------------------
+
+    tăng_cực_đại = cao.diff()
+
+    giảm_cực_đại = -thấp.diff()
+
+    hướng_tăng = np.where(
+        (tăng_cực_đại > giảm_cực_đại)
+        & (tăng_cực_đại > 0),
+        tăng_cực_đại,
+        0,
+    )
+
+    hướng_giảm = np.where(
+        (giảm_cực_đại > tăng_cực_đại)
+        & (giảm_cực_đại > 0),
+        giảm_cực_đại,
+        0,
+    )
+
+    hướng_tăng = pd.Series(
+        hướng_tăng,
+        index=bảng.index,
+    )
+
+    hướng_giảm = pd.Series(
+        hướng_giảm,
+        index=bảng.index,
+    )
+
+    trung_bình_biên_độ = (
+        biên_độ_thật
+        .rolling(14)
+        .mean()
+    )
+
+    bảng["DI dương"] = (
+        100
+        * hướng_tăng.rolling(14).mean()
+        / trung_bình_biên_độ
+    )
+
+    bảng["DI âm"] = (
+        100
+        * hướng_giảm.rolling(14).mean()
+        / trung_bình_biên_độ
+    )
+
+    chỉ_số_hướng = (
+        (
+            bảng["DI dương"]
+            - bảng["DI âm"]
+        ).abs()
+        / (
+            bảng["DI dương"]
+            + bảng["DI âm"]
+        )
+    ) * 100
+
+    bảng["ADX 14"] = (
+        chỉ_số_hướng
+        .rolling(14)
+        .mean()
+    )
+
+    # --------------------------------------------------------
+    # TÍN HIỆU CƠ BẢN
+    # --------------------------------------------------------
+
+    bảng["Giá trên MA20"] = (
+        đóng > bảng["Trung bình động 20"]
+    )
+
+    bảng["Giá trên MA50"] = (
+        đóng > bảng["Trung bình động 50"]
+    )
+
+    bảng["Giá trên MA200"] = (
+        đóng > bảng["Trung bình động 200"]
+    )
+
+    bảng["MA20 trên MA50"] = (
+        bảng["Trung bình động 20"]
+        > bảng["Trung bình động 50"]
+    )
+
+    bảng["MA50 trên MA200"] = (
+        bảng["Trung bình động 50"]
+        > bảng["Trung bình động 200"]
+    )
+
+    bảng["MACD dương"] = (
+        bảng["MACD"]
+        > bảng["Đường tín hiệu MACD"]
+    )
+
+    bảng["RSI quá mua"] = (
+        bảng["RSI 14"] >= 70
+    )
+
+    bảng["RSI quá bán"] = (
+        bảng["RSI 14"] <= 30
+    )
+
+    # --------------------------------------------------------
+    # ĐIỂM XU HƯỚNG
+    # --------------------------------------------------------
+
+    điểm_xu_hướng = pd.Series(
+        0.0,
+        index=bảng.index,
+    )
+
+    điểm_xu_hướng += np.where(
+        đóng > bảng["Trung bình động 20"],
+        1,
+        -1,
+    )
+
+    điểm_xu_hướng += np.where(
+        đóng > bảng["Trung bình động 50"],
+        1,
+        -1,
+    )
+
+    điểm_xu_hướng += np.where(
+        đóng > bảng["Trung bình động 200"],
+        1,
+        -1,
+    )
+
+    điểm_xu_hướng += np.where(
+        bảng["MACD"] > bảng["Đường tín hiệu MACD"],
+        1,
+        -1,
+    )
+
+    điểm_xu_hướng += np.where(
+        bảng["RSI 14"] < 30,
+        1,
+        np.where(
+            bảng["RSI 14"] > 70,
+            -1,
+            0,
+        ),
+    )
+
+    điểm_xu_hướng += np.where(
+        bảng["ADX 14"] > 25,
+        np.sign(
+            bảng["DI dương"]
+            - bảng["DI âm"]
+        ),
+        0,
+    )
+
+    bảng["Điểm xu hướng"] = điểm_xu_hướng
+
+    bảng["Trạng thái kỹ thuật"] = np.select(
+        [
+            bảng["Điểm xu hướng"] >= 4,
+            bảng["Điểm xu hướng"] >= 2,
+            bảng["Điểm xu hướng"] <= -4,
+            bảng["Điểm xu hướng"] <= -2,
+        ],
+        [
+            "TÍCH CỰC",
+            "HƠI TÍCH CỰC",
+            "THẬN TRỌNG",
+            "HƠI THẬN TRỌNG",
+        ],
+        default="TRUNG TÍNH",
+    )
+
+    return bảng
 
 
 # ============================================================
-# FETCH HISTORICAL OHLC
+# KIỂM TRA DỮ LIỆU
 # ============================================================
+
+def kiểm_tra_dữ_liệu(bảng: pd.DataFrame) -> pd.DataFrame:
+
+    bảng = bảng.copy()
+
+    if bảng.empty:
+        return bảng
+
+    điều_kiện_hợp_lệ = (
+        (bảng["Mở cửa"] > 0)
+        & (bảng["Cao nhất"] > 0)
+        & (bảng["Thấp nhất"] > 0)
+        & (bảng["Đóng cửa"] > 0)
+        & (bảng["Cao nhất"] >= bảng["Thấp nhất"])
+        & (bảng["Cao nhất"] >= bảng["Mở cửa"])
+        & (bảng["Cao nhất"] >= bảng["Đóng cửa"])
+        & (bảng["Thấp nhất"] <= bảng["Mở cửa"])
+        & (bảng["Thấp nhất"] <= bảng["Đóng cửa"])
+    )
+
+    bảng = bảng.loc[điều_kiện_hợp_lệ].copy()
+
+    return bảng
+
+
+# ============================================================
+# HÀM TẢI DỮ LIỆU CHÍNH
+# ============================================================
+
+@st.cache_data(
+    ttl=900,
+    show_spinner=False,
+)
+def tải_dữ_liệu_thị_trường(
+    mã: str,
+    khoảng_dữ_liệu: str = "1 năm",
+) -> pd.DataFrame:
+
+    mã_sạch = chuẩn_hóa_mã(mã)
+
+    if not mã_sạch:
+        raise ValueError(
+            "Bạn chưa nhập mã cổ phiếu."
+        )
+
+    dấu_bắt_đầu, dấu_kết_thúc = (
+        xác_định_khoảng_thời_gian(
+            khoảng_dữ_liệu
+        )
+    )
+
+    dữ_liệu_thô = gọi_dnse(
+        mã=mã_sạch,
+        độ_phân_giải=ĐỘ_PHÂN_GIẢI_NGÀY,
+        dấu_thời_gian_bắt_đầu=dấu_bắt_đầu,
+        dấu_thời_gian_kết_thúc=dấu_kết_thúc,
+    )
+
+    bảng = chuẩn_hóa_lịch_sử(
+        dữ_liệu_thô
+    )
+
+    if bảng.empty:
+        raise ValueError(
+            f"DNSE không trả dữ liệu OHLC cho mã {mã_sạch}."
+        )
+
+    bảng = chuẩn_hóa_đơn_vị_giá(bảng)
+
+    bảng = kiểm_tra_dữ_liệu(bảng)
+
+    if bảng.empty:
+        raise ValueError(
+            f"Dữ liệu {mã_sạch} sau khi kiểm tra không còn dòng hợp lệ."
+        )
+
+    bảng = thêm_chỉ_báo(bảng)
+
+    bảng = bảng.replace(
+        [np.inf, -np.inf],
+        np.nan,
+    )
+
+    return bảng
+
+
+# ============================================================
+# TƯƠNG THÍCH VỚI CÁC FILE CŨ
+# ============================================================
+
+# Các tên này giúp project cũ không chết ngay khi chuyển sang
+# bộ hàm mới.
+
+def normalize_symbol(mã: str) -> str:
+    return chuẩn_hóa_mã(mã)
+
+
+def display_symbol(mã: str) -> str:
+    return hiển_thị_mã(mã)
+
 
 def load_market_data(
-    symbol: str,
-    period: str = "1y",
+    mã: str,
+    khoảng_dữ_liệu: str = "1y",
 ) -> pd.DataFrame:
-    """
-    Lấy dữ liệu OHLCV lịch sử từ DNSE.
 
-    Ví dụ:
-
-        load_market_data("HPG.VN", "1y")
-
-    Trả về DataFrame gồm:
-
-        Date
-        Open
-        High
-        Low
-        Close
-        Volume
-        Return
-        SMA20
-        SMA50
-        RSI
-    """
-
-    clean_symbol = dnse_symbol(symbol)
-
-    if not clean_symbol:
-        raise ValueError(
-            "Mã cổ phiếu không hợp lệ."
-        )
-
-    # --------------------------------------------------------
-    # Period
-    # --------------------------------------------------------
-
-    period_days = {
-        "1mo": 31,
-        "3mo": 93,
-        "6mo": 186,
-        "1y": 366,
-        "2y": 731,
-        "3y": 1096,
-        "5y": 1826,
+    ánh_xạ_khoảng = {
+        "1mo": "1 tháng",
+        "3mo": "3 tháng",
+        "6mo": "6 tháng",
+        "1y": "1 năm",
+        "2y": "2 năm",
+        "3y": "3 năm",
+        "5y": "5 năm",
     }
 
-    days = period_days.get(
-        period,
-        366,
+    khoảng = ánh_xạ_khoảng.get(
+        khoảng_dữ_liệu,
+        khoảng_dữ_liệu,
     )
 
-    end_date = datetime.now()
-
-    start_date = (
-        end_date
-        - timedelta(days=days)
+    return tải_dữ_liệu_thị_trường(
+        mã,
+        khoảng,
     )
-
-    # --------------------------------------------------------
-    # DNSE API
-    # --------------------------------------------------------
-
-    params = {
-        "symbol": clean_symbol,
-        "resolution": "1D",
-        "from": int(
-            start_date.timestamp()
-        ),
-        "to": int(
-            end_date.timestamp()
-        ),
-    }
-
-    data = _request_dnse(
-        OHLC_ENDPOINT,
-        params,
-    )
-
-    records = _find_records(data)
-
-    if not records:
-        raise ValueError(
-            f"DNSE không trả dữ liệu OHLC "
-            f"cho {clean_symbol}."
-        )
-
-    df = pd.DataFrame(records)
-
-    # --------------------------------------------------------
-    # Normalize
-    # --------------------------------------------------------
-
-    df = _normalize_history(df)
-
-    if df.empty:
-        raise ValueError(
-            f"Không có dữ liệu sau khi xử lý "
-            f"{clean_symbol}."
-        )
-
-    # --------------------------------------------------------
-    # QUAN TRỌNG:
-    #
-    # Chuẩn hóa giá trước khi tính indicators.
-    # --------------------------------------------------------
-
-    df = _normalize_price_unit(df)
-
-    # --------------------------------------------------------
-    # Indicators
-    # --------------------------------------------------------
-
-    df = add_indicators(df)
-
-    # --------------------------------------------------------
-    # Final cleanup
-    # --------------------------------------------------------
-
-    df = df.reset_index(
-        drop=True
-    )
-
-    return df
-
-
-# ============================================================
-# LATEST QUOTE
-# ============================================================
-
-def get_latest_quote(
-    symbol: str,
-) -> dict[str, Any]:
-    """
-    Lấy giá gần nhất.
-
-    Hàm này dùng endpoint quote riêng.
-    Nếu endpoint không khả dụng thì dashboard
-    vẫn có thể lấy giá cuối từ OHLC.
-    """
-
-    clean_symbol = dnse_symbol(symbol)
-
-    if not clean_symbol:
-        raise ValueError(
-            "Mã cổ phiếu không hợp lệ."
-        )
-
-    url = (
-        f"{DNSE_BASE_URL}"
-        f"/market-data/v1/stocks/"
-        f"{clean_symbol}/quotes"
-    )
-
-    data = _request_dnse(
-        url,
-        {},
-    )
-
-    if isinstance(data, dict):
-
-        # Một số response có data bọc ngoài
-        if isinstance(
-            data.get("data"),
-            dict,
-        ):
-            data = data["data"]
-
-        return data
-
-    return {}
-
-
-# ============================================================
-# MARKET SUMMARY
-# ============================================================
-
-def get_market_summary() -> dict[str, Any]:
-    """
-    Khung dữ liệu cho VN-INDEX.
-
-    Chưa hard-code dữ liệu.
-    Nếu DNSE endpoint index thay đổi,
-    dashboard sẽ trả None thay vì hiển thị dữ liệu giả.
-    """
-
-    return {
-        "symbol": "VNINDEX",
-        "point": None,
-        "change": None,
-        "change_percent": None,
-        "volume": None,
-    }
