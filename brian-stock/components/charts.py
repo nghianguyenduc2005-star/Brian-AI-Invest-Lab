@@ -1,5 +1,4 @@
-```python
-# brian-stock/components/charts.py
+
 
 from __future__ import annotations
 
