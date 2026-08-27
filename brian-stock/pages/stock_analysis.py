@@ -48,7 +48,7 @@ TRAIN_RATIO = 0.80
 
 
 # ============================================================
-# TIỆN ÍCH
+# TIỆN ÍCH SỐ
 # ============================================================
 
 def num(
@@ -57,18 +57,12 @@ def num(
 ):
     try:
 
-        value = float(
-            value
-        )
+        value = float(value)
 
-        if pd.isna(
-            value
-        ):
+        if pd.isna(value):
             return default
 
-        if not np.isfinite(
-            value
-        ):
+        if not np.isfinite(value):
             return default
 
         return value
@@ -294,7 +288,7 @@ def macd_status(
 
 
 # ============================================================
-# DATA LOADER
+# LOAD DỮ LIỆU HIỂN THỊ
 # ============================================================
 
 @st.cache_data(
@@ -304,6 +298,7 @@ def macd_status(
 def load_display_data(
     symbol,
 ):
+
     return load_market_data(
         symbol,
         "1y",
@@ -311,7 +306,7 @@ def load_display_data(
 
 
 # ============================================================
-# NGÀY DỮ LIỆU
+# DATETIME
 # ============================================================
 
 def normalize_datetime_index(
@@ -321,7 +316,7 @@ def normalize_datetime_index(
         df is None
         or df.empty
     ):
-        return df
+        return pd.DataFrame()
 
     work = df.copy()
 
@@ -334,7 +329,10 @@ def normalize_datetime_index(
         ~work.index.isna()
     ].copy()
 
-    work = work.sort_index()
+    work = (
+        work
+        .sort_index()
+    )
 
     work = work[
         ~work.index.duplicated(
@@ -352,10 +350,7 @@ def get_date_range(
         df
     )
 
-    if (
-        df is None
-        or df.empty
-    ):
+    if df.empty:
         return None, None
 
     start = df.index.min()
@@ -420,7 +415,7 @@ def slice_local(
 
 
 # ============================================================
-# FEATURE DISCOVERY
+# TẤT CẢ BIẾN NUMERIC
 # ============================================================
 
 def get_all_numeric_features(
@@ -436,18 +431,19 @@ def get_all_numeric_features(
 
     for column in df.columns:
 
-        if str(
+        column_name = str(
             column
-        ) in {
+        )
+
+        # Không đưa target tương lai vào X.
+        if column_name in {
             "Target_1D",
             "Target_5D",
             "Target_20D",
         }:
             continue
 
-        if str(
-            column
-        ) in {
+        if column_name in {
             "Time",
             "Date",
         }:
@@ -469,12 +465,13 @@ def get_all_numeric_features(
 
 
 # ============================================================
-# BUILD RESEARCH DATASET
+# CHUẨN BỊ DATASET NGHIÊN CỨU
 # ============================================================
 
 def prepare_research_dataset(
     sample,
 ):
+
     if (
         sample is None
         or sample.empty
@@ -484,45 +481,47 @@ def prepare_research_dataset(
     if "Close" not in sample.columns:
         return None
 
-    df = sample.copy()
-
     df = normalize_datetime_index(
-        df
+        sample
     )
 
     if df.empty:
         return None
 
     # ========================================================
-    # CHUẨN HÓA NUMERIC
+    # ÉP TẤT CẢ CỘT CÓ THỂ THÀNH NUMERIC
     # ========================================================
 
     for column in df.columns:
 
         try:
 
-            df[column] = pd.to_numeric(
-                df[column],
+            df[
+                column
+            ] = pd.to_numeric(
+                df[
+                    column
+                ],
                 errors="coerce",
             )
 
         except Exception:
             pass
 
-    # ========================================================
-    # RETURN
-    # ========================================================
-
     close = pd.to_numeric(
-        df["Close"],
+        df[
+            "Close"
+        ],
         errors="coerce",
     )
 
+    # ========================================================
+    # RETURN HIỆN TẠI
+    # ========================================================
+
     df[
         "Return"
-    ] = (
-        close.pct_change()
-    )
+    ] = close.pct_change()
 
     df[
         "ReturnPct"
@@ -534,23 +533,20 @@ def prepare_research_dataset(
     )
 
     # ========================================================
-    # TẤT CẢ BIẾN
-    #
-    # Không tự giới hạn số biến.
+    # TÌM TOÀN BỘ BIẾN
     # ========================================================
 
     features = get_all_numeric_features(
         df
     )
 
-    # ========================================================
-    # LOẠI TARGET
-    # ========================================================
-
+    # Không cho target vào predictor.
     features = [
         column
         for column in features
-        if column not in {
+        if str(
+            column
+        ) not in {
             "Target_1D",
             "Target_5D",
             "Target_20D",
@@ -558,15 +554,17 @@ def prepare_research_dataset(
     ]
 
     # ========================================================
-    # TARGET 1D / 5D / 20D
+    # FUTURE TARGET
     # ========================================================
 
-    for horizon, days in HORIZONS.items():
+    for horizon, periods in HORIZONS.items():
 
         df[
             f"Target_{horizon}"
         ] = (
-            close.shift(-days)
+            close.shift(
+                -periods
+            )
             / close
             - 1
         )
@@ -584,15 +582,18 @@ def prepare_research_dataset(
     )
 
     # ========================================================
-    # X
+    # FEATURE MATRIX
     #
-    # Không bỏ các biến có một ít NaN.
-    # Median fill để giữ toàn bộ biến.
+    # GIỮ TOÀN BỘ BIẾN
     # ========================================================
 
     X = df[
         features
     ].copy()
+
+    zero_variance = []
+
+    usable_features = []
 
     for column in features:
 
@@ -623,20 +624,6 @@ def prepare_research_dataset(
             median
         )
 
-    # ========================================================
-    # LOẠI CỘT KHÔNG CÓ BIẾN ĐỘNG
-    #
-    # Biến vẫn được ghi nhận, nhưng không thể đưa vào
-    # mô hình có chuẩn hóa/VIF nếu variance = 0.
-    # Ta đánh dấu riêng.
-    # ========================================================
-
-    zero_variance = []
-
-    usable_features = []
-
-    for column in features:
-
         try:
 
             variance = float(
@@ -647,24 +634,22 @@ def prepare_research_dataset(
                 )
             )
 
-            if (
-                np.isfinite(
-                    variance
-                )
-                and variance > 0
-            ):
-
-                usable_features.append(
-                    column
-                )
-
-            else:
-
-                zero_variance.append(
-                    column
-                )
-
         except Exception:
+
+            variance = 0.0
+
+        if (
+            np.isfinite(
+                variance
+            )
+            and variance > 0
+        ):
+
+            usable_features.append(
+                column
+            )
+
+        else:
 
             zero_variance.append(
                 column
@@ -674,8 +659,12 @@ def prepare_research_dataset(
 
     for horizon in HORIZONS:
 
-        target = df[
+        target_column = (
             f"Target_{horizon}"
+        )
+
+        target = df[
+            target_column
         ]
 
         valid = (
@@ -730,32 +719,35 @@ def correlation_analysis(
     X,
     y,
 ):
+
     rows = []
+
+    y = pd.to_numeric(
+        y,
+        errors="coerce",
+    )
 
     for column in X.columns:
 
         x = pd.to_numeric(
-            X[column],
-            errors="coerce",
-        )
-
-        yy = pd.to_numeric(
-            y,
+            X[
+                column
+            ],
             errors="coerce",
         )
 
         mask = (
             x.notna()
-            & yy.notna()
+            & y.notna()
             & np.isfinite(x)
-            & np.isfinite(yy)
+            & np.isfinite(y)
         )
 
         x2 = x.loc[
             mask
         ]
 
-        y2 = yy.loc[
+        y2 = y.loc[
             mask
         ]
 
@@ -802,24 +794,24 @@ def correlation_analysis(
 
         return pd.DataFrame()
 
-    table = pd.DataFrame(
+    result = pd.DataFrame(
         rows
     )
 
-    table[
-        "|Spearman|"
-    ] = table[
-        "Spearman"
-    ].abs()
-
-    table[
+    result[
         "|Pearson|"
-    ] = table[
+    ] = result[
         "Pearson"
     ].abs()
 
+    result[
+        "|Spearman|"
+    ] = result[
+        "Spearman"
+    ].abs()
+
     return (
-        table
+        result
         .sort_values(
             "|Spearman|",
             ascending=False,
@@ -832,13 +824,14 @@ def correlation_analysis(
 
 
 # ============================================================
-# STANDARDIZED OLS
+# OLS CHUẨN HÓA
 # ============================================================
 
 def run_standardized_ols(
     X_train,
     y_train,
 ):
+
     try:
 
         import statsmodels.api as sm
@@ -957,7 +950,7 @@ def run_standardized_ols(
 
 
 # ============================================================
-# MODEL ENSEMBLE
+# CHẠY NHIỀU MÔ HÌNH
 # ============================================================
 
 def run_models(
@@ -966,6 +959,7 @@ def run_models(
     y_train,
     y_test,
 ):
+
     from sklearn.ensemble import (
         ExtraTreesRegressor,
         GradientBoostingRegressor,
@@ -1088,12 +1082,12 @@ def run_models(
                 y_train,
             )
 
-            pred = model.predict(
+            prediction = model.predict(
                 X_test
             )
 
-            pred = np.asarray(
-                pred,
+            prediction = np.asarray(
+                prediction,
                 dtype=float,
             )
 
@@ -1104,7 +1098,7 @@ def run_models(
 
             residual = (
                 actual
-                - pred
+                - prediction
             )
 
             mae = float(
@@ -1127,7 +1121,7 @@ def run_models(
                 )
             )
 
-            denom = float(
+            total_variance = float(
                 np.sum(
                     (
                         actual
@@ -1139,7 +1133,7 @@ def run_models(
                 )
             )
 
-            if denom > 0:
+            if total_variance > 0:
 
                 r2 = float(
                     1
@@ -1148,7 +1142,7 @@ def run_models(
                             residual
                             ** 2
                         )
-                        / denom
+                        / total_variance
                     )
                 )
 
@@ -1172,7 +1166,7 @@ def run_models(
 
             predictions[
                 name
-            ] = pred
+            ] = prediction
 
         except Exception:
             continue
@@ -1214,6 +1208,7 @@ def run_permutation(
     X_test,
     y_test,
 ):
+
     try:
 
         from sklearn.inspection import (
@@ -1271,6 +1266,7 @@ def run_permutation(
 def run_vif(
     X,
 ):
+
     try:
 
         from statsmodels.stats.outliers_influence import (
@@ -1279,27 +1275,33 @@ def run_vif(
 
         data = X.copy()
 
-        # Xóa cột variance 0.
         keep = []
 
         for column in data.columns:
 
             try:
 
-                if float(
+                variance = float(
                     data[
                         column
                     ].var(
                         ddof=0
                     )
-                ) > 0:
+                )
+
+                if (
+                    np.isfinite(
+                        variance
+                    )
+                    and variance > 0
+                ):
 
                     keep.append(
                         column
                     )
 
             except Exception:
-                pass
+                continue
 
         data = data[
             keep
@@ -1309,11 +1311,7 @@ def run_vif(
 
             return pd.DataFrame()
 
-        # Với quá nhiều biến, VIF trực tiếp có thể rất nặng.
-        # Nhưng vẫn tính toàn bộ biến theo block.
-        rows = []
-
-        values = (
+        data = (
             data
             .replace(
                 [
@@ -1328,15 +1326,17 @@ def run_vif(
             .astype(float)
         )
 
-        matrix = values.values
+        matrix = data.values
+
+        rows = []
 
         for index, column in enumerate(
-            values.columns
+            data.columns
         ):
 
             try:
 
-                vif_value = float(
+                vif = float(
                     variance_inflation_factor(
                         matrix,
                         index,
@@ -1345,21 +1345,19 @@ def run_vif(
 
             except Exception:
 
-                vif_value = np.inf
+                vif = np.inf
 
             rows.append(
                 {
                     "Biến": column,
-                    "VIF": vif_value,
+                    "VIF": vif,
                 }
             )
 
-        result = pd.DataFrame(
-            rows
-        )
-
         return (
-            result
+            pd.DataFrame(
+                rows
+            )
             .sort_values(
                 "VIF",
                 ascending=False,
@@ -1376,7 +1374,7 @@ def run_vif(
 
 
 # ============================================================
-# TESTS
+# KIỂM ĐỊNH THỐNG KÊ
 # ============================================================
 
 def run_statistical_tests(
@@ -1384,15 +1382,19 @@ def run_statistical_tests(
     y_train,
     ols_result,
 ):
+
     tests = {}
 
     residuals = None
 
     # ========================================================
-    # RESIDUALS
+    # RESIDUAL
     # ========================================================
 
-    if ols_result is not None:
+    if isinstance(
+        ols_result,
+        dict,
+    ):
 
         try:
 
@@ -1408,10 +1410,11 @@ def run_statistical_tests(
                 )
 
         except Exception:
+
             residuals = None
 
     # ========================================================
-    # ADF ON TARGET
+    # ADF — TARGET
     # ========================================================
 
     try:
@@ -1451,7 +1454,7 @@ def run_statistical_tests(
         return tests
 
     # ========================================================
-    # JARQUE BERA
+    # JARQUE-BERA
     # ========================================================
 
     try:
@@ -1460,7 +1463,7 @@ def run_statistical_tests(
             jarque_bera,
         )
 
-        jb = jarque_bera(
+        result = jarque_bera(
             residuals
         )
 
@@ -1468,10 +1471,10 @@ def run_statistical_tests(
             "Jarque-Bera"
         ] = {
             "statistic": float(
-                jb[0]
+                result[0]
             ),
             "p_value": float(
-                jb[1]
+                result[1]
             ),
         }
 
@@ -1537,12 +1540,16 @@ def run_statistical_tests(
             "statistic": float(
                 lb[
                     "lb_stat"
-                ].iloc[-1]
+                ].iloc[
+                    -1
+                ]
             ),
             "p_value": float(
                 lb[
                     "lb_pvalue"
-                ].iloc[-1]
+                ].iloc[
+                    -1
+                ]
             ),
         }
 
@@ -1587,11 +1594,10 @@ def run_statistical_tests(
 
     # ========================================================
     # WHITE
-    # ========================================================
     #
-    # White test có thể bùng nổ số cột khi có quá nhiều
-    # biến. Dùng tối đa 12 biến variance lớn nhất để kiểm định
-    # phương sai, nhưng KHÔNG cắt biến khỏi mô hình chính.
+    # Không cắt biến khỏi mô hình.
+    # Chỉ giới hạn biến dùng riêng cho White Test để
+    # tránh tạo ma trận bình phương/tích chéo quá lớn.
     # ========================================================
 
     try:
@@ -1653,7 +1659,7 @@ def run_statistical_tests(
 
 
 # ============================================================
-# FACTOR RANKING
+# XẾP HẠNG YẾU TỐ
 # ============================================================
 
 def build_factor_ranking(
@@ -1661,6 +1667,7 @@ def build_factor_ranking(
     ols_table,
     permutation,
 ):
+
     if (
         correlations is None
         or correlations.empty
@@ -1670,9 +1677,9 @@ def build_factor_ranking(
 
     result = correlations.copy()
 
-    # --------------------------------------------------------
-    # OLS
-    # --------------------------------------------------------
+    # ========================================================
+    # MERGE OLS
+    # ========================================================
 
     if (
         isinstance(
@@ -1709,9 +1716,9 @@ def build_factor_ranking(
             "|Beta|"
         ] = np.nan
 
-    # --------------------------------------------------------
-    # PERMUTATION
-    # --------------------------------------------------------
+    # ========================================================
+    # MERGE PERMUTATION
+    # ========================================================
 
     if (
         isinstance(
@@ -1743,29 +1750,18 @@ def build_factor_ranking(
             "|Permutation|"
         ] = np.nan
 
-    # --------------------------------------------------------
+    # ========================================================
     # SCORE
     #
-    # 3 nguồn:
-    # correlation
-    # standardized OLS
-    # permutation
-    # --------------------------------------------------------
+    # Kết hợp:
+    #   Spearman
+    #   standardized Beta
+    #   permutation importance
+    # ========================================================
 
-    scores = []
+    raw_scores = []
 
-    for column in result[
-        "Biến"
-    ]:
-
-        row = result[
-            result[
-                "Biến"
-            ]
-            == column
-        ].iloc[
-            0
-        ]
+    for _, row in result.iterrows():
 
         values = []
 
@@ -1785,50 +1781,65 @@ def build_factor_ranking(
             if value is not None:
 
                 values.append(
-                    value
+                    abs(
+                        value
+                    )
                 )
 
-        if not values:
+        if values:
 
-            scores.append(
-                np.nan
+            raw_scores.append(
+                float(
+                    np.mean(
+                        values
+                    )
+                )
             )
 
         else:
 
-            scores.append(
-                np.mean(
-                    values
-                )
+            raw_scores.append(
+                np.nan
             )
 
     result[
         "RawImportance"
-    ] = scores
+    ] = raw_scores
 
-    # --------------------------------------------------------
-    # Convert percentile.
-    # --------------------------------------------------------
+    # ========================================================
+    # PERCENTILE SCORE
+    # ========================================================
 
-    result[
-        "Score"
-    ] = (
+    if result[
+        "RawImportance"
+    ].notna().any():
+
         result[
-            "RawImportance"
-        ]
-        .rank(
-            pct=True
+            "Score"
+        ] = (
+            result[
+                "RawImportance"
+            ]
+            .rank(
+                pct=True
+            )
+            * 100
         )
-        * 100
-    )
 
-    # --------------------------------------------------------
-    # Quan hệ
-    # --------------------------------------------------------
+    else:
 
-    def get_direction(
-        row
+        result[
+            "Score"
+        ] = np.nan
+
+    # ========================================================
+    # DIRECTION
+    # ========================================================
+
+    def determine_direction(
+        row,
     ):
+
         beta = num(
             row.get(
                 "Beta"
@@ -1836,7 +1847,7 @@ def build_factor_ranking(
             None,
         )
 
-        spear = num(
+        spearman = num(
             row.get(
                 "Spearman"
             ),
@@ -1846,16 +1857,19 @@ def build_factor_ranking(
         value = (
             beta
             if beta is not None
-            else spear
+            else spearman
         )
 
         if value is None:
+
             return "Không xác định"
 
         if value > 0:
+
             return "Cùng chiều"
 
         if value < 0:
+
             return "Ngược chiều"
 
         return "Trung tính"
@@ -1863,17 +1877,18 @@ def build_factor_ranking(
     result[
         "Quan hệ"
     ] = result.apply(
-        get_direction,
+        determine_direction,
         axis=1,
     )
 
-    # --------------------------------------------------------
-    # Ý nghĩa
-    # --------------------------------------------------------
+    # ========================================================
+    # Ý NGHĨA THỐNG KÊ
+    # ========================================================
 
-    def get_significance(
-        row
+    def significance(
+        row,
     ):
+
         p = num(
             row.get(
                 "p-value"
@@ -1882,15 +1897,19 @@ def build_factor_ranking(
         )
 
         if p is None:
+
             return "Không có p-value"
 
         if p < 0.01:
+
             return "Rất mạnh (<1%)"
 
         if p < 0.05:
+
             return "Có ý nghĩa 5%"
 
         if p < 0.10:
+
             return "Có ý nghĩa 10%"
 
         return "Chưa có ý nghĩa"
@@ -1898,15 +1917,21 @@ def build_factor_ranking(
     result[
         "Ý nghĩa"
     ] = result.apply(
-        get_significance,
+        significance,
         axis=1,
     )
 
     return (
         result
         .sort_values(
-            "Score",
-            ascending=False,
+            [
+                "Score",
+                "|Spearman|",
+            ],
+            ascending=[
+                False,
+                False,
+            ],
             na_position="last",
         )
         .reset_index(
@@ -1916,21 +1941,22 @@ def build_factor_ranking(
 
 
 # ============================================================
-# KẾT LUẬN
+# GIẢI THÍCH KẾT QUẢ
 # ============================================================
 
 def build_research_conclusion(
     item,
 ):
+
     conclusions = []
+
+    # ========================================================
+    # FACTOR
+    # ========================================================
 
     ranking = item.get(
         "ranking"
     )
-
-    # ========================================================
-    # TOP FACTOR
-    # ========================================================
 
     if (
         isinstance(
@@ -1972,7 +1998,7 @@ def build_research_conclusion(
             None,
         )
 
-        p = num(
+        p_value = num(
             top.get(
                 "p-value"
             ),
@@ -1994,7 +2020,7 @@ def build_research_conclusion(
         if score is not None:
 
             text += (
-                f" với điểm quan trọng tổng hợp "
+                f" với điểm quan trọng "
                 f"{score:.1f}/100"
             )
 
@@ -2005,19 +2031,22 @@ def build_research_conclusion(
         if spear is not None:
 
             text += (
-                f", Spearman = {spear:+.4f}"
+                f", Spearman = "
+                f"{spear:+.4f}"
             )
 
         if beta is not None:
 
             text += (
-                f", Beta chuẩn hóa = {beta:+.4f}"
+                f", Beta chuẩn hóa = "
+                f"{beta:+.4f}"
             )
 
-        if p is not None:
+        if p_value is not None:
 
             text += (
-                f", p-value = {p:.5f}"
+                f", p-value = "
+                f"{p_value:.5f}"
             )
 
         text += "."
@@ -2026,40 +2055,36 @@ def build_research_conclusion(
             text
         )
 
-        # ----------------------------------------------------
-        # SIGNIFICANCE
-        # ----------------------------------------------------
-
         if (
-            p is not None
-            and p < 0.05
+            p_value is not None
+            and p_value < 0.05
         ):
 
             conclusions.append(
-                f"Biến **{factor}** có bằng chứng "
-                "thống kê trong OLS ở mức 5%."
+                f"**{factor}** có bằng chứng "
+                "thống kê ở mức 5% trong mô hình OLS."
             )
 
         elif (
-            p is not None
-            and p < 0.10
+            p_value is not None
+            and p_value < 0.10
         ):
 
             conclusions.append(
-                f"Biến **{factor}** có tín hiệu "
-                "thống kê ở mức 10%, nhưng chưa đạt 5%."
+                f"**{factor}** có tín hiệu thống kê "
+                "ở mức 10%, nhưng chưa đạt mức 5%."
             )
 
         else:
 
             conclusions.append(
-                f"Biến **{factor}** nổi bật về "
-                "mức độ liên hệ/dự báo, nhưng chưa đủ "
-                "bằng chứng thống kê ở mức 5%."
+                f"**{factor}** nổi bật về liên hệ/dự báo "
+                "nhưng chưa đủ bằng chứng thống kê "
+                "ở mức 5%."
             )
 
     # ========================================================
-    # BEST MODEL
+    # MODEL
     # ========================================================
 
     models = item.get(
@@ -2079,50 +2104,54 @@ def build_research_conclusion(
         ]
 
         model_name = str(
-            best[
+            best.get(
                 "Mô hình"
-            ]
+            )
         )
 
         rmse = num(
-            best[
+            best.get(
                 "RMSE"
-            ],
+            ),
             None,
         )
 
         r2 = num(
-            best[
+            best.get(
                 "R²"
-            ],
+            ),
             None,
         )
 
-        conclusions.append(
-            f"Mô hình dự báo tốt nhất theo RMSE "
-            f"trên tập test là **{model_name}** "
-            f"(RMSE = "
-            f"{rmse:.6f}"
-            if rmse is not None
-            else
-            f"Mô hình tốt nhất là **{model_name}**"
+        if rmse is not None:
+
+            conclusions.append(
+                f"Mô hình tốt nhất theo RMSE trên "
+                f"tập test là **{model_name}** "
+                f"với RMSE = {rmse:.6f}."
             )
-        )
+
+        else:
+
+            conclusions.append(
+                f"Mô hình tốt nhất là "
+                f"**{model_name}**."
+            )
 
         if r2 is not None:
 
             if r2 < 0:
 
                 conclusions.append(
-                    "R² âm: mô hình chưa tốt hơn "
+                    f"R² = {r2:.4f}: mô hình chưa tốt hơn "
                     "benchmark trung bình trên tập test."
                 )
 
             elif r2 < 0.10:
 
                 conclusions.append(
-                    f"R² = {r2:.4f}: khả năng giải thích "
-                    "biến động lợi suất tương lai còn thấp."
+                    f"R² = {r2:.4f}: sức giải thích "
+                    "đối với lợi suất tương lai còn thấp."
                 )
 
             elif r2 < 0.25:
@@ -2140,7 +2169,7 @@ def build_research_conclusion(
                 )
 
     # ========================================================
-    # TESTS
+    # BP
     # ========================================================
 
     tests = item.get(
@@ -2157,7 +2186,7 @@ def build_research_conclusion(
         dict,
     ):
 
-        p = num(
+        p_value = num(
             bp.get(
                 "p_value"
             ),
@@ -2165,8 +2194,8 @@ def build_research_conclusion(
         )
 
         if (
-            p is not None
-            and p < 0.05
+            p_value is not None
+            and p_value < 0.05
         ):
 
             conclusions.append(
@@ -2180,6 +2209,10 @@ def build_research_conclusion(
                 "Breusch-Pagan chưa cho thấy "
                 "phương sai thay đổi rõ ở mức 5%."
             )
+
+    # ========================================================
+    # DW
+    # ========================================================
 
     dw = tests.get(
         "Durbin-Watson"
@@ -2203,8 +2236,7 @@ def build_research_conclusion(
 
                 conclusions.append(
                     f"Durbin-Watson = {value:.4f}: "
-                    "phần dư không cho thấy tự tương quan "
-                    "mạnh theo quy tắc thực hành thông thường."
+                    "chưa thấy tự tương quan phần dư mạnh."
                 )
 
             elif value < 1.5:
@@ -2221,6 +2253,10 @@ def build_research_conclusion(
                     "có dấu hiệu tự tương quan âm."
                 )
 
+    # ========================================================
+    # LJUNG-BOX
+    # ========================================================
+
     lb = tests.get(
         "Ljung-Box"
     )
@@ -2230,7 +2266,7 @@ def build_research_conclusion(
         dict,
     ):
 
-        p = num(
+        p_value = num(
             lb.get(
                 "p_value"
             ),
@@ -2238,8 +2274,8 @@ def build_research_conclusion(
         )
 
         if (
-            p is not None
-            and p < 0.05
+            p_value is not None
+            and p_value < 0.05
         ):
 
             conclusions.append(
@@ -2250,15 +2286,15 @@ def build_research_conclusion(
         else:
 
             conclusions.append(
-                "Ljung-Box chưa phát hiện "
-                "tự tương quan phần dư rõ ở mức 5%."
+                "Ljung-Box chưa phát hiện tự tương quan "
+                "phần dư rõ ở mức 5%."
             )
 
     return conclusions
 
 
 # ============================================================
-# RESEARCH ENGINE
+# CHẠY TOÀN BỘ NGHIÊN CỨU
 # ============================================================
 
 @st.cache_data(
@@ -2269,6 +2305,7 @@ def execute_research(
     sample,
     selected_horizons,
 ):
+
     prepared = prepare_research_dataset(
         sample
     )
@@ -2336,6 +2373,7 @@ def execute_research(
                 - split
             ) < 10
         ):
+
             continue
 
         X_train = X.iloc[
@@ -2403,12 +2441,10 @@ def execute_research(
         )
 
         # ====================================================
-        # PERMUTATION
+        # BEST MODEL PERMUTATION
         # ========================================================
 
-        permutation = (
-            pd.DataFrame()
-        )
+        permutation = pd.DataFrame()
 
         if (
             isinstance(
@@ -2455,7 +2491,7 @@ def execute_research(
 
         # ====================================================
         # VIF
-        # ====================================================
+        # ========================================================
 
         vif = run_vif(
             X_train
@@ -2463,7 +2499,7 @@ def execute_research(
 
         # ====================================================
         # TESTS
-        # ====================================================
+        # ========================================================
 
         tests = run_statistical_tests(
             X_train,
@@ -2506,12 +2542,13 @@ def execute_research(
 
 
 # ============================================================
-# RENDER RESEARCH
+# RENDER NGHIÊN CỨU
 # ============================================================
 
 def render_quant_research(
     symbol,
 ):
+
     st.divider()
 
     st.header(
@@ -2519,18 +2556,18 @@ def render_quant_research(
     )
 
     st.write(
-        "Chọn đúng khoảng thời gian mẫu trước khi chạy. "
-        "Dữ liệu nghiên cứu được lấy theo từng đoạn lịch sử "
-        "và cache; thay đổi preset hoặc ngày không làm gọi "
-        "API liên tục nếu cùng khoảng dữ liệu đã có trong cache."
+        "Chọn khoảng thời gian mẫu trước khi chạy. "
+        "Nghiên cứu sử dụng toàn bộ dữ liệu trong khoảng "
+        "được chọn, sau đó đánh giá các biến, mô hình và "
+        "kiểm định thống kê trên cùng mẫu."
     )
 
     # ========================================================
-    # MODE CHỌN MẪU
+    # CÁCH CHỌN MẪU
     # ========================================================
 
     mode = st.radio(
-        "Cách chọn mẫu",
+        "Kiểu chọn mẫu",
         [
             "Preset",
             "Khoảng ngày tùy chọn",
@@ -2572,7 +2609,7 @@ def render_quant_research(
         ).date()
 
     # ========================================================
-    # CUSTOM DATE
+    # CUSTOM
     # ========================================================
 
     else:
@@ -2593,7 +2630,7 @@ def render_quant_research(
         with c1:
 
             start_date = st.date_input(
-                "Từ ngày",
+                "Ngày bắt đầu",
                 value=default_start,
                 max_value=today,
                 key="research_custom_start",
@@ -2602,7 +2639,7 @@ def render_quant_research(
         with c2:
 
             end_date = st.date_input(
-                "Đến ngày",
+                "Ngày kết thúc",
                 value=today,
                 max_value=today,
                 key="research_custom_end",
@@ -2621,15 +2658,11 @@ def render_quant_research(
         return
 
     # ========================================================
-    # GET HISTORY
-    #
-    # Đây là API path.
-    # Một lần cho khoảng cần nghiên cứu,
-    # sau đó cache.
+    # LOAD FULL HISTORY
     # ========================================================
 
     with st.spinner(
-        "Đang chuẩn bị dữ liệu lịch sử..."
+        "Đang lấy toàn bộ dữ liệu lịch sử..."
     ):
 
         try:
@@ -2653,7 +2686,7 @@ def render_quant_research(
             return
 
     # ========================================================
-    # LOCAL CUT — bảo đảm đúng ngày
+    # LOCAL CUT
     # ========================================================
 
     sample = slice_local(
@@ -2680,7 +2713,7 @@ def render_quant_research(
     )
 
     # ========================================================
-    # SAMPLE INFO
+    # SAMPLE INFORMATION
     # ========================================================
 
     st.subheader(
@@ -2694,7 +2727,7 @@ def render_quant_research(
     with a:
 
         st.metric(
-            "Khoảng chọn",
+            "Mẫu chọn",
             (
                 preset
                 if mode == "Preset"
@@ -2736,37 +2769,37 @@ def render_quant_research(
         )
 
     # ========================================================
-    # CẢNH BÁO SAMPLE
+    # SAMPLE MESSAGE
     # ========================================================
 
     if len(sample) < 30:
 
         st.error(
-            "Mẫu quá nhỏ để thực hiện nghiên cứu định lượng đáng tin cậy."
+            "Mẫu quá nhỏ. Không nên dùng để kết luận định lượng."
         )
 
     elif len(sample) < 60:
 
         st.warning(
-            "Mẫu còn nhỏ. Có thể chạy nhưng kết luận thống kê "
-            "cần được xem thận trọng."
+            "Mẫu còn nhỏ. Có thể chạy nhưng độ ổn định "
+            "của kết luận sẽ thấp."
         )
 
     elif len(sample) < 120:
 
         st.info(
-            "Mẫu đã đủ để chạy phân tích cơ bản; mẫu dài hơn "
-            "thường cho kết luận ổn định hơn."
+            f"Mẫu có {len(sample):,} quan sát. "
+            "Có thể nghiên cứu nhưng mẫu dài hơn sẽ đáng tin cậy hơn."
         )
 
     else:
 
         st.success(
-            f"Mẫu hiện có {len(sample):,} quan sát."
+            f"Mẫu hiện có {len(sample):,} quan sát thực tế."
         )
 
     # ========================================================
-    # HORIZON
+    # HORIZONS
     # ========================================================
 
     selected_horizons = st.multiselect(
@@ -2791,7 +2824,7 @@ def render_quant_research(
         return
 
     # ========================================================
-    # RUN BUTTON
+    # RUN
     # ========================================================
 
     if st.button(
@@ -2802,7 +2835,7 @@ def render_quant_research(
     ):
 
         with st.spinner(
-            "Đang chạy toàn bộ mô hình, biến và kiểm định..."
+            "Đang chạy tất cả biến, mô hình và kiểm định..."
         ):
 
             result = execute_research(
@@ -2833,7 +2866,7 @@ def render_quant_research(
         ] = selected_horizons
 
     # ========================================================
-    # RESULT
+    # GET RESULT
     # ========================================================
 
     result = st.session_state.get(
@@ -2850,7 +2883,7 @@ def render_quant_research(
     ):
 
         st.caption(
-            "Chọn mẫu dữ liệu và bấm "
+            "Chưa có kết quả. Chọn mẫu rồi bấm "
             "“Chạy toàn bộ nghiên cứu”."
         )
 
@@ -2885,15 +2918,16 @@ def render_quant_research(
 
     st.success(
         f"Đã nghiên cứu {display_symbol(symbol)} "
-        f"trên mẫu "
+        f"từ "
         f"{saved_start.strftime('%d/%m/%Y')}"
-        f" → "
+        f" đến "
         f"{saved_end.strftime('%d/%m/%Y')}"
-        f" với {len(sample):,} quan sát."
+        f" với "
+        f"{len(sample):,} quan sát."
     )
 
     # ========================================================
-    # VARIABLES
+    # TOÀN BỘ BIẾN
     # ========================================================
 
     features = result.get(
@@ -2929,37 +2963,36 @@ def render_quant_research(
     with b:
 
         st.metric(
-            "Biến sử dụng",
+            "Biến có thông tin",
             f"{len(usable_features):,}",
         )
 
     with c:
 
         st.metric(
-            "Biến variance = 0",
+            "Variance = 0",
             f"{len(zero_variance):,}",
         )
 
     with st.expander(
-        "Xem toàn bộ danh sách biến",
+        "Xem toàn bộ biến",
         expanded=False,
     ):
 
-        rows = []
+        variable_rows = []
 
         for index, feature in enumerate(
             features,
             start=1,
         ):
 
-            rows.append(
+            variable_rows.append(
                 {
                     "STT": index,
                     "Biến": feature,
-                    "Đưa vào mô hình": (
+                    "Sử dụng": (
                         "Có"
-                        if feature
-                        in usable_features
+                        if feature in usable_features
                         else "Không"
                     ),
                 }
@@ -2967,22 +3000,14 @@ def render_quant_research(
 
         st.dataframe(
             pd.DataFrame(
-                rows
+                variable_rows
             ),
             width="stretch",
             hide_index=True,
         )
 
-    if zero_variance:
-
-        st.caption(
-            "Các biến variance = 0 vẫn được giữ trong "
-            "báo cáo danh sách, nhưng không thể cung cấp "
-            "thông tin dự báo độc lập cho mô hình."
-        )
-
     # ========================================================
-    # EACH HORIZON
+    # HORIZON RESULTS
     # ========================================================
 
     cross_factor_rows = []
@@ -3007,16 +3032,17 @@ def render_quant_research(
             "1D": "1 ngày",
             "5D": "5 ngày",
             "20D": "20 ngày",
-        }[
-            horizon
-        ]
+        }.get(
+            horizon,
+            horizon,
+        )
 
         st.header(
             f"📈 Horizon {horizon} — lợi suất sau {label}"
         )
 
         # ====================================================
-        # OBS
+        # SAMPLE
         # ====================================================
 
         a, b, c = st.columns(
@@ -3045,7 +3071,7 @@ def render_quant_research(
             )
 
         # ====================================================
-        # FACTOR
+        # TOP FACTORS
         # ====================================================
 
         ranking = item.get(
@@ -3065,9 +3091,10 @@ def render_quant_research(
             ]
 
             factor = str(
-                top[
-                    "Biến"
-                ]
+                top.get(
+                    "Biến",
+                    "Không xác định",
+                )
             )
 
             score = num(
@@ -3077,62 +3104,41 @@ def render_quant_research(
                 None,
             )
 
-            direction = str(
+            relation = str(
                 top.get(
-                    "Quan hệ"
+                    "Quan hệ",
+                    "Không xác định",
                 )
             )
 
             st.subheader(
-                "🎯 Yếu tố nổi bật nhất"
+                "🎯 Yếu tố ảnh hưởng nổi bật nhất"
             )
+
+            factor_text = (
+                f"**{factor}** · "
+                f"{relation}"
+            )
+
+            if score is not None:
+
+                factor_text += (
+                    f" · Score {score:.1f}/100"
+                )
 
             st.success(
-                (
-                    f"**{factor}**"
-                    + (
-                        f" · Score {score:.1f}/100"
-                        if score is not None
-                        else ""
-                    )
-                    + f" · {direction}"
-                )
+                factor_text
             )
 
-            # Save cross-horizon ranking.
-
-            for rank, (_, row) in enumerate(
-                ranking.head(
-                    20
-                ).iterrows(),
-                start=1,
-            ):
-
-                cross_factor_rows.append(
-                    {
-                        "Horizon": horizon,
-                        "Biến": row[
-                            "Biến"
-                        ],
-                        "Rank": rank,
-                        "Score": num(
-                            row.get(
-                                "Score"
-                            ),
-                            np.nan,
-                        ),
-                    }
-                )
-
             # =================================================
-            # TABLE
+            # RANKING TOP 25
             # =================================================
 
             st.markdown(
                 "#### 🏆 Xếp hạng yếu tố"
             )
 
-            show = ranking.head(
+            ranking_show = ranking.head(
                 25
             ).copy()
 
@@ -3145,60 +3151,37 @@ def render_quant_research(
                 "Permutation",
             ]:
 
-                if column in show.columns:
+                if column in ranking_show.columns:
 
-                    show[
+                    ranking_show[
                         column
                     ] = pd.to_numeric(
-                        show[
+                        ranking_show[
                             column
                         ],
                         errors="coerce",
                     )
 
-            if "Score" in show.columns:
-                show[
-                    "Score"
-                ] = show[
-                    "Score"
-                ].round(1)
+            for column, digits in [
+                ("Score", 1),
+                ("Pearson", 4),
+                ("Spearman", 4),
+                ("Beta", 4),
+                ("p-value", 5),
+                ("Permutation", 6),
+            ]:
 
-            if "Pearson" in show.columns:
-                show[
-                    "Pearson"
-                ] = show[
-                    "Pearson"
-                ].round(4)
+                if column in ranking_show.columns:
 
-            if "Spearman" in show.columns:
-                show[
-                    "Spearman"
-                ] = show[
-                    "Spearman"
-                ].round(4)
+                    ranking_show[
+                        column
+                    ] = ranking_show[
+                        column
+                    ].round(
+                        digits
+                    )
 
-            if "Beta" in show.columns:
-                show[
-                    "Beta"
-                ] = show[
-                    "Beta"
-                ].round(4)
-
-            if "p-value" in show.columns:
-                show[
-                    "p-value"
-                ] = show[
-                    "p-value"
-                ].round(5)
-
-            if "Permutation" in show.columns:
-                show[
-                    "Permutation"
-                ] = show[
-                    "Permutation"
-                ].round(6)
-
-            display_columns = [
+            wanted_columns = [
                 "Biến",
                 "Score",
                 "Quan hệ",
@@ -3210,26 +3193,26 @@ def render_quant_research(
                 "Ý nghĩa",
             ]
 
-            display_columns = [
+            wanted_columns = [
                 column
-                for column in display_columns
-                if column in show.columns
+                for column in wanted_columns
+                if column in ranking_show.columns
             ]
 
             st.dataframe(
-                show[
-                    display_columns
+                ranking_show[
+                    wanted_columns
                 ],
                 width="stretch",
                 hide_index=True,
             )
 
             # =================================================
-            # EXPLANATION
+            # EXPLAIN TOP FACTORS
             # =================================================
 
             st.markdown(
-                "#### 🧠 Ý nghĩa các yếu tố"
+                "#### 🧠 Diễn giải yếu tố"
             )
 
             for _, row in ranking.head(
@@ -3239,6 +3222,13 @@ def render_quant_research(
                 factor_name = str(
                     row.get(
                         "Biến"
+                    )
+                )
+
+                relation = str(
+                    row.get(
+                        "Quan hệ",
+                        "Không xác định",
                     )
                 )
 
@@ -3256,54 +3246,74 @@ def render_quant_research(
                     None,
                 )
 
-                p = num(
+                p_value = num(
                     row.get(
                         "p-value"
                     ),
                     None,
                 )
 
-                direction = str(
-                    row.get(
-                        "Quan hệ",
-                        "Không xác định",
-                    )
-                )
-
-                explanation = (
+                text = (
                     f"**{factor_name}**: "
-                    f"{direction.lower()}"
+                    f"{relation.lower()}"
                 )
 
                 if spear is not None:
 
-                    explanation += (
+                    text += (
                         f", Spearman "
                         f"{spear:+.4f}"
                     )
 
                 if beta is not None:
 
-                    explanation += (
+                    text += (
                         f", Beta "
                         f"{beta:+.4f}"
                     )
 
-                if p is not None:
+                if p_value is not None:
 
-                    explanation += (
+                    text += (
                         f", p-value "
-                        f"{p:.5f}"
+                        f"{p_value:.5f}"
                     )
 
                 st.markdown(
                     "• "
-                    + explanation
+                    + text
                     + "."
                 )
 
+            # =================================================
+            # SAVE CROSS-HORIZON
+            # =================================================
+
+            for rank, (_, row) in enumerate(
+                ranking.head(
+                    20
+                ).iterrows(),
+                start=1,
+            ):
+
+                cross_factor_rows.append(
+                    {
+                        "Horizon": horizon,
+                        "Biến": row.get(
+                            "Biến"
+                        ),
+                        "Rank": rank,
+                        "Score": num(
+                            row.get(
+                                "Score"
+                            ),
+                            np.nan,
+                        ),
+                    }
+                )
+
         # ====================================================
-        # MODEL RESULTS
+        # MODELS
         # ====================================================
 
         models = item.get(
@@ -3354,11 +3364,17 @@ def render_quant_research(
                 0
             ]
 
-            st.info(
-                f"**Model tốt nhất:** "
-                f"{best['Mô hình']} · "
-                f"RMSE "
+            st.success(
+                f"Mô hình tốt nhất: "
+                f"**{best['Mô hình']}** · "
+                f"RMSE = "
                 f"{best['RMSE']:.6f}"
+            )
+
+        else:
+
+            st.warning(
+                "Không có mô hình nào chạy thành công."
             )
 
         # ====================================================
@@ -3424,7 +3440,7 @@ def render_quant_research(
             ):
 
                 ols_show = ols_table.head(
-                    25
+                    30
                 ).copy()
 
                 for column in [
@@ -3460,8 +3476,8 @@ def render_quant_research(
                 )
 
                 st.caption(
-                    "Beta được chuẩn hóa nên có thể so sánh "
-                    "độ lớn tương đối giữa các biến."
+                    "Beta chuẩn hóa cho phép so sánh tương đối "
+                    "độ lớn tác động giữa các biến."
                 )
 
         else:
@@ -3511,16 +3527,21 @@ def render_quant_research(
                 hide_index=True,
             )
 
-            max_vif = num(
+            finite_vif = (
                 vif[
                     "VIF"
-                ].replace(
+                ]
+                .replace(
                     [
                         np.inf,
                         -np.inf,
                     ],
                     np.nan,
-                ).max(),
+                )
+            )
+
+            max_vif = num(
+                finite_vif.max(),
                 None,
             )
 
@@ -3547,11 +3568,11 @@ def render_quant_research(
             else:
 
                 st.success(
-                    "VIF không cho thấy đa cộng tuyến quá mạnh."
+                    "VIF chưa cho thấy đa cộng tuyến quá mạnh."
                 )
 
         # ====================================================
-        # TESTS
+        # STATISTICAL TESTS
         # ====================================================
 
         tests = item.get(
@@ -3563,7 +3584,10 @@ def render_quant_research(
             "🧪 Kiểm định thống kê"
         )
 
+        # ----------------------------------------------------
         # ADF
+        # ----------------------------------------------------
+
         adf = tests.get(
             "ADF"
         )
@@ -3573,7 +3597,7 @@ def render_quant_research(
             dict,
         ):
 
-            p = num(
+            p_value = num(
                 adf.get(
                     "p_value"
                 ),
@@ -3585,39 +3609,23 @@ def render_quant_research(
                 expanded=False,
             ):
 
-                a, b = st.columns(
-                    2
+                st.write(
+                    f"Statistic: "
+                    f"{format_number(adf.get('statistic'), 5)}"
                 )
 
-                with a:
-
-                    st.metric(
-                        "Statistic",
-                        format_number(
-                            adf.get(
-                                "statistic"
-                            ),
-                            5,
-                        ),
-                    )
-
-                with b:
-
-                    st.metric(
-                        "p-value",
-                        format_number(
-                            p,
-                            6,
-                        ),
-                    )
+                st.write(
+                    f"p-value: "
+                    f"{format_number(p_value, 6)}"
+                )
 
                 if (
-                    p is not None
-                    and p < 0.05
+                    p_value is not None
+                    and p_value < 0.05
                 ):
 
                     st.success(
-                        "Bác bỏ nghiệm đơn vị ở mức 5%."
+                        "Bác bỏ giả thuyết nghiệm đơn vị ở mức 5%."
                     )
 
                 else:
@@ -3626,7 +3634,10 @@ def render_quant_research(
                         "Chưa đủ bằng chứng bác bỏ nghiệm đơn vị ở mức 5%."
                     )
 
-        # JB
+        # ----------------------------------------------------
+        # JARQUE-BERA
+        # ----------------------------------------------------
+
         jb = tests.get(
             "Jarque-Bera"
         )
@@ -3636,7 +3647,7 @@ def render_quant_research(
             dict,
         ):
 
-            p = num(
+            p_value = num(
                 jb.get(
                     "p_value"
                 ),
@@ -3655,16 +3666,16 @@ def render_quant_research(
 
                 st.write(
                     f"p-value: "
-                    f"{format_number(p, 6)}"
+                    f"{format_number(p_value, 6)}"
                 )
 
                 if (
-                    p is not None
-                    and p < 0.05
+                    p_value is not None
+                    and p_value < 0.05
                 ):
 
                     st.warning(
-                        "Phần dư không phù hợp tốt với phân phối chuẩn."
+                        "Phần dư lệch khỏi giả định phân phối chuẩn."
                     )
 
                 else:
@@ -3673,7 +3684,10 @@ def render_quant_research(
                         "Chưa có bằng chứng mạnh chống lại giả định chuẩn."
                     )
 
-        # BP
+        # ----------------------------------------------------
+        # BREUSCH-PAGAN
+        # ----------------------------------------------------
+
         bp = tests.get(
             "Breusch-Pagan"
         )
@@ -3683,7 +3697,7 @@ def render_quant_research(
             dict,
         ):
 
-            p = num(
+            p_value = num(
                 bp.get(
                     "p_value"
                 ),
@@ -3702,12 +3716,12 @@ def render_quant_research(
 
                 st.write(
                     f"p-value: "
-                    f"{format_number(p, 6)}"
+                    f"{format_number(p_value, 6)}"
                 )
 
                 if (
-                    p is not None
-                    and p < 0.05
+                    p_value is not None
+                    and p_value < 0.05
                 ):
 
                     st.warning(
@@ -3720,7 +3734,10 @@ def render_quant_research(
                         "Chưa có bằng chứng rõ về phương sai thay đổi."
                     )
 
-        # White
+        # ----------------------------------------------------
+        # WHITE
+        # ----------------------------------------------------
+
         white = tests.get(
             "White"
         )
@@ -3730,7 +3747,7 @@ def render_quant_research(
             dict,
         ):
 
-            p = num(
+            p_value = num(
                 white.get(
                     "p_value"
                 ),
@@ -3749,12 +3766,12 @@ def render_quant_research(
 
                 st.write(
                     f"p-value: "
-                    f"{format_number(p, 6)}"
+                    f"{format_number(p_value, 6)}"
                 )
 
                 if (
-                    p is not None
-                    and p < 0.05
+                    p_value is not None
+                    and p_value < 0.05
                 ):
 
                     st.warning(
@@ -3767,7 +3784,10 @@ def render_quant_research(
                         "Chưa có bằng chứng rõ về phương sai thay đổi."
                     )
 
-        # DW
+        # ----------------------------------------------------
+        # DURBIN-WATSON
+        # ----------------------------------------------------
+
         dw = tests.get(
             "Durbin-Watson"
         )
@@ -3777,7 +3797,7 @@ def render_quant_research(
             dict,
         ):
 
-            value = num(
+            statistic = num(
                 dw.get(
                     "statistic"
                 ),
@@ -3792,20 +3812,20 @@ def render_quant_research(
                 st.metric(
                     "Statistic",
                     format_number(
-                        value,
+                        statistic,
                         4,
                     ),
                 )
 
-                if value is not None:
+                if statistic is not None:
 
-                    if 1.5 <= value <= 2.5:
+                    if 1.5 <= statistic <= 2.5:
 
                         st.success(
-                            "Tương đối gần 2 — chưa thấy tự tương quan mạnh."
+                            "Giá trị tương đối gần 2."
                         )
 
-                    elif value < 1.5:
+                    elif statistic < 1.5:
 
                         st.warning(
                             "Có dấu hiệu tự tương quan dương."
@@ -3817,7 +3837,10 @@ def render_quant_research(
                             "Có dấu hiệu tự tương quan âm."
                         )
 
-        # Ljung Box
+        # ----------------------------------------------------
+        # LJUNG-BOX
+        # ----------------------------------------------------
+
         lb = tests.get(
             "Ljung-Box"
         )
@@ -3827,7 +3850,7 @@ def render_quant_research(
             dict,
         ):
 
-            p = num(
+            p_value = num(
                 lb.get(
                     "p_value"
                 ),
@@ -3840,7 +3863,8 @@ def render_quant_research(
             ):
 
                 st.write(
-                    f"Lag: {lb.get('lag', '—')}"
+                    f"Lag: "
+                    f"{lb.get('lag', '—')}"
                 )
 
                 st.write(
@@ -3850,22 +3874,22 @@ def render_quant_research(
 
                 st.write(
                     f"p-value: "
-                    f"{format_number(p, 6)}"
+                    f"{format_number(p_value, 6)}"
                 )
 
                 if (
-                    p is not None
-                    and p < 0.05
+                    p_value is not None
+                    and p_value < 0.05
                 ):
 
                     st.warning(
-                        "Có bằng chứng tự tương quan còn lại trong phần dư."
+                        "Có bằng chứng tự tương quan còn lại."
                     )
 
                 else:
 
                     st.success(
-                        "Chưa có bằng chứng mạnh về tự tương quan phần dư."
+                        "Chưa có bằng chứng mạnh về tự tương quan còn lại."
                     )
 
         # ====================================================
@@ -3889,19 +3913,25 @@ def render_quant_research(
                     + conclusion
                 )
 
+        else:
+
+            st.info(
+                "Chưa đủ kết quả để tạo kết luận tự động."
+            )
+
         st.warning(
-            "Lưu ý: đây là quan hệ thống kê/khả năng dự báo "
-            "trong mẫu, không phải bằng chứng nhân quả."
+            "Kết quả phản ánh quan hệ thống kê và khả năng "
+            "dự báo trong mẫu; không phải bằng chứng nhân quả."
         )
 
     # ========================================================
-    # CROSS HORIZON
+    # CROSS-HORIZON
     # ========================================================
 
     st.divider()
 
     st.header(
-        "🏆 Yếu tố nhất quán giữa 1D / 5D / 20D"
+        "🏆 Yếu tố nhất quán giữa các horizon"
     )
 
     if cross_factor_rows:
@@ -3991,118 +4021,19 @@ def render_quant_research(
             st.success(
                 f"Yếu tố nhất quán nhất: "
                 f"**{strongest['Biến']}** "
-                f"({int(strongest['Số horizon'])} horizon)."
+                f"xuất hiện nổi bật trong "
+                f"{int(strongest['Số horizon'])} horizon."
             )
 
-    # ========================================================
-    # FINAL INTERPRETATION
-    # ========================================================
-
-    st.divider()
-
-    st.header(
-        "🎯 Tóm tắt cho nhà đầu tư"
-    )
-
-    summary_rows = []
-
-    for horizon, item in result[
-        "horizons"
-    ].items():
-
-        if horizon not in saved_horizons:
-            continue
-
-        ranking = item.get(
-            "ranking"
-        )
-
-        if (
-            not isinstance(
-                ranking,
-                pd.DataFrame,
-            )
-            or ranking.empty
-        ):
-            continue
-
-        top = ranking.iloc[
-            0
-        ]
-
-        summary_rows.append(
-            {
-                "Horizon": horizon,
-                "Yếu tố nổi bật": top[
-                    "Biến"
-                ],
-                "Score": num(
-                    top.get(
-                        "Score"
-                    ),
-                    np.nan,
-                ),
-                "Quan hệ": top.get(
-                    "Quan hệ"
-                ),
-                "Spearman": num(
-                    top.get(
-                        "Spearman"
-                    ),
-                    np.nan,
-                ),
-                "Beta": num(
-                    top.get(
-                        "Beta"
-                    ),
-                    np.nan,
-                ),
-                "p-value": num(
-                    top.get(
-                        "p-value"
-                    ),
-                    np.nan,
-                ),
-            }
-        )
-
-    if summary_rows:
-
-        summary = pd.DataFrame(
-            summary_rows
-        )
-
-        for column in [
-            "Score",
-            "Spearman",
-            "Beta",
-            "p-value",
-        ]:
-
-            summary[
-                column
-            ] = summary[
-                column
-            ].round(
-                5
-            )
-
-        st.dataframe(
-            summary,
-            width="stretch",
-            hide_index=True,
-        )
+    else:
 
         st.info(
-            "Đọc bảng này theo thứ tự: "
-            "yếu tố nào đứng đầu nhiều horizon, "
-            "có Spearman/Beta ổn định, và p-value có ý nghĩa. "
-            "Không nên kết luận chỉ từ một model duy nhất."
+            "Chưa đủ kết quả để so sánh giữa các horizon."
         )
 
 
 # ============================================================
-# MAIN PAGE
+# PAGE PHÂN TÍCH CỔ PHIẾU
 # ============================================================
 
 def render_stock_analysis():
@@ -4120,12 +4051,12 @@ def render_stock_analysis():
     )
 
     st.write(
-        "Phân tích kỹ thuật, dữ liệu lịch sử và nghiên cứu "
-        "định lượng trên khoảng thời gian do người dùng chọn."
+        "Phân tích giá, xu hướng, động lượng, thanh khoản "
+        "và nghiên cứu định lượng trên dữ liệu lịch sử thực."
     )
 
     # ========================================================
-    # SYMBOL
+    # INPUT MÃ
     # ========================================================
 
     current_symbol = (
@@ -4164,12 +4095,13 @@ def render_stock_analysis():
             "stock_analysis_symbol"
         ] = clean_symbol
 
-        # Clear research after changing symbol.
+        # Xóa kết quả nghiên cứu của mã cũ.
         for key in [
             "research_result",
             "research_symbol",
-            "research_source_data",
-            "research_source_symbol",
+            "research_start",
+            "research_end",
+            "research_horizons",
         ]:
 
             st.session_state.pop(
@@ -4187,7 +4119,7 @@ def render_stock_analysis():
     )
 
     # ========================================================
-    # DISPLAY DATA
+    # DỮ LIỆU HIỂN THỊ
     # ========================================================
 
     try:
@@ -4306,7 +4238,7 @@ def render_stock_analysis():
         )
 
     # ========================================================
-    # STOCK HEADER
+    # STOCK TITLE
     # ========================================================
 
     st.subheader(
@@ -4314,7 +4246,7 @@ def render_stock_analysis():
     )
 
     # ========================================================
-    # MAIN METRICS
+    # METRICS
     # ========================================================
 
     a, b, c, d = st.columns(
@@ -4405,7 +4337,7 @@ def render_stock_analysis():
         )
 
     # ========================================================
-    # TECHNICAL STATUS
+    # STATUS
     # ========================================================
 
     st.subheader(
@@ -4574,6 +4506,12 @@ def render_stock_analysis():
                 },
             )
 
+        else:
+
+            st.info(
+                "Chưa có biểu đồ."
+            )
+
     except Exception as error:
 
         st.warning(
@@ -4585,7 +4523,7 @@ def render_stock_analysis():
         )
 
     # ========================================================
-    # QUANT RESEARCH
+    # NGHIÊN CỨU ĐỊNH LƯỢNG
     # ========================================================
 
     render_quant_research(
@@ -4594,8 +4532,9 @@ def render_stock_analysis():
 
 
 # ============================================================
-# COMPATIBILITY
+# TÊN TƯƠNG THÍCH
 # ============================================================
 
 def render_analysis():
+
     render_stock_analysis()
