@@ -1,28 +1,26 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-import yfinance as yf
+
+
+# ============================================================
+# KẾT NỐI DNSE
+# ============================================================
 
 try:
-    from vnstock import Market
-
-    THI_TRUONG = Market()
-
+    from dnse import DNSEClient
 except Exception:
-    THI_TRUONG = None
+    DNSEClient = None
 
-
-# ============================================================
-# CẤU HÌNH
-# ============================================================
 
 THOI_GIAN_LUU_CO_PHIEU = 300
 THOI_GIAN_LUU_VNINDEX = 60
+THOI_GIAN_LUU_GIA_MOI = 15
 
 
 # ============================================================
@@ -30,44 +28,113 @@ THOI_GIAN_LUU_VNINDEX = 60
 # ============================================================
 
 def normalize_symbol(symbol):
-
     if symbol is None:
         return "HPG"
 
-    symbol = str(symbol).strip().upper()
-    symbol = re.sub(r"\s+", "", symbol)
+    ma = str(symbol).strip().upper()
+    ma = re.sub(r"\s+", "", ma)
 
-    if not symbol:
+    if ma.endswith(".VN"):
+        ma = ma[:-3]
+
+    if not ma:
         return "HPG"
 
-    return symbol
+    return ma
 
 
 def display_symbol(symbol):
-
     if symbol is None:
         return ""
 
-    symbol = str(symbol).strip().upper()
+    ma = str(symbol).strip().upper()
 
-    if symbol.endswith(".VN"):
-        symbol = symbol[:-3]
+    if ma.endswith(".VN"):
+        ma = ma[:-3]
 
-    return symbol
+    return ma
+
+
+# ============================================================
+# LẤY KHÓA DNSE
+# ============================================================
+
+def _lay_cau_hinh_dnse():
+    khoa = None
+    bi_mat = None
+
+    try:
+        khoa = st.secrets.get(
+            "DNSE_API_KEY"
+        )
+
+        bi_mat = st.secrets.get(
+            "DNSE_API_SECRET"
+        )
+    except Exception:
+        pass
+
+    if not khoa or not bi_mat:
+
+        khoa = st.session_state.get(
+            "DNSE_API_KEY"
+        )
+
+        bi_mat = st.session_state.get(
+            "DNSE_API_SECRET"
+        )
+
+    if not khoa or not bi_mat:
+        return None, None
+
+    return (
+        str(khoa).strip(),
+        str(bi_mat).strip(),
+    )
+
+
+# ============================================================
+# TẠO KHÁCH DNSE
+# ============================================================
+
+def _tao_khach_dnse():
+
+    if DNSEClient is None:
+        raise RuntimeError(
+            "Chưa cài thư viện DNSE OpenAPI."
+        )
+
+    khoa, bi_mat = _lay_cau_hinh_dnse()
+
+    if not khoa or not bi_mat:
+        raise RuntimeError(
+            "Chưa cấu hình DNSE_API_KEY và DNSE_API_SECRET "
+            "trong Streamlit Secrets."
+        )
+
+    return DNSEClient(
+        api_key=khoa,
+        api_secret=bi_mat,
+        base_url="https://openapi.dnse.com.vn",
+        api_version="2026-05-07",
+    )
 
 
 # ============================================================
 # RSI
 # ============================================================
 
-def rsi(series, period=14):
+def rsi(
+    chuoi_gia,
+    chu_ky=14,
+):
 
-    series = pd.to_numeric(
-        series,
+    chuoi_gia = pd.to_numeric(
+        chuoi_gia,
         errors="coerce",
     )
 
-    thay_doi = series.diff()
+    thay_doi = chuoi_gia.diff()
 
     tang = thay_doi.clip(
         lower=0
@@ -78,15 +145,15 @@ def rsi(series, period=14):
     )
 
     trung_binh_tang = tang.ewm(
-        alpha=1 / period,
+        alpha=1 / chu_ky,
         adjust=False,
-        min_periods=period,
+        min_periods=chu_ky,
     ).mean()
 
     trung_binh_giam = giam.ewm(
-        alpha=1 / period,
+        alpha=1 / chu_ky,
         adjust=False,
-        min_periods=period,
+        min_periods=chu_ky,
     ).mean()
 
     ti_so = (
@@ -97,8 +164,15 @@ def rsi(series, period=14):
         )
     )
 
-    ket_qua = 100 - (
-        100 / (1 + ti_so)
+    ket_qua = (
+        100
+        - (
+            100
+            / (
+                1
+                + ti_so
+            )
+        )
     )
 
     ket_qua = ket_qua.where(
@@ -121,14 +195,47 @@ def rsi(series, period=14):
 
 
 # ============================================================
-# CHUẨN HÓA BẢNG OHLCV
+# TÌM CỘT
 # ============================================================
 
-def _chuan_hoa_bang_gia(du_lieu):
+def _tim_cot(
+    du_lieu,
+    cac_ten,
+):
+    if du_lieu is None:
+        return None
+
+    if du_lieu.empty:
+        return None
+
+    ban_do = {
+        str(cot).strip().lower(): cot
+        for cot in du_lieu.columns
+    }
+
+    for ten in cac_ten:
+
+        cot = ban_do.get(
+            str(ten).strip().lower()
+        )
+
+        if cot is not None:
+            return cot
+
+    return None
+
+
+# ============================================================
+# CHUẨN HÓA DỮ LIỆU DNSE
+# ============================================================
+
+def _chuan_hoa_bang_gia(
+    du_lieu,
+):
 
     if du_lieu is None:
         raise ValueError(
-            "Nguồn dữ liệu trả về rỗng."
+            "DNSE không trả về dữ liệu."
         )
 
     if not isinstance(
@@ -141,13 +248,13 @@ def _chuan_hoa_bang_gia(du_lieu):
 
     if du_lieu.empty:
         raise ValueError(
-            "Nguồn dữ liệu không có dữ liệu."
+            "DNSE trả về bảng dữ liệu rỗng."
         )
 
     du_lieu = du_lieu.copy()
 
     # --------------------------------------------------------
-    # MultiIndex
+    # Nếu dữ liệu có dạng MultiIndex
     # --------------------------------------------------------
 
     if isinstance(
@@ -155,62 +262,86 @@ def _chuan_hoa_bang_gia(du_lieu):
         pd.MultiIndex,
     ):
 
-        for muc in range(
-            du_lieu.columns.nlevels
-        ):
+        cot_moi = []
 
-            cac_ten = {
-                str(x).strip().lower()
-                for x in du_lieu.columns
-                .get_level_values(muc)
-            }
+        for cot in du_lieu.columns:
 
-            if "close" in cac_ten:
-
-                du_lieu.columns = (
-                    du_lieu.columns
-                    .get_level_values(muc)
+            if isinstance(
+                cot,
+                tuple,
+            ):
+                cot_moi.append(
+                    str(cot[-1])
+                )
+            else:
+                cot_moi.append(
+                    str(cot)
                 )
 
-                break
+        du_lieu.columns = cot_moi
 
     # --------------------------------------------------------
-    # Tên cột
+    # Chuẩn hóa tên cột
     # --------------------------------------------------------
 
     anh_xa = {}
 
     for cot in du_lieu.columns:
 
-        ten = str(cot).strip().lower()
+        ten = str(
+            cot
+        ).strip().lower()
 
         if ten in [
             "time",
-            "date",
             "datetime",
             "timestamp",
+            "date",
+            "tradingdate",
+            "trading_date",
         ]:
             anh_xa[cot] = "Time"
 
-        elif ten == "open":
+        elif ten in [
+            "open",
+            "open_price",
+            "openprice",
+        ]:
             anh_xa[cot] = "Open"
 
-        elif ten == "high":
+        elif ten in [
+            "high",
+            "high_price",
+            "highprice",
+        ]:
             anh_xa[cot] = "High"
 
-        elif ten == "low":
+        elif ten in [
+            "low",
+            "low_price",
+            "lowprice",
+        ]:
             anh_xa[cot] = "Low"
 
-        elif ten == "close":
+        elif ten in [
+            "close",
+            "close_price",
+            "closeprice",
+            "last",
+        ]:
             anh_xa[cot] = "Close"
 
-        elif ten == "volume":
+        elif ten in [
+            "volume",
+            "vol",
+            "total_volume",
+        ]:
             anh_xa[cot] = "Volume"
 
         elif ten in [
             "value",
-            "value_traded",
             "trading_value",
+            "value_traded",
         ]:
             anh_xa[cot] = "Value"
 
@@ -219,7 +350,7 @@ def _chuan_hoa_bang_gia(du_lieu):
     )
 
     # --------------------------------------------------------
-    # Time
+    # Thời gian
     # --------------------------------------------------------
 
     if "Time" in du_lieu.columns:
@@ -227,6 +358,7 @@ def _chuan_hoa_bang_gia(du_lieu):
         du_lieu["Time"] = pd.to_datetime(
             du_lieu["Time"],
             errors="coerce",
+            utc=True,
         )
 
         du_lieu = du_lieu.set_index(
@@ -238,6 +370,7 @@ def _chuan_hoa_bang_gia(du_lieu):
         du_lieu.index = pd.to_datetime(
             du_lieu.index,
             errors="coerce",
+            utc=True,
         )
 
     du_lieu = du_lieu[
@@ -246,11 +379,17 @@ def _chuan_hoa_bang_gia(du_lieu):
 
     du_lieu = du_lieu.sort_index()
 
+    du_lieu = du_lieu[
+        ~du_lieu.index.duplicated(
+            keep="last"
+        )
+    ].copy()
+
     # --------------------------------------------------------
-    # OHLCV
+    # Bắt buộc OHLCV
     # --------------------------------------------------------
 
-    cac_cot = [
+    cot_bat_buoc = [
         "Open",
         "High",
         "Low",
@@ -260,30 +399,83 @@ def _chuan_hoa_bang_gia(du_lieu):
 
     thieu = [
         cot
-        for cot in cac_cot
+        for cot in cot_bat_buoc
         if cot not in du_lieu.columns
     ]
 
     if thieu:
         raise ValueError(
-            "Thiếu cột: "
+            "DNSE thiếu cột: "
             + ", ".join(thieu)
+            + ". Cột nhận được: "
+            + ", ".join(
+                map(
+                    str,
+                    du_lieu.columns,
+                )
+            )
         )
 
-    for cot in cac_cot:
+    # --------------------------------------------------------
+    # Ép kiểu số
+    # --------------------------------------------------------
+
+    for cot in cot_bat_buoc:
 
         du_lieu[cot] = pd.to_numeric(
             du_lieu[cot],
             errors="coerce",
         )
 
+    du_lieu = du_lieu.replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    )
+
+    # --------------------------------------------------------
+    # Không cho giá <= 0 đi vào hệ thống
+    # --------------------------------------------------------
+
+    du_lieu.loc[
+        du_lieu["Open"] <= 0,
+        "Open",
+    ] = np.nan
+
+    du_lieu.loc[
+        du_lieu["High"] <= 0,
+        "High",
+    ] = np.nan
+
+    du_lieu.loc[
+        du_lieu["Low"] <= 0,
+        "Low",
+    ] = np.nan
+
+    du_lieu.loc[
+        du_lieu["Close"] <= 0,
+        "Close",
+    ] = np.nan
+
+    du_lieu.loc[
+        du_lieu["Volume"] < 0,
+        "Volume",
+    ] = np.nan
+
     du_lieu = du_lieu.dropna(
-        subset=["Close"]
+        subset=[
+            "Open",
+            "High",
+            "Low",
+            "Close",
+        ]
     )
 
     if du_lieu.empty:
         raise ValueError(
-            "Không có giá đóng cửa hợp lệ."
+            "DNSE không có OHLC hợp lệ."
         )
 
     return du_lieu
@@ -293,7 +485,9 @@ def _chuan_hoa_bang_gia(du_lieu):
 # CHỈ BÁO
 # ============================================================
 
-def add_indicators(du_lieu):
+def add_indicators(
+    du_lieu,
+):
 
     du_lieu = _chuan_hoa_bang_gia(
         du_lieu
@@ -304,7 +498,7 @@ def add_indicators(du_lieu):
     gia = du_lieu["Close"]
 
     # --------------------------------------------------------
-    # Return
+    # Lợi suất
     # --------------------------------------------------------
 
     du_lieu["Return"] = (
@@ -312,7 +506,8 @@ def add_indicators(du_lieu):
     )
 
     du_lieu["ReturnPct"] = (
-        du_lieu["Return"] * 100
+        du_lieu["Return"]
+        * 100
     )
 
     # --------------------------------------------------------
@@ -359,6 +554,20 @@ def add_indicators(du_lieu):
     du_lieu["EMA50"] = (
         gia.ewm(
             span=50,
+            adjust=False,
+        ).mean()
+    )
+
+    du_lieu["EMA100"] = (
+        gia.ewm(
+            span=100,
+            adjust=False,
+        ).mean()
+    )
+
+    du_lieu["EMA200"] = (
+        gia.ewm(
+            span=200,
             adjust=False,
         ).mean()
     )
@@ -481,7 +690,7 @@ def add_indicators(du_lieu):
     )
 
     # --------------------------------------------------------
-    # Volume
+    # Khối lượng
     # --------------------------------------------------------
 
     du_lieu["Volume_SMA5"] = (
@@ -624,7 +833,7 @@ def add_indicators(du_lieu):
     )
 
     # --------------------------------------------------------
-    # Khoảng cách đỉnh đáy
+    # Khoảng cách với đỉnh / đáy
     # --------------------------------------------------------
 
     du_lieu["Distance_From_High20"] = (
@@ -632,7 +841,8 @@ def add_indicators(du_lieu):
             gia
             / du_lieu["High20"]
             - 1
-        ) * 100
+        )
+        * 100
     )
 
     du_lieu["Distance_From_Low20"] = (
@@ -640,7 +850,8 @@ def add_indicators(du_lieu):
             gia
             / du_lieu["Low20"]
             - 1
-        ) * 100
+        )
+        * 100
     )
 
     du_lieu["Distance_From_High252"] = (
@@ -648,7 +859,8 @@ def add_indicators(du_lieu):
             gia
             / du_lieu["High252"]
             - 1
-        ) * 100
+        )
+        * 100
     )
 
     du_lieu["Distance_From_Low252"] = (
@@ -656,86 +868,236 @@ def add_indicators(du_lieu):
             gia
             / du_lieu["Low252"]
             - 1
-        ) * 100
+        )
+        * 100
     )
 
-    du_lieu = du_lieu.replace(
-        [np.inf, -np.inf],
+    return du_lieu.replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
         np.nan,
     )
 
-    return du_lieu
-
 
 # ============================================================
-# DỮ LIỆU CỔ PHIẾU - VNSTOCK
+# KHOẢNG THỜI GIAN
 # ============================================================
 
-def _lay_co_phieu_vnstock(
-    symbol,
-    period="1y",
+def _so_ngay_theo_ky(
+    ky_hieu,
 ):
 
-    if THI_TRUONG is None:
-        raise RuntimeError(
-            "Không khởi tạo được Vnstock."
-        )
+    ky_hieu = str(
+        ky_hieu or "1y"
+    ).strip().lower()
 
-    ma = normalize_symbol(
-        symbol
-    )
-
-    if ma.endswith(".VN"):
-        ma = ma[:-3]
-
-    # Vnstock v4 hỗ trợ start/end cho OHLCV.
-    # Tính ngày bằng số nguyên, không bao giờ
-    # truyền chuỗi vào timedelta.
-
-    bang_ngay = {
-        "1d": 1,
-        "5d": 5,
-        "1mo": 31,
-        "3mo": 93,
-        "6mo": 186,
-        "1y": 365,
-        "2y": 730,
-        "5y": 1825,
-        "10y": 3650,
+    bang = {
+        "1d": 3,
+        "5d": 10,
+        "1mo": 45,
+        "3mo": 120,
+        "6mo": 240,
+        "1y": 450,
+        "2y": 850,
+        "3y": 1200,
+        "5y": 1900,
+        "10y": 3800,
+        "max": 3800,
     }
 
-    period = str(
-        period
-    ).lower().strip()
-
-    so_ngay = bang_ngay.get(
-        period,
-        365,
+    return bang.get(
+        ky_hieu,
+        450,
     )
 
-    ngay_ket_thuc = datetime.now()
 
-    ngay_bat_dau = (
-        ngay_ket_thuc
+# ============================================================
+# CHUYỂN THỜI GIAN SANG UNIX
+# ============================================================
+
+def _unix(
+    thoi_gian,
+):
+    if thoi_gian.tzinfo is None:
+        thoi_gian = thoi_gian.replace(
+            tzinfo=timezone.utc
+        )
+
+    return int(
+        thoi_gian.timestamp()
+    )
+
+
+# ============================================================
+# GIẢI MÃ BODY DNSE
+# ============================================================
+
+def _tach_du_lieu_dnse(
+    thanh_cong,
+    noi_dung,
+):
+
+    if int(thanh_cong) >= 400:
+        raise RuntimeError(
+            f"DNSE HTTP {thanh_cong}: "
+            f"{noi_dung}"
+        )
+
+    if noi_dung is None:
+        return None
+
+    if isinstance(
+        noi_dung,
+        pd.DataFrame,
+    ):
+        return noi_dung
+
+    if isinstance(
+        noi_dung,
+        list,
+    ):
+        return noi_dung
+
+    if isinstance(
+        noi_dung,
+        dict,
+    ):
+
+        # Các dạng thường gặp
+        cac_khoa = [
+            "data",
+            "content",
+            "items",
+            "results",
+            "candles",
+            "ohlc",
+        ]
+
+        for khoa in cac_khoa:
+
+            if khoa not in noi_dung:
+                continue
+
+            gia_tri = noi_dung[
+                khoa
+            ]
+
+            if isinstance(
+                gia_tri,
+                dict,
+            ):
+
+                ket_qua = (
+                    _tach_du_lieu_dnse(
+                        200,
+                        gia_tri,
+                    )
+                )
+
+                if ket_qua is not None:
+                    return ket_qua
+
+            elif isinstance(
+                gia_tri,
+                list,
+            ):
+
+                return gia_tri
+
+        return noi_dung
+
+    return noi_dung
+
+
+# ============================================================
+# LẤY OHLC TỪ DNSE
+# ============================================================
+
+def _lay_ohlc_dnse(
+    ma,
+    ky_hieu="1y",
+):
+
+    khach = _tao_khach_dnse()
+
+    so_ngay = _so_ngay_theo_ky(
+        ky_hieu
+    )
+
+    ngay_cuoi = datetime.now(
+        timezone.utc
+    )
+
+    ngay_dau = (
+        ngay_cuoi
         - timedelta(
             days=int(so_ngay)
         )
     )
 
-    du_lieu = (
-        THI_TRUONG
-        .equity
-        .ohlcv(
-            symbol=ma,
-            start=ngay_bat_dau.strftime(
-                "%Y-%m-%d"
-            ),
-            end=(ngay_ket_thuc + timedelta(days=1)).strftime(
-                "%Y-%m-%d"
-            ),
-            interval="1D",
+    thanh_cong, noi_dung = (
+        khach.get_ohlc(
+            bar_type="STOCK",
+            query={
+                "symbol": ma,
+                "resolution": "1",
+                "from": _unix(
+                    ngay_dau
+                ),
+                "to": _unix(
+                    ngay_cuoi
+                ),
+            },
+            dry_run=False,
         )
     )
+
+    than = _tach_du_lieu_dnse(
+        thanh_cong,
+        noi_dung,
+    )
+
+    if than is None:
+        raise RuntimeError(
+            f"DNSE không trả dữ liệu OHLC cho {ma}."
+        )
+
+    if isinstance(
+        than,
+        dict,
+    ):
+        # Thử lấy phần mảng dữ liệu bên trong
+        for khoa in [
+            "data",
+            "content",
+            "items",
+            "results",
+            "candles",
+            "ohlc",
+        ]:
+
+            if isinstance(
+                than.get(khoa),
+                list,
+            ):
+
+                than = than[
+                    khoa
+                ]
+
+                break
+
+    du_lieu = pd.DataFrame(
+        than
+    )
+
+    if du_lieu.empty:
+
+        raise RuntimeError(
+            f"DNSE trả OHLC rỗng cho {ma}."
+        )
 
     return _chuan_hoa_bang_gia(
         du_lieu
@@ -743,93 +1105,146 @@ def _lay_co_phieu_vnstock(
 
 
 # ============================================================
-# DỮ LIỆU CỔ PHIẾU - YAHOO DỰ PHÒNG
+# GIÁ KHỚP GẦN NHẤT DNSE
 # ============================================================
 
-def _lay_co_phieu_yahoo(
-    symbol,
-    period="1y",
+def _lay_gia_moi_nhat_dnse(
+    ma,
 ):
 
-    symbol = normalize_symbol(
-        symbol
-    )
+    khach = _tao_khach_dnse()
 
-    danh_sach = []
-
-    if symbol.endswith(".VN"):
-
-        danh_sach.append(
-            symbol
-        )
-
-        goc = symbol[:-3]
-
-        if goc:
-            danh_sach.append(
-                goc
-            )
-
-    else:
-
-        if re.fullmatch(
-            r"[A-Z0-9]{2,5}",
-            symbol,
-        ):
-
-            danh_sach.append(
-                f"{symbol}.VN"
-            )
-
-        danh_sach.append(
-            symbol
-        )
-
-    danh_sach = list(
-        dict.fromkeys(
-            danh_sach
-        )
-    )
+    # DNSE yêu cầu board theo dữ liệu thị trường.
+    # Thử G1 trước vì ví dụ SDK chính thức sử dụng G1.
+    cac_bang = [
+        "G1",
+        "G3",
+        "G4",
+        "G7",
+    ]
 
     loi = []
 
-    for ticker in danh_sach:
+    for bang in cac_bang:
 
         try:
 
-            du_lieu = yf.Ticker(
-                ticker
-            ).history(
-                period=str(period),
-                interval="1d",
-                auto_adjust=False,
-                actions=False,
+            thanh_cong, noi_dung = (
+                khach.get_latest_trade(
+                    symbol=ma,
+                    board_id=bang,
+                    dry_run=False,
+                )
             )
 
-            if (
-                du_lieu is not None
-                and not du_lieu.empty
+            if int(
+                thanh_cong
+            ) >= 400:
+                loi.append(
+                    f"{bang}: HTTP {thanh_cong}"
+                )
+                continue
+
+            than = _tach_du_lieu_dnse(
+                thanh_cong,
+                noi_dung,
+            )
+
+            if isinstance(
+                than,
+                dict,
             ):
 
-                return _chuan_hoa_bang_gia(
-                    du_lieu
-                )
+                return than
+
+            if isinstance(
+                than,
+                list,
+            ) and than:
+
+                return than[-1]
 
         except Exception as exc:
 
             loi.append(
-                f"{ticker}: {exc}"
+                f"{bang}: {exc}"
             )
 
-    raise ValueError(
-        "Không lấy được dữ liệu "
-        f"{display_symbol(symbol)}. "
+    raise RuntimeError(
+        "Không lấy được giao dịch gần nhất từ DNSE. "
         + " | ".join(loi)
     )
 
 
 # ============================================================
-# HÀM CHÍNH CỔ PHIẾU
+# CHUẨN HÓA GIÁ GẦN NHẤT
+# ============================================================
+
+def _lay_gia_tu_giao_dich(
+    du_lieu,
+):
+
+    if du_lieu is None:
+        return None
+
+    if isinstance(
+        du_lieu,
+        list,
+    ):
+
+        if not du_lieu:
+            return None
+
+        du_lieu = du_lieu[-1]
+
+    if not isinstance(
+        du_lieu,
+        dict,
+    ):
+        return None
+
+    ban_do = {
+        str(k).strip().lower(): v
+        for k, v in du_lieu.items()
+    }
+
+    cac_ten_gia = [
+        "last",
+        "lastprice",
+        "last_price",
+        "price",
+        "matchprice",
+        "match_price",
+        "tradeprice",
+        "trade_price",
+        "close",
+    ]
+
+    for ten in cac_ten_gia:
+
+        if ten not in ban_do:
+            continue
+
+        try:
+
+            gia = float(
+                ban_do[ten]
+            )
+
+            if (
+                np.isfinite(gia)
+                and gia > 0
+            ):
+                return gia
+
+        except Exception:
+            continue
+
+    return None
+
+
+# ============================================================
+# DỮ LIỆU CỔ PHIẾU
 # ============================================================
 
 @st.cache_data(
@@ -841,60 +1256,35 @@ def load_market_data(
     period="1y",
 ):
 
-    symbol = normalize_symbol(
+    ma = normalize_symbol(
         symbol
     )
 
-    # Ưu tiên Vnstock với mã Việt Nam
-    if (
-        THI_TRUONG is not None
-        and re.fullmatch(
-            r"[A-Z0-9]{2,5}(\.VN)?",
-            symbol,
+    if not ma:
+        raise ValueError(
+            "Mã cổ phiếu không hợp lệ."
         )
-    ):
 
-        try:
-
-            du_lieu = _lay_co_phieu_vnstock(
-                symbol,
-                period,
-            )
-
-            du_lieu = add_indicators(
-                du_lieu
-            )
-
-            du_lieu.attrs["symbol"] = (
-                display_symbol(symbol)
-            )
-
-            du_lieu.attrs["source"] = (
-                "Vnstock"
-            )
-
-            return du_lieu
-
-        except Exception:
-            pass
-
-    # Fallback Yahoo
-    du_lieu = _lay_co_phieu_yahoo(
-        symbol,
+    # Chỉ dùng DNSE cho cổ phiếu Việt Nam.
+    du_lieu_goc = _lay_ohlc_dnse(
+        ma,
         period,
     )
 
     du_lieu = add_indicators(
-        du_lieu
+        du_lieu_goc
     )
 
-    du_lieu.attrs["symbol"] = (
-        display_symbol(symbol)
-    )
+    if du_lieu.empty:
+        raise ValueError(
+            f"DNSE không có dữ liệu hợp lệ cho {ma}."
+        )
 
-    du_lieu.attrs["source"] = (
-        "Yahoo Finance"
+    du_lieu.attrs["symbol"] = ma
+    du_lieu.attrs["display_symbol"] = (
+        display_symbol(ma)
     )
+    du_lieu.attrs["source"] = "DNSE"
 
     return du_lieu
 
@@ -903,11 +1293,9 @@ def load_market_data(
 # VN-INDEX
 # ============================================================
 #
-# TUYỆT ĐỐI KHÔNG DÙNG YAHOO CHO VN-INDEX.
-#
-# Nguồn:
-#     Vnstock Market -> Index -> VNINDEX
-#
+# DNSE /price/ohlc hỗ trợ cả chỉ số thị trường.
+# Thử các tên thường dùng theo thứ tự.
+# Không gọi Yahoo.
 # ============================================================
 
 @st.cache_data(
@@ -916,74 +1304,135 @@ def load_market_data(
 )
 def load_vnindex_data():
 
-    if THI_TRUONG is None:
+    khach = _tao_khach_dnse()
 
-        raise RuntimeError(
-            "Không khởi tạo được Vnstock Market."
-        )
+    ngay_cuoi = datetime.now(
+        timezone.utc
+    )
 
-    ngay_ket_thuc = datetime.now()
-
-    # Lấy dư 1 năm để đủ dữ liệu
-    # cho SMA200 và các chỉ báo.
-    ngay_bat_dau = (
-        ngay_ket_thuc
+    ngay_dau = (
+        ngay_cuoi
         - timedelta(
             days=450
         )
     )
 
-    try:
+    cac_ma_chi_so = [
+        "VNINDEX",
+        "VN-INDEX",
+        "^VNINDEX",
+    ]
 
-        du_lieu = (
-            THI_TRUONG
-            .index(
+    cac_loi = []
+
+    for ma_chi_so in cac_ma_chi_so:
+
+        try:
+
+            thanh_cong, noi_dung = (
+                khach.get_ohlc(
+                    bar_type="INDEX",
+                    query={
+                        "symbol": ma_chi_so,
+                        "resolution": "1",
+                        "from": _unix(
+                            ngay_dau
+                        ),
+                        "to": _unix(
+                            ngay_cuoi
+                        ),
+                    },
+                    dry_run=False,
+                )
+            )
+
+            than = _tach_du_lieu_dnse(
+                thanh_cong,
+                noi_dung,
+            )
+
+            if isinstance(
+                than,
+                dict,
+            ):
+
+                for khoa in [
+                    "data",
+                    "content",
+                    "items",
+                    "results",
+                    "candles",
+                    "ohlc",
+                ]:
+
+                    if isinstance(
+                        than.get(khoa),
+                        list,
+                    ):
+
+                        than = than[
+                            khoa
+                        ]
+
+                        break
+
+            if (
+                isinstance(
+                    than,
+                    list,
+                )
+                and than
+            ):
+
+                du_lieu = pd.DataFrame(
+                    than
+                )
+
+            else:
+
+                du_lieu = pd.DataFrame(
+                    than
+                )
+
+            if du_lieu.empty:
+                continue
+
+            du_lieu = _chuan_hoa_bang_gia(
+                du_lieu
+            )
+
+            # Index đôi khi không có volume.
+            if "Volume" not in du_lieu.columns:
+
+                du_lieu["Volume"] = 0.0
+
+            du_lieu = add_indicators(
+                du_lieu
+            )
+
+            if du_lieu.empty:
+                continue
+
+            du_lieu.attrs["symbol"] = (
                 "VNINDEX"
             )
-            .ohlcv(
-                start=ngay_bat_dau.strftime(
-                    "%Y-%m-%d"
-                ),
-                end=(ngay_ket_thuc + timedelta(days=1)).strftime(
-                    "%Y-%m-%d"
-                ),
-                interval="1D",
+
+            du_lieu.attrs["source"] = (
+                "DNSE"
             )
-        )
 
-    except Exception as exc:
+            return du_lieu
 
-        raise RuntimeError(
-            "Vnstock không lấy được VN-INDEX: "
-            f"{exc}"
-        )
+        except Exception as exc:
 
-    if (
-        du_lieu is None
-        or du_lieu.empty
-    ):
+            cac_loi.append(
+                f"{ma_chi_so}: {exc}"
+            )
 
-        raise RuntimeError(
-            "Vnstock trả về VN-INDEX rỗng."
-        )
-
-    du_lieu = _chuan_hoa_bang_gia(
-        du_lieu
+    raise RuntimeError(
+        "Không lấy được VN-INDEX từ DNSE. "
+        + " | ".join(cac_loi)
     )
-
-    du_lieu = add_indicators(
-        du_lieu
-    )
-
-    du_lieu.attrs["symbol"] = (
-        "VNINDEX"
-    )
-
-    du_lieu.attrs["source"] = (
-        "Vnstock KBS"
-    )
-
-    return du_lieu
 
 
 # ============================================================
@@ -991,68 +1440,95 @@ def load_vnindex_data():
 # ============================================================
 
 @st.cache_data(
-    ttl=30,
+    ttl=THOI_GIAN_LUU_GIA_MOI,
     show_spinner=False,
 )
-def load_latest_price(symbol):
+def load_latest_price(
+    symbol,
+):
+
+    ma = normalize_symbol(
+        symbol
+    )
 
     try:
 
-        du_lieu = load_market_data(
-            symbol,
-            "5d",
+        giao_dich = (
+            _lay_gia_moi_nhat_dnse(
+                ma
+            )
         )
 
-        if du_lieu.empty:
-            return {}
-
-        gia_moi = float(
-            du_lieu["Close"].iloc[-1]
+        gia_moi = (
+            _lay_gia_tu_giao_dich(
+                giao_dich
+            )
         )
 
-        if len(du_lieu) >= 2:
+        if gia_moi is not None:
 
-            gia_truoc = float(
-                du_lieu["Close"].iloc[-2]
-            )
+            try:
 
-        else:
-            gia_truoc = gia_moi
+                du_lieu = load_market_data(
+                    ma,
+                    "5d",
+                )
 
-        if gia_truoc != 0:
+                if (
+                    du_lieu is not None
+                    and not du_lieu.empty
+                ):
 
-            thay_doi = (
-                gia_moi
-                / gia_truoc
-                - 1
-            ) * 100
+                    dong_cuoi = (
+                        du_lieu.iloc[-1]
+                    )
 
-        else:
+                    gia_cu = float(
+                        dong_cuoi[
+                            "Close"
+                        ]
+                    )
 
-            thay_doi = 0.0
+                    thay_doi = (
+                        gia_moi
+                        / gia_cu
+                        - 1
+                    ) * 100
 
-        khoi_luong = 0
+                    return {
+                        "ma": display_symbol(
+                            ma
+                        ),
+                        "gia": gia_moi,
+                        "thay_doi": thay_doi,
+                        "khoi_luong": float(
+                            dong_cuoi[
+                                "Volume"
+                            ]
+                        ),
+                    }
 
-        if "Volume" in du_lieu.columns:
+            except Exception:
+                pass
 
-            khoi_luong = float(
-                du_lieu[
-                    "Volume"
-                ].iloc[-1]
-            )
+            return {
+                "ma": display_symbol(
+                    ma
+                ),
+                "gia": gia_moi,
+                "thay_doi": np.nan,
+                "khoi_luong": np.nan,
+            }
 
-        return {
-            "ma": display_symbol(
-                symbol
-            ),
-            "gia": gia_moi,
-            "thay_doi": thay_doi,
-            "khoi_luong": khoi_luong,
-            "thoi_gian": du_lieu.index[-1],
-        }
+        raise RuntimeError(
+            "DNSE không trả giá giao dịch."
+        )
 
-    except Exception:
-        return {}
+    except Exception as exc:
+
+        raise RuntimeError(
+            f"Không lấy được giá mới nhất {ma}: {exc}"
+        )
 
 
 # ============================================================
@@ -1069,19 +1545,26 @@ def market_snapshot(
     ):
         return {}
 
-    cuoi = du_lieu.iloc[-1]
+    dong_cuoi = du_lieu.iloc[-1]
 
     if len(du_lieu) >= 2:
-        truoc = du_lieu.iloc[-2]
+
+        dong_truoc = (
+            du_lieu.iloc[-2]
+        )
+
     else:
-        truoc = cuoi
+
+        dong_truoc = (
+            dong_cuoi
+        )
 
     gia = float(
-        cuoi["Close"]
+        dong_cuoi["Close"]
     )
 
     gia_truoc = float(
-        truoc["Close"]
+        dong_truoc["Close"]
     )
 
     if gia_truoc != 0:
@@ -1094,42 +1577,503 @@ def market_snapshot(
 
     else:
 
-        thay_doi = 0.0
+        thay_doi = np.nan
+
+    def _gia_tri(
+        ten_cot,
+    ):
+
+        try:
+
+            gia_tri = float(
+                dong_cuoi[
+                    ten_cot
+                ]
+            )
+
+            if pd.notna(
+                gia_tri
+            ):
+                return gia_tri
+
+        except Exception:
+            pass
+
+        return np.nan
 
     return {
         "price": gia,
         "change_1d": thay_doi,
-        "return_1d": float(
-            cuoi["Return"]
-        ) * 100,
-        "rsi": float(
-            cuoi["RSI"]
-        )
-        if pd.notna(cuoi["RSI"])
-        else np.nan,
-        "macd": float(
-            cuoi["MACD"]
-        )
-        if pd.notna(cuoi["MACD"])
-        else np.nan,
-        "sma20": float(
-            cuoi["SMA20"]
-        )
-        if pd.notna(cuoi["SMA20"])
-        else np.nan,
-        "sma50": float(
-            cuoi["SMA50"]
-        )
-        if pd.notna(cuoi["SMA50"])
-        else np.nan,
-        "volatility20": float(
-            cuoi["Volatility20"]
-        )
-        if pd.notna(cuoi["Volatility20"])
-        else np.nan,
-        "volume": float(
-            cuoi["Volume"]
-        )
-        if pd.notna(cuoi["Volume"])
-        else np.nan,
+        "return_1d": _gia_tri(
+            "ReturnPct"
+        ),
+        "rsi": _gia_tri(
+            "RSI"
+        ),
+        "macd": _gia_tri(
+            "MACD"
+        ),
+        "sma20": _gia_tri(
+            "SMA20"
+        ),
+        "sma50": _gia_tri(
+            "SMA50"
+        ),
+        "volatility20": _gia_tri(
+            "Volatility20"
+        ),
+        "volume": _gia_tri(
+            "Volume"
+        ),
     }
+
+
+# ============================================================
+# GIỮ TÊN HÀM CŨ CHO CÁC FILE KHÁC
+# ============================================================
+
+def market_data(
+    symbol,
+    period="1y",
+):
+    return load_market_data(
+        symbol,
+        period,
+    )
+
+
+def _safe_int(
+    gia_tri,
+    mac_dinh,
+):
+    try:
+        return int(
+            float(gia_tri)
+        )
+    except Exception:
+        return int(mac_dinh)
+
+
+def get_news(
+    ticker,
+    days=7,
+):
+    return []
+
+
+def classify_news(
+    title,
+):
+    van_ban = str(
+        title or ""
+    ).lower()
+
+    tu_tich_cuc = [
+        "tăng",
+        "tích cực",
+        "lợi nhuận",
+        "kỷ lục",
+        "tăng trưởng",
+        "bứt phá",
+        "vượt kỳ vọng",
+        "vượt kế hoạch",
+        "hưởng lợi",
+    ]
+
+    tu_tieu_cuc = [
+        "giảm",
+        "tiêu cực",
+        "thua lỗ",
+        "rủi ro",
+        "sụt giảm",
+        "áp lực",
+        "bán tháo",
+        "khó khăn",
+        "nợ xấu",
+        "cảnh báo",
+        "vi phạm",
+    ]
+
+    diem_tich_cuc = sum(
+        tu
+        in van_ban
+        for tu
+        in tu_tich_cuc
+    )
+
+    diem_tieu_cuc = sum(
+        tu
+        in van_ban
+        for tu
+        in tu_tieu_cuc
+    )
+
+    if (
+        diem_tich_cuc
+        > diem_tieu_cuc
+    ):
+        return "positive"
+
+    if (
+        diem_tieu_cuc
+        > diem_tich_cuc
+    ):
+        return "negative"
+
+    return "neutral"
+
+
+# ============================================================
+# MÔ HÌNH ĐỊNH LƯỢNG
+# ============================================================
+
+def build_quant(
+    du_lieu,
+):
+
+    if (
+        du_lieu is None
+        or du_lieu.empty
+    ):
+        return None
+
+    cot_dac_trung = [
+        "RSI",
+        "MACD",
+        "MACD_Hist",
+        "Volatility20",
+        "Volume_Change",
+        "Return",
+    ]
+
+    if any(
+        cot not in du_lieu.columns
+        for cot in cot_dac_trung
+    ):
+        return None
+
+    try:
+
+        from sklearn.ensemble import (
+            RandomForestRegressor,
+        )
+
+        from sklearn.metrics import (
+            mean_absolute_error,
+            r2_score,
+        )
+
+        import statsmodels.api as sm
+
+    except Exception:
+        return None
+
+    lam_viec = du_lieu.copy()
+
+    lam_viec["Target"] = (
+        lam_viec["Return"]
+        .shift(-1)
+    )
+
+    lam_viec = lam_viec.replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    )
+
+    lam_viec = lam_viec.dropna(
+        subset=(
+            cot_dac_trung
+            + ["Target"]
+        )
+    )
+
+    if len(lam_viec) < 60:
+        return None
+
+    X = lam_viec[
+        cot_dac_trung
+    ].astype(float)
+
+    y = lam_viec[
+        "Target"
+    ].astype(float)
+
+    vi_tri = int(
+        len(lam_viec)
+        * 0.8
+    )
+
+    if vi_tri < 30:
+        return None
+
+    X_train = X.iloc[
+        :vi_tri
+    ]
+
+    X_test = X.iloc[
+        vi_tri:
+    ]
+
+    y_train = y.iloc[
+        :vi_tri
+    ]
+
+    y_test = y.iloc[
+        vi_tri:
+    ]
+
+    try:
+
+        mo_hinh_ols = sm.OLS(
+            y_train,
+            sm.add_constant(
+                X_train,
+                has_constant="add",
+            ),
+        ).fit(
+            cov_type="HC3"
+        )
+
+        mo_hinh_rung = (
+            RandomForestRegressor(
+                n_estimators=300,
+                max_depth=7,
+                min_samples_leaf=3,
+                random_state=42,
+                n_jobs=-1,
+            )
+        )
+
+        mo_hinh_rung.fit(
+            X_train,
+            y_train,
+        )
+
+        du_bao_kiem_tra = (
+            mo_hinh_rung.predict(
+                X_test
+            )
+        )
+
+        sai_so = float(
+            mean_absolute_error(
+                y_test,
+                du_bao_kiem_tra,
+            )
+        )
+
+        try:
+
+            r2 = float(
+                r2_score(
+                    y_test,
+                    du_bao_kiem_tra,
+                )
+            )
+
+        except Exception:
+
+            r2 = float("nan")
+
+        du_bao_tiep = float(
+            mo_hinh_rung.predict(
+                X.iloc[[-1]]
+            )[0]
+        )
+
+        tam_quan_trong = pd.Series(
+            mo_hinh_rung.feature_importances_,
+            index=cot_dac_trung,
+        ).sort_values(
+            ascending=False
+        )
+
+        return (
+            mo_hinh_ols,
+            mo_hinh_rung,
+            {
+                "MAE": sai_so,
+                "R2": r2,
+            },
+            du_bao_tiep,
+            tam_quan_trong,
+        )
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# OLS TƯƠNG THÍCH
+# ============================================================
+
+def run_ols(
+    du_lieu,
+):
+
+    if (
+        du_lieu is None
+        or du_lieu.empty
+    ):
+        return None
+
+    try:
+        import statsmodels.api as sm
+    except Exception:
+        return None
+
+    cac_cot = [
+        "Volume_Change",
+        "RSI",
+        "MACD",
+        "Volatility20",
+    ]
+
+    if any(
+        cot not in du_lieu.columns
+        for cot in cac_cot
+    ):
+        return None
+
+    sach = du_lieu[
+        cac_cot
+        + ["Return"]
+    ].replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    ).dropna()
+
+    if len(sach) < 50:
+        return None
+
+    try:
+
+        X = sm.add_constant(
+            sach[cac_cot],
+            has_constant="add",
+        )
+
+        y = sach["Return"]
+
+        return sm.OLS(
+            y,
+            X,
+        ).fit()
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# RANDOM FOREST TƯƠNG THÍCH
+# ============================================================
+
+def run_random_forest(
+    du_lieu,
+):
+
+    if (
+        du_lieu is None
+        or du_lieu.empty
+    ):
+        return None
+
+    try:
+
+        from sklearn.ensemble import (
+            RandomForestRegressor,
+        )
+
+    except Exception:
+        return None
+
+    cac_cot = [
+        "Volume_Change",
+        "RSI",
+        "MACD",
+        "Volatility20",
+    ]
+
+    if any(
+        cot not in du_lieu.columns
+        for cot in cac_cot
+    ):
+        return None
+
+    sach = du_lieu[
+        cac_cot
+        + ["Return"]
+    ].replace(
+        [
+            np.inf,
+            -np.inf,
+        ],
+        np.nan,
+    ).dropna()
+
+    sach["Target"] = (
+        sach["Return"]
+        .shift(-1)
+    )
+
+    sach = sach.dropna()
+
+    if len(sach) < 80:
+        return None
+
+    try:
+
+        X = sach[
+            cac_cot
+        ].astype(float)
+
+        y = sach[
+            "Target"
+        ].astype(float)
+
+        vi_tri = int(
+            len(sach)
+            * 0.8
+        )
+
+        mo_hinh = (
+            RandomForestRegressor(
+                n_estimators=300,
+                max_depth=7,
+                min_samples_leaf=3,
+                random_state=42,
+                n_jobs=-1,
+            )
+        )
+
+        mo_hinh.fit(
+            X.iloc[:vi_tri],
+            y.iloc[:vi_tri],
+        )
+
+        du_bao = float(
+            mo_hinh.predict(
+                X.iloc[[-1]]
+            )[0]
+        )
+
+        tam_quan_trong = dict(
+            zip(
+                cac_cot,
+                mo_hinh.feature_importances_,
+            )
+        )
+
+        return {
+            "model": mo_hinh,
+            "prediction": du_bao,
+            "importance": tam_quan_trong,
+        }
+
+    except Exception:
