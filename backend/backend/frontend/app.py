@@ -32,7 +32,7 @@ with tab1:
     if btn_stock and symbol:
         with st.spinner("Đang lấy dữ liệu đa biến DNSE/TCBS & chạy Gemini AI..."):
             try:
-                res = requests.get(f"http://127.0.0.1:8000/api/stock/{symbol}")
+                res = requests.post("https://brian-ai-invest-lab.onrender.com/api/quant-research", files=files, data=data_form)
                 if res.status_code == 200:
                     data = res.json()
                     if data.get("prices"):
@@ -55,7 +55,7 @@ with tab2:
             try:
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
                 data_form = {"topic": topic}
-                res = requests.post("http://127.0.0.1:8000/api/quant-research", files=files, data=data_form)
+                res = requests.post("https://brian-ai-invest-lab.onrender.com/api/quant-research", files=files, data=data_form)
                 if res.status_code == 200:
                     result = res.json()
                     st.subheader("📄 Báo Cáo Nghiên Cứu Định Lượng (Chuẩn Học Thuật)")
