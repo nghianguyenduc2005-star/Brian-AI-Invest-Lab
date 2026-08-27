@@ -424,6 +424,11 @@ def render_sidebar():
                 "AI Assistant",
                 "🤖 AI Assistant",
             ),
+
+            (
+                "Thị trường",
+                "📊 Thị trường",
+            ),
         ]
 
         for ten_trang, ten_hien_thi in cac_trang:
