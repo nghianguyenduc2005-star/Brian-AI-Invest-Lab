@@ -445,11 +445,11 @@ Chỉ chọn tối đa 3 ý.
 
 1–2 câu.
 
-## 🟢 Hỗ trợ
+## Hỗ trợ
 
 Tối đa 2 ý.
 
-## 🔴 Áp lực
+## Áp lực
 
 Tối đa 2 ý.
 
