@@ -2637,32 +2637,72 @@ def _call_historical_method_range(
     method_name,
     start_date,
     end_date,
+    max_attempts=3,
 ):
-    """Chỉ gọi API lịch sử với start/end; không fallback về toàn bộ lịch sử."""
+    """
+    Gọi đúng khoảng start/end.
+    Quan trọng: không biến lỗi rate-limit thành DataFrame rỗng,
+    vì làm vậy caller sẽ tưởng là thiếu dữ liệu và tiếp tục chia nhỏ,
+    khiến số request tăng vô hạn.
+    """
     method = getattr(obj, method_name, None)
     if method is None:
         return pd.DataFrame()
 
-    try:
-        data = method(
-            start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
-            end=pd.Timestamp(end_date).strftime("%Y-%m-%d"),
-        )
-    except TypeError:
-        print(
-            f"[VNSTOCK] {method_name}: phiên bản API hiện tại không hỗ trợ start/end."
-        )
-        return pd.DataFrame()
-    except Exception as error:
-        if _is_rate_limit_error(error):
-            _sleep_after_rate_limit(error)
-        print(
-            f"[VNSTOCK] {method_name}: lỗi request "
-            f"{pd.Timestamp(start_date).date()} -> {pd.Timestamp(end_date).date()}: {error}"
-        )
-        return pd.DataFrame()
+    last_error = None
 
-    return data
+    for attempt in range(1, max_attempts + 1):
+        try:
+            data = method(
+                start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
+                end=pd.Timestamp(end_date).strftime("%Y-%m-%d"),
+            )
+
+            if data is None:
+                return pd.DataFrame()
+
+            return data
+
+        except TypeError as error:
+            # Không hỗ trợ start/end: không fallback về toàn bộ lịch sử,
+            # vì có thể tải cực lớn và phá giới hạn request.
+            print(
+                f"[VNSTOCK] {method_name}: phiên bản API hiện tại "
+                f"không hỗ trợ start/end: {error}"
+            )
+            return pd.DataFrame()
+
+        except Exception as error:
+            last_error = error
+
+            if _is_rate_limit_error(error):
+                if attempt < max_attempts:
+                    _sleep_after_rate_limit(error)
+                    continue
+
+                raise RuntimeError(
+                    f"VNStock rate-limit khi lấy {method_name} "
+                    f"{pd.Timestamp(start_date).date()} → "
+                    f"{pd.Timestamp(end_date).date()}"
+                ) from error
+
+            if attempt < max_attempts:
+                time.sleep(
+                    RETRY_BACKOFF_SECONDS * attempt
+                )
+                continue
+
+            print(
+                f"[VNSTOCK] {method_name}: lỗi request "
+                f"{pd.Timestamp(start_date).date()} → "
+                f"{pd.Timestamp(end_date).date()}: {error}"
+            )
+            return pd.DataFrame()
+
+    if last_error is not None:
+        raise last_error
+
+    return pd.DataFrame()
 
 
 def _load_flow_range_complete(
@@ -2673,7 +2713,14 @@ def _load_flow_range_complete(
     end_date,
     request_state=None,
 ):
-    """Lấy flow theo khoảng thời gian; response chạm giới hạn thì chia nhỏ."""
+    """
+    Lấy dữ liệu flow đúng khoảng start/end.
+
+    Không tự chia nhỏ hàng loạt request như OHLCV.
+    Các hàm lịch sử flow của Market Layer hỗ trợ start/end;
+    việc auto-paginate thuộc lớp dữ liệu phía dưới. Chỉ fallback
+    một lần nếu response rỗng ở khoảng dài để tránh vòng lặp request.
+    """
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
 
@@ -2683,7 +2730,10 @@ def _load_flow_range_complete(
     if request_state is None:
         request_state = _GLOBAL_REQUEST_STATE
 
-    _sleep_between_requests(request_state.get("last_request"))
+    # Một request cho cả khoảng.
+    _sleep_between_requests(
+        request_state.get("last_request")
+    )
     request_state["last_request"] = time.monotonic()
 
     raw = _call_historical_method_range(
@@ -2699,69 +2749,78 @@ def _load_flow_range_complete(
     )
 
     if normalized is not None and not normalized.empty:
-        row_count = len(normalized)
-    else:
-        row_count = 0
+        return (
+            normalized
+            .sort_index()
+            .loc[start:end]
+            .loc[
+                lambda df: ~df.index.duplicated(
+                    keep="last"
+                )
+            ]
+        )
 
+    # Response rỗng: thử đúng một lần với khoảng chia đôi.
+    # Không tiếp tục đệ quy vô hạn.
     day_span = (end - start).days + 1
-
-    if 0 < row_count < MAX_OHLCV_ROWS_PER_REQUEST:
-        return normalized.loc[start:end]
-
-    if row_count == 0:
-        if day_span <= MIN_OHLCV_CHUNK_DAYS:
-            print(
-                f"[VNSTOCK] {method_name}: không có dữ liệu "
-                f"{start.date()} -> {end.date()}."
-            )
-            return pd.DataFrame()
-        midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
-        left = _load_flow_range_complete(
-            obj, method_name, prefix, start, midpoint, request_state
-        )
-        right = _load_flow_range_complete(
-            obj,
-            method_name,
-            prefix,
-            midpoint + pd.Timedelta(days=1),
-            end,
-            request_state,
-        )
-        parts = [x for x in (left, right) if x is not None and not x.empty]
-        if not parts:
-            return pd.DataFrame()
-        result = pd.concat(parts, axis=0).sort_index()
-        result = result[~result.index.duplicated(keep="last")]
-        return result.loc[start:end]
 
     if day_span <= MIN_OHLCV_CHUNK_DAYS:
         print(
-            f"[VNSTOCK] {method_name}: cảnh báo chunk nhỏ "
-            f"{start.date()} -> {end.date()} trả {row_count} dòng."
+            f"[VNSTOCK] {method_name}: không có dữ liệu "
+            f"{start.date()} → {end.date()}."
         )
-        return normalized.loc[start:end]
+        return pd.DataFrame()
 
-    midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
-    if midpoint < start or midpoint >= end:
-        return normalized.loc[start:end]
-
-    left = _load_flow_range_complete(
-        obj, method_name, prefix, start, midpoint, request_state
+    midpoint = start + pd.Timedelta(
+        days=(day_span // 2) - 1
     )
-    right = _load_flow_range_complete(
+
+    if midpoint < start or midpoint >= end:
+        return pd.DataFrame()
+
+    left = _call_historical_method_range(
         obj,
         method_name,
-        prefix,
+        start,
+        midpoint,
+    )
+    right = _call_historical_method_range(
+        obj,
+        method_name,
         midpoint + pd.Timedelta(days=1),
         end,
-        request_state,
     )
-    parts = [x for x in (left, right) if x is not None and not x.empty]
+
+    left = _rename_flow_columns(
+        left,
+        prefix,
+    )
+    right = _rename_flow_columns(
+        right,
+        prefix,
+    )
+
+    parts = [
+        part
+        for part in (left, right)
+        if isinstance(part, pd.DataFrame)
+        and not part.empty
+    ]
+
     if not parts:
         return pd.DataFrame()
 
-    result = pd.concat(parts, axis=0).sort_index()
-    result = result[~result.index.duplicated(keep="last")]
+    result = (
+        pd.concat(parts, axis=0)
+        .sort_index()
+    )
+
+    result = result[
+        ~result.index.duplicated(
+            keep="last"
+        )
+    ]
+
     return result.loc[start:end]
 
 
@@ -2791,6 +2850,13 @@ def load_stock_flow_history(
     ]
 
     for method_name, prefix in flow_specs:
+        print(
+            f"[RESEARCH] {normalize_symbol(symbol)}: "
+            f"đang tải {method_name} "
+            f"{pd.Timestamp(start_date).date()} → "
+            f"{pd.Timestamp(end_date).date()}..."
+        )
+
         part = _load_flow_range_complete(
             obj,
             method_name,
@@ -2799,8 +2865,10 @@ def load_stock_flow_history(
             end_date,
             request_state=request_state,
         )
+
         if part is not None and not part.empty:
             result_parts.append(part)
+
         print(
             f"[RESEARCH] {normalize_symbol(symbol)} {method_name}: "
             f"{len(part) if isinstance(part, pd.DataFrame) else 0} dòng"
