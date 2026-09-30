@@ -1782,7 +1782,16 @@ def _load_index_range_complete(
     end_date,
     request_state=None,
 ):
-    """Lấy đủ lịch sử chỉ số, tự chia nếu response chạm giới hạn."""
+    """
+    Lấy lịch sử chỉ số với chiến lược ưu tiên 1 request.
+
+    Quan trọng:
+    - Không chia nhỏ chỉ vì DataFrame có >95 dòng.
+    - Chỉ chia nhỏ khi response có dấu hiệu bị cắt phạm vi ngày
+      (ví dụ 3 năm nhưng chỉ trả 100 phiên gần nhất).
+    - Điều này tránh việc VN-Index/VN30/HNX biến thành hàng chục
+      request khi start/end thực tế đã trả đủ lịch sử.
+    """
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
 
@@ -1803,65 +1812,79 @@ def _load_index_range_complete(
             end,
         )
     except Exception as error:
-        day_span = (end - start).days + 1
-        if day_span <= MIN_OHLCV_CHUNK_DAYS:
-            print(
-                f"[VNSTOCK] {index_symbol}: lỗi chunk "
-                f"{start.date()} -> {end.date()}: {error}"
-            )
-            return pd.DataFrame()
-        midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
-        left = _load_index_range_complete(
-            market, index_symbol, start, midpoint, request_state
-        )
-        right = _load_index_range_complete(
-            market,
-            index_symbol,
-            midpoint + pd.Timedelta(days=1),
-            end,
-            request_state,
-        )
-        parts = [x for x in (left, right) if x is not None and not x.empty]
-        if not parts:
-            return pd.DataFrame()
-        result = pd.concat(parts, axis=0).sort_index()
-        result = result[~result.index.duplicated(keep="last")]
-        return result.loc[start:end]
-
-    if df is None or df.empty:
-        time.sleep(RETRY_BACKOFF_SECONDS)
-        try:
-            df = _request_index_ohlcv(market, index_symbol, start, end)
-        except Exception:
-            df = pd.DataFrame()
+        if _is_rate_limit_error(error):
+            _sleep_after_rate_limit(error)
+            request_state["last_request"] = time.monotonic()
+            try:
+                df = _request_index_ohlcv(
+                    market,
+                    index_symbol,
+                    start,
+                    end,
+                )
+            except Exception:
+                raise
+        else:
+            raise
 
     if df is None or df.empty:
         return pd.DataFrame()
 
     try:
-        normalized = _normalize_ohlcv(df, stock=False)
+        normalized = _normalize_ohlcv(
+            df,
+            stock=False,
+        )
     except Exception:
-        normalized = pd.DataFrame()
+        return pd.DataFrame()
+
+    normalized = normalized.sort_index()
+    normalized = normalized[
+        ~normalized.index.duplicated(keep="last")
+    ]
+    normalized = normalized.loc[start:end]
+
+    if normalized.empty:
+        return normalized
+
+    first_actual = normalized.index.min().normalize()
+    last_actual = normalized.index.max().normalize()
+
+    # Cho phép chênh vài ngày lịch do cuối tuần/ngày nghỉ lễ.
+    # Nếu lệch lớn, response có khả năng bị giới hạn số dòng.
+    start_gap = (first_actual - start).days
+    end_gap = (end - last_actual).days
+    coverage_tolerance_days = 7
+
+    coverage_looks_complete = (
+        start_gap <= coverage_tolerance_days
+        and end_gap <= coverage_tolerance_days
+    )
+
+    # Nếu response bao phủ toàn phạm vi yêu cầu thì dùng luôn.
+    # Đây là điểm quan trọng để 3/6 không biến thành hàng chục request.
+    if coverage_looks_complete:
+        return normalized
 
     day_span = (end - start).days + 1
 
-    if not normalized.empty and len(normalized) < MAX_OHLCV_ROWS_PER_REQUEST:
-        return normalized.loc[start:end]
-
     if day_span <= MIN_OHLCV_CHUNK_DAYS:
-        print(
-            f"[VNSTOCK] {index_symbol}: cảnh báo chunk nhỏ "
-            f"{start.date()} -> {end.date()} trả {len(normalized)} dòng."
-        )
-        return normalized.loc[start:end]
+        return normalized
 
+    # Response có dấu hiệu bị cắt -> chia đôi và tải từng nửa.
     midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
+
     if midpoint < start or midpoint >= end:
-        return normalized.loc[start:end]
+        return normalized
 
     left = _load_index_range_complete(
-        market, index_symbol, start, midpoint, request_state
+        market,
+        index_symbol,
+        start,
+        midpoint,
+        request_state,
     )
+
     right = _load_index_range_complete(
         market,
         index_symbol,
@@ -1869,12 +1892,25 @@ def _load_index_range_complete(
         end,
         request_state,
     )
-    parts = [x for x in (left, right) if x is not None and not x.empty]
+
+    parts = [
+        part
+        for part in (left, right)
+        if part is not None and not part.empty
+    ]
+
     if not parts:
         return pd.DataFrame()
 
-    result = pd.concat(parts, axis=0).sort_index()
-    result = result[~result.index.duplicated(keep="last")]
+    result = pd.concat(
+        parts,
+        axis=0,
+    ).sort_index()
+
+    result = result[
+        ~result.index.duplicated(keep="last")
+    ]
+
     return result.loc[start:end]
 
 
@@ -3241,6 +3277,11 @@ def load_market_factor_history(
     result = None
 
     for index_symbol, prefix in indices.items():
+        print(
+            f"[RESEARCH] 3/6 Đang tải {index_symbol} "
+            f"({start.date()} → {end.date()})..."
+        )
+
         df = _load_index_range_complete(
             market,
             index_symbol,
