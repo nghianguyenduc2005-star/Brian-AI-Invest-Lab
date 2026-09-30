@@ -15,10 +15,9 @@ import streamlit as st
 # ============================================================
 
 AI_CACHE_TTL = 1800
-DEFAULT_MODEL = "gemini-3.8-flash"
-FALLBACK_MODELS = ["gemini-3.7-flash"]
-SUPPORTED_RESEARCH_MODEL = "gemini-3.8-flash"
-FALLBACK_RETRY_MODEL = "gemini-3.7-flash"
+DEFAULT_MODEL = "gemini-3.5-flash"
+FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash-lite"]
+SUPPORTED_RESEARCH_MODEL = "gemini-3.5-flash"
 DEFAULT_AUTO_QUESTION = (
     "Hãy tự đọc TOÀN BỘ nghiên cứu của cổ phiếu này và viết một báo cáo phân tích định lượng "
     "chuyên nghiệp, chi tiết nhưng người mới cũng hiểu được. Hãy tổng hợp dữ liệu mẫu, "
@@ -520,14 +519,17 @@ def _call_gemini(prompt: str):
             ),
         }
 
-    # Nghiên cứu định lượng dùng cố định Gemini 3.8 Flash.
-    # Không để model cũ trong session_state (ví dụ gemini-2.5-flash)
-    # ghi đè cấu hình mới.
+    # Nghiên cứu định lượng dùng cố định Gemini 3.5 Flash.
+    # Không để model cũ trong session_state (ví dụ gemini-2.5-flash
+    # hoặc gemini-3.8-flash) ghi đè cấu hình mới.
     requested_model = SUPPORTED_RESEARCH_MODEL
     if st.session_state.get("ai_model") != SUPPORTED_RESEARCH_MODEL:
         st.session_state["ai_model"] = SUPPORTED_RESEARCH_MODEL
 
     models_to_try = [requested_model]
+    for model_name in FALLBACK_MODELS:
+        if model_name not in models_to_try:
+            models_to_try.append(model_name)
 
     last_error = None
     client = None
@@ -590,8 +592,8 @@ def _call_gemini(prompt: str):
     error_text = last_error or "AI lỗi không xác định."
     if "503" in error_text or "UNAVAILABLE" in error_text or "high demand" in error_text.lower():
         error_text = (
-            "Gemini 3.8 Flash đang quá tải (503 UNAVAILABLE). "
-            "Hệ thống đã thử model dự phòng Gemini 3.7 Flash nhưng chưa nhận được phản hồi. "
+            "Các model Gemini đang tạm thời quá tải (503 UNAVAILABLE). "
+            "Hệ thống đã thử Gemini 3.5 Flash, 3.7 Flash và 3.5 Flash-Lite. "
             "Bạn có thể bấm Thử lại sau ít phút."
         )
 
