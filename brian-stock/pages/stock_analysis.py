@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from components.charts import price_volume_chart
+from components.research_ai import render_research_ai
 from data.market import (
     display_symbol,
     load_market_data,
@@ -1459,6 +1460,8 @@ def render_stock_analysis():
 
     if run_research:
         st.session_state.pop("stock_research_result", None)
+        st.session_state.pop("research_ai_result", None)
+        st.session_state.pop("research_ai_question_used", None)
         with st.status("Đang nghiên cứu...", expanded=True) as status:
             try:
                 st.write("1/3 Đang tải dữ liệu kỹ thuật, dòng tiền, khối ngoại, tự doanh, thị trường và nhóm ngành...")
@@ -1601,6 +1604,16 @@ def render_stock_analysis():
             st.success(f"Yếu tố đứng đầu nhiều horizon nhất: **{common}** · {n}/{len(summary)} horizon.")
 
     st.warning("Đây là quan hệ thống kê và khả năng dự báo trong mẫu, không phải bằng chứng nhân quả hay cam kết giá tương lai.")
+
+    # --------------------------------------------------------
+    # BRIAN AI — ĐỌC TOÀN BỘ NGHIÊN CỨU
+    # --------------------------------------------------------
+    render_research_ai(
+        result=result,
+        symbol=symbol,
+        start_date=actual_start,
+        end_date=actual_end,
+    )
 
 
 def render_analysis():
