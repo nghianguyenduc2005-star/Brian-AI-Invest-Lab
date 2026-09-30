@@ -56,12 +56,20 @@ CACHE_TTL_LISTING = 6 * 60 * 60
 # Giữ khoảng cách giữa request để tránh rate limit.
 #
 # Guest có thể bị giới hạn request/phút thấp hơn.
-# Dùng 2 giây/request để an toàn.
-REQUEST_SLEEP_SECONDS = 6.0
+# Dùng 4 giây/request để giảm rủi ro rate limit khi chia nhỏ lịch sử.
+REQUEST_SLEEP_SECONDS = 4.0
 
-# Lịch sử chính có thể lấy theo chunk.
-# 120 ngày lịch ~ khoảng 80-85 phiên giao dịch.
+# Khoảng thời gian ban đầu cho mỗi request. Nếu nguồn trả về sát
+# giới hạn số nến, code sẽ tự chia nhỏ đệ quy để không bị cắt dữ liệu.
 RESEARCH_CHUNK_DAYS = 365
+
+# Nguồn VNStock có thể giới hạn số nến trả về trên một request.
+# 80 ngày lịch luôn thấp hơn 100 phiên giao dịch, nên dùng 80 làm
+# ngưỡng an toàn để phát hiện response bị cắt và tiếp tục chia nhỏ.
+MAX_OHLCV_ROWS_PER_REQUEST = 80
+MIN_OHLCV_CHUNK_DAYS = 15
+MAX_OHLCV_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 3.0
 
 
 # ============================================================
@@ -1461,32 +1469,189 @@ def _request_equity_ohlcv(
     start_date,
     end_date,
 ):
-    return (
-        market
-        .equity(
-            normalize_symbol(
-                symbol
+    last_error = None
+
+    for attempt in range(
+        1,
+        MAX_OHLCV_RETRIES + 1,
+    ):
+        try:
+            return (
+                market
+                .equity(
+                    normalize_symbol(
+                        symbol
+                    )
+                )
+                .ohlcv(
+                    start=pd.Timestamp(
+                        start_date
+                    ).strftime(
+                        "%Y-%m-%d"
+                    ),
+                    end=(
+                        pd.Timestamp(
+                            end_date
+                        )
+                        + pd.Timedelta(
+                            days=1
+                        )
+                    ).strftime(
+                        "%Y-%m-%d"
+                    ),
+                    interval="1D",
+                )
             )
-        )
-        .ohlcv(
-            start=pd.Timestamp(
-                start_date
-            ).strftime(
-                "%Y-%m-%d"
-            ),
-            end=(
-                pd.Timestamp(
-                    end_date
-                )
-                + pd.Timedelta(
-                    days=1
-                )
-            ).strftime(
-                "%Y-%m-%d"
-            ),
-            interval="1D",
-        )
+
+        except Exception as error:
+            last_error = error
+
+            if attempt >= MAX_OHLCV_RETRIES:
+                raise
+
+            time.sleep(
+                RETRY_BACKOFF_SECONDS * attempt
+            )
+
+    if last_error is not None:
+        raise last_error
+
+    return pd.DataFrame()
+
+
+def _load_equity_range_complete(
+    market,
+    symbol,
+    start_date,
+    end_date,
+    request_state=None,
+):
+    """
+    Lấy toàn bộ OHLCV trong một khoảng thời gian mà không chấp nhận
+    response bị cắt bởi giới hạn số nến của nguồn.
+
+    Nếu một request trả về quá gần giới hạn nến an toàn, khoảng thời
+    gian sẽ tự động được chia đôi và tải lại từng nửa.
+    """
+    start = pd.Timestamp(
+        start_date
+    ).normalize()
+
+    end = pd.Timestamp(
+        end_date
+    ).normalize()
+
+    if start > end:
+        return pd.DataFrame()
+
+    if request_state is None:
+        request_state = {"last_request": None}
+
+    _sleep_between_requests(
+        request_state.get("last_request")
     )
+
+    request_state["last_request"] = time.monotonic()
+
+    try:
+        df = _request_equity_ohlcv(
+            market,
+            symbol,
+            start,
+            end,
+        )
+    except Exception:
+        # Cho phép lỗi ở mức chunk được xử lý rõ ràng ở nơi gọi.
+        raise
+
+    if df is None or df.empty:
+        # Empty response có thể là lỗi tạm thời của nguồn. Thử lại thêm
+        # một lần trước khi chấp nhận chunk rỗng.
+        time.sleep(RETRY_BACKOFF_SECONDS)
+        df = _request_equity_ohlcv(
+            market,
+            symbol,
+            start,
+            end,
+        )
+
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+    try:
+        normalized = _normalize_ohlcv(
+            df,
+            stock=True,
+        )
+    except Exception:
+        normalized = pd.DataFrame()
+
+    day_span = (
+        end - start
+    ).days + 1
+
+    # Nếu response nhỏ hơn ngưỡng an toàn, coi như chunk đầy đủ.
+    # 90 ngày lịch luôn thấp hơn 100 phiên giao dịch.
+    if (
+        not normalized.empty
+        and len(normalized) < MAX_OHLCV_ROWS_PER_REQUEST
+    ):
+        return normalized
+
+    # Nếu chunk đã rất nhỏ mà vẫn chạm ngưỡng, không thể chia thêm
+    # một cách có ý nghĩa; trả dữ liệu hiện có nhưng đánh dấu để log.
+    if day_span <= MIN_OHLCV_CHUNK_DAYS:
+        print(
+            f"[VNSTOCK] Cảnh báo: {symbol} trả về "
+            f"{len(normalized)} dòng trong chunk "
+            f"{start.date()} → {end.date()}."
+        )
+        return normalized
+
+    midpoint = start + pd.Timedelta(
+        days=(day_span // 2) - 1
+    )
+
+    if midpoint < start or midpoint >= end:
+        return normalized
+
+    left = _load_equity_range_complete(
+        market,
+        symbol,
+        start,
+        midpoint,
+        request_state=request_state,
+    )
+
+    right = _load_equity_range_complete(
+        market,
+        symbol,
+        midpoint + pd.Timedelta(days=1),
+        end,
+        request_state=request_state,
+    )
+    pieces = [
+        part
+        for part in [left, right]
+        if part is not None and not part.empty
+    ]
+    if not pieces:
+        return pd.DataFrame()
+    result = pd.concat(
+        pieces,
+        axis=0,
+    )
+    result = (
+        result
+        .sort_index()
+        .loc[start:end]
+    )
+    result = result[
+        ~result.index.duplicated(
+            keep="last"
+        )
+    ]
+    return result
 
 
 # ============================================================
@@ -1549,7 +1714,7 @@ def _load_stock_raw(
 
     cursor = start
 
-    last_request = None
+    request_state = {"last_request": None}
 
     while cursor <= end:
 
@@ -1564,28 +1729,18 @@ def _load_stock_raw(
             end,
         )
 
-        _sleep_between_requests(
-            last_request
-        )
-
-        request_start = (
-            time.monotonic()
-        )
-
-        df_chunk = _request_equity_ohlcv(
+        df_chunk = _load_equity_range_complete(
             market,
             symbol,
             cursor,
             chunk_end,
+            request_state=request_state,
         )
-
-        last_request = request_start
 
         if (
             df_chunk is not None
             and not df_chunk.empty
         ):
-
             chunks.append(
                 df_chunk
             )
@@ -1598,7 +1753,6 @@ def _load_stock_raw(
         )
 
     if not chunks:
-
         raise ValueError(
             f"Không có dữ liệu giá {symbol}."
         )
@@ -1613,6 +1767,23 @@ def _load_stock_raw(
         stock=True,
     )
 
+    raw = raw.loc[start:end]
+    raw = raw[
+        ~raw.index.duplicated(
+            keep="last"
+        )
+    ]
+    if raw.empty:
+        raise ValueError(
+            f"Không có dữ liệu hợp lệ cho {symbol} "
+            f"trong khoảng {start.date()} → {end.date()}."
+        )
+    print(
+        f"[VNSTOCK] {normalize_symbol(symbol)}: "
+        f"{len(raw)} phiên | "
+        f"{raw.index.min().date()} → {raw.index.max().date()} "
+        f"| yêu cầu {start.date()} → {end.date()}"
+    )
     return raw
 
 
