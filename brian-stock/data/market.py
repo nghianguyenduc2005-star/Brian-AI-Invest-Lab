@@ -9,6 +9,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# Tắt telemetry của vnstock để log cloud không bị nhiễu.
+os.environ.setdefault("VNSTOCK_TELEMETRY", "off")
+
 
 # ============================================================
 # VNSTOCK API KEY / AUTH
@@ -80,7 +83,7 @@ _LAST_REQUEST_TIME: float | None = None
 
 # 120 ngày lịch thường < 95 phiên giao dịch.
 # Nếu response chạm giới hạn, mới chia nhỏ tiếp.
-RESEARCH_CHUNK_DAYS = 120
+RESEARCH_CHUNK_DAYS = 90
 MAX_ROWS_PER_OHLCV_REQUEST = 95
 MIN_CHUNK_DAYS = 15
 MAX_API_RETRIES = 2
@@ -546,6 +549,10 @@ def _call_vnstock(callable_obj, *, label: str):
 # ============================================================
 
 def _request_equity_ohlcv(market, symbol, start_date, end_date):
+    print(
+        f"[VNSTOCK] REQUEST OHLCV {normalize_symbol(symbol)} "
+        f"{pd.Timestamp(start_date).date()} → {pd.Timestamp(end_date).date()}"
+    )
     equity = market.equity(normalize_symbol(symbol))
     return _call_vnstock(
         lambda: equity.ohlcv(
@@ -558,6 +565,10 @@ def _request_equity_ohlcv(market, symbol, start_date, end_date):
 
 
 def _request_index_ohlcv(market, index_symbol, start_date, end_date):
+    print(
+        f"[VNSTOCK] REQUEST INDEX {index_symbol} "
+        f"{pd.Timestamp(start_date).date()} → {pd.Timestamp(end_date).date()}"
+    )
     index_obj = market.index(index_symbol)
     return _call_vnstock(
         lambda: index_obj.ohlcv(
@@ -570,111 +581,192 @@ def _request_index_ohlcv(market, index_symbol, start_date, end_date):
 
 
 def _load_equity_range_complete(market, symbol, start_date, end_date) -> pd.DataFrame:
+    """
+    Lấy OHLCV theo các đoạn nhỏ, không gọi một request cho cả 1 năm.
+    """
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
 
     if start > end:
         return pd.DataFrame()
 
-    raw = _request_equity_ohlcv(market, symbol, start, end)
+    span_days = (end - start).days + 1
+
+    # Bắt buộc chia nhỏ trước khi gọi API nếu khoảng quá dài.
+    if span_days > RESEARCH_CHUNK_DAYS:
+        pieces: list[pd.DataFrame] = []
+        cursor = start
+
+        while cursor <= end:
+            chunk_end = min(
+                cursor + pd.Timedelta(days=RESEARCH_CHUNK_DAYS - 1),
+                end,
+            )
+
+            print(
+                f"[VNSTOCK] OHLCV {symbol}: "
+                f"{cursor.date()} → {chunk_end.date()}"
+            )
+
+            part = _load_equity_range_complete(
+                market,
+                symbol,
+                cursor,
+                chunk_end,
+            )
+
+            if part is not None and not part.empty:
+                pieces.append(part)
+
+            cursor = chunk_end + pd.Timedelta(days=1)
+
+        if not pieces:
+            return pd.DataFrame()
+
+        result = pd.concat(pieces, axis=0).sort_index()
+        result = result[~result.index.duplicated(keep="last")]
+        return result.loc[start:end]
+
+    try:
+        raw = _request_equity_ohlcv(market, symbol, start, end)
+    except Exception as error:
+        print(
+            f"[VNSTOCK] {symbol}: lỗi request "
+            f"{start.date()}→{end.date()}: {error}"
+        )
+        return pd.DataFrame()
+
     try:
         normalized = _normalize_ohlcv(raw, stock=True)
     except Exception as error:
-        print(f"[VNSTOCK] {symbol}: không chuẩn hóa được chunk {start.date()}→{end.date()}: {error}")
+        print(
+            f"[VNSTOCK] {symbol}: không chuẩn hóa được "
+            f"{start.date()}→{end.date()}: {error}"
+        )
         return pd.DataFrame()
 
     if normalized.empty:
         return pd.DataFrame()
 
-    span_days = (end - start).days + 1
+    row_count = len(normalized)
 
-    # Nếu ít hơn ngưỡng, coi như đủ trong chunk.
-    if len(normalized) < MAX_ROWS_PER_OHLCV_REQUEST:
-        return normalized.loc[start:end]
+    if row_count >= MAX_ROWS_PER_OHLCV_REQUEST:
+        if span_days <= MIN_CHUNK_DAYS:
+            print(
+                f"[VNSTOCK] {symbol}: chunk nhỏ vẫn trả {row_count} dòng; "
+                "giữ dữ liệu nhận được."
+            )
+            return normalized.loc[start:end]
 
-    if span_days <= MIN_CHUNK_DAYS:
-        print(
-            f"[VNSTOCK] {symbol}: chunk nhỏ nhưng trả {len(normalized)} dòng; "
-            "giữ nguyên dữ liệu nhận được."
-        )
-        return normalized.loc[start:end]
+        midpoint = start + pd.Timedelta(days=(span_days // 2) - 1)
+        if midpoint >= start and midpoint < end:
+            left = _load_equity_range_complete(
+                market, symbol, start, midpoint
+            )
+            right = _load_equity_range_complete(
+                market,
+                symbol,
+                midpoint + pd.Timedelta(days=1),
+                end,
+            )
+            pieces = [
+                x for x in (left, right)
+                if x is not None and not x.empty
+            ]
+            if pieces:
+                result = pd.concat(pieces, axis=0).sort_index()
+                result = result[~result.index.duplicated(keep="last")]
+                return result.loc[start:end]
 
-    midpoint = start + pd.Timedelta(days=(span_days // 2) - 1)
-    if midpoint < start or midpoint >= end:
-        return normalized.loc[start:end]
-
-    print(
-        f"[VNSTOCK] {symbol}: response {len(normalized)} dòng, "
-        f"chia {start.date()}→{end.date()} thành 2 phần."
-    )
-
-    left = _load_equity_range_complete(market, symbol, start, midpoint)
-    right = _load_equity_range_complete(
-        market,
-        symbol,
-        midpoint + pd.Timedelta(days=1),
-        end,
-    )
-
-    pieces = [part for part in (left, right) if not part.empty]
-    if not pieces:
-        return pd.DataFrame()
-
-    result = pd.concat(pieces, axis=0).sort_index()
-    result = result[~result.index.duplicated(keep="last")]
-    return result.loc[start:end]
+    return normalized.loc[start:end]
 
 
 def _load_index_range_complete(market, index_symbol, start_date, end_date) -> pd.DataFrame:
+    """Lấy index theo các đoạn ngắn, tránh request nguyên một năm."""
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
 
     if start > end:
         return pd.DataFrame()
 
+    span_days = (end - start).days + 1
+
+    if span_days > RESEARCH_CHUNK_DAYS:
+        pieces: list[pd.DataFrame] = []
+        cursor = start
+
+        while cursor <= end:
+            chunk_end = min(
+                cursor + pd.Timedelta(days=RESEARCH_CHUNK_DAYS - 1),
+                end,
+            )
+
+            print(
+                f"[VNSTOCK] INDEX {index_symbol}: "
+                f"{cursor.date()} → {chunk_end.date()}"
+            )
+
+            part = _load_index_range_complete(
+                market,
+                index_symbol,
+                cursor,
+                chunk_end,
+            )
+
+            if part is not None and not part.empty:
+                pieces.append(part)
+
+            cursor = chunk_end + pd.Timedelta(days=1)
+
+        if not pieces:
+            return pd.DataFrame()
+
+        result = pd.concat(pieces, axis=0).sort_index()
+        result = result[~result.index.duplicated(keep="last")]
+        return result.loc[start:end]
+
     try:
         raw = _request_index_ohlcv(market, index_symbol, start, end)
     except Exception as error:
         print(
-            f"[VNSTOCK] {index_symbol}: lỗi {start.date()}→{end.date()}: {error}"
+            f"[VNSTOCK] {index_symbol}: lỗi request "
+            f"{start.date()}→{end.date()}: {error}"
         )
         return pd.DataFrame()
 
     try:
         normalized = _normalize_ohlcv(raw, stock=False)
     except Exception as error:
-        print(f"[VNSTOCK] {index_symbol}: không chuẩn hóa được: {error}")
+        print(
+            f"[VNSTOCK] {index_symbol}: không chuẩn hóa được: {error}"
+        )
         return pd.DataFrame()
 
     if normalized.empty:
         return pd.DataFrame()
 
-    span_days = (end - start).days + 1
-    if len(normalized) < MAX_ROWS_PER_OHLCV_REQUEST:
-        return normalized.loc[start:end]
+    if len(normalized) >= MAX_ROWS_PER_OHLCV_REQUEST and span_days > MIN_CHUNK_DAYS:
+        midpoint = start + pd.Timedelta(days=(span_days // 2) - 1)
+        if midpoint >= start and midpoint < end:
+            left = _load_index_range_complete(
+                market, index_symbol, start, midpoint
+            )
+            right = _load_index_range_complete(
+                market,
+                index_symbol,
+                midpoint + pd.Timedelta(days=1),
+                end,
+            )
+            pieces = [
+                x for x in (left, right)
+                if x is not None and not x.empty
+            ]
+            if pieces:
+                result = pd.concat(pieces, axis=0).sort_index()
+                result = result[~result.index.duplicated(keep="last")]
+                return result.loc[start:end]
 
-    if span_days <= MIN_CHUNK_DAYS:
-        return normalized.loc[start:end]
-
-    midpoint = start + pd.Timedelta(days=(span_days // 2) - 1)
-    if midpoint < start or midpoint >= end:
-        return normalized.loc[start:end]
-
-    left = _load_index_range_complete(market, index_symbol, start, midpoint)
-    right = _load_index_range_complete(
-        market,
-        index_symbol,
-        midpoint + pd.Timedelta(days=1),
-        end,
-    )
-
-    pieces = [part for part in (left, right) if not part.empty]
-    if not pieces:
-        return pd.DataFrame()
-
-    result = pd.concat(pieces, axis=0).sort_index()
-    result = result[~result.index.duplicated(keep="last")]
-    return result.loc[start:end]
+    return normalized.loc[start:end]
 
 
 # ============================================================
@@ -682,6 +774,7 @@ def _load_index_range_complete(market, index_symbol, start_date, end_date) -> pd
 # ============================================================
 
 def _load_stock_raw(symbol, start_date, end_date, progress_callback=None) -> pd.DataFrame:
+    """Tải OHLCV theo các đoạn 90 ngày; không query nguyên 1 năm."""
     market = _create_market()
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
@@ -690,48 +783,11 @@ def _load_stock_raw(symbol, start_date, end_date, progress_callback=None) -> pd.
     if start > end:
         raise ValueError("Khoảng ngày không hợp lệ.")
 
-    if progress_callback:
-        progress_callback(
-            f"Đang tải {symbol_norm}: {start.date()} → {end.date()}..."
-        )
-
-    # FAST PATH: đúng khoảng người dùng yêu cầu, một request duy nhất.
-    try:
-        direct = _request_equity_ohlcv(market, symbol_norm, start, end)
-        direct = _normalize_ohlcv(direct, stock=True)
-    except Exception as error:
-        print(f"[VNSTOCK] FAST {symbol_norm} lỗi: {error}")
-        direct = pd.DataFrame()
-
-    if not direct.empty:
-        first_date = direct.index.min().normalize()
-        last_date = direct.index.max().normalize()
-        covers_start = first_date <= start + pd.Timedelta(days=5)
-        covers_end = last_date >= end - pd.Timedelta(days=5)
-
-        # Không còn lỗi cũ: tuyệt đối KHÔNG coi "99 dòng" là complete nếu
-        # response thực tế chỉ phủ vài tháng cuối của một khoảng 3 năm.
-        if covers_start and covers_end:
-            result = direct.loc[start:end].copy()
-            result = result[~result.index.duplicated(keep="last")]
-            print(
-                f"[VNSTOCK] FAST {symbol_norm}: {len(result)} phiên | "
-                f"{result.index.min().date()} → {result.index.max().date()} | "
-                f"yêu cầu {start.date()} → {end.date()}"
-            )
-            return result
-
-        print(
-            f"[VNSTOCK] FAST {symbol_norm}: {len(direct)} phiên | "
-            f"{first_date.date()} → {last_date.date()} | "
-            "response không phủ đủ khoảng, chuyển sang chunk."
-        )
-
-    # FALLBACK: 120 ngày lịch/chunk.
+    total_days = (end - start).days + 1
+    estimated_chunks = int(np.ceil(total_days / RESEARCH_CHUNK_DAYS))
     chunks: list[pd.DataFrame] = []
     cursor = start
     chunk_number = 0
-    estimated_chunks = int(np.ceil(((end - start).days + 1) / RESEARCH_CHUNK_DAYS))
 
     while cursor <= end:
         chunk_number += 1
@@ -746,26 +802,23 @@ def _load_stock_raw(symbol, start_date, end_date, progress_callback=None) -> pd.
                 f"({cursor.date()} → {chunk_end.date()})..."
             )
 
-        try:
-            chunk = _load_equity_range_complete(
-                market,
-                symbol_norm,
-                cursor,
-                chunk_end,
-            )
-        except Exception as error:
-            print(
-                f"[VNSTOCK] {symbol_norm}: chunk {cursor.date()}→{chunk_end.date()} lỗi: {error}"
-            )
-            chunk = pd.DataFrame()
+        chunk = _load_equity_range_complete(
+            market,
+            symbol_norm,
+            cursor,
+            chunk_end,
+        )
 
-        if not chunk.empty:
+        if chunk is not None and not chunk.empty:
             chunks.append(chunk)
 
         cursor = chunk_end + pd.Timedelta(days=1)
 
     if not chunks:
-        raise ValueError(f"Không có dữ liệu giá {symbol_norm}.")
+        raise ValueError(
+            f"Không có dữ liệu giá {symbol_norm} "
+            f"{start.date()} → {end.date()}."
+        )
 
     result = pd.concat(chunks, axis=0).sort_index()
     result = _normalize_ohlcv(result, stock=True)
