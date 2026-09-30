@@ -765,12 +765,21 @@ def _render_json_result(ai_result: dict[str, Any]):
     if drivers:
         st.subheader("🔍 5. Các yếu tố nổi bật — hiểu như người mới")
         for idx, item in enumerate(drivers[:5], start=1):
-            feature = _text(item.get("feature"), "Yếu tố")
-            group = _text(item.get("group"), "")
-            direction = _text(item.get("direction"), "")
-            evidence = _text(item.get("evidence"), "")
-            simple = _text(item.get("simple_explanation"), "")
-            not_mean = _text(item.get("what_it_does_not_mean"), "")
+            # Gemini đôi khi vẫn trả string dù schema yêu cầu object.
+            if isinstance(item, dict):
+                feature = _text(item.get("feature"), "Yếu tố")
+                group = _text(item.get("group"), "")
+                direction = _text(item.get("direction"), "")
+                evidence = _text(item.get("evidence"), "")
+                simple = _text(item.get("simple_explanation"), "")
+                not_mean = _text(item.get("what_it_does_not_mean"), "")
+            else:
+                feature = f"Yếu tố {idx}"
+                group = ""
+                direction = ""
+                evidence = _text(item)
+                simple = ""
+                not_mean = ""
 
             with st.container(border=True):
                 st.markdown(f"### {idx}. {feature}")
@@ -786,12 +795,22 @@ def _render_json_result(ai_result: dict[str, Any]):
     horizons = data.get("horizon_analysis", [])
     if horizons:
         st.subheader("📈 6. 1D / 5D / 20D — đọc thế nào?")
-        for item in horizons:
-            horizon = _text(item.get("horizon"), "Horizon")
-            tested = _text(item.get("what_was_tested"), "")
-            result = _text(item.get("model_result"), "")
-            beginner = _text(item.get("beginner_translation"), "")
-            factors = item.get("stable_factors", [])
+        for idx, item in enumerate(horizons, start=1):
+            if isinstance(item, dict):
+                horizon = _text(item.get("horizon"), f"Horizon {idx}")
+                tested = _text(item.get("what_was_tested"), "")
+                result = _text(item.get("model_result"), "")
+                beginner = _text(item.get("beginner_translation"), "")
+                factors = item.get("stable_factors", [])
+            else:
+                horizon = f"Horizon {idx}"
+                tested = ""
+                result = _text(item)
+                beginner = ""
+                factors = []
+
+            if not isinstance(factors, list):
+                factors = [factors]
 
             with st.expander(horizon, expanded=True):
                 if tested:
@@ -808,36 +827,47 @@ def _render_json_result(ai_result: dict[str, Any]):
     assessment = data.get("model_assessment", {})
     if assessment:
         st.subheader("🤖 7. Model có thực sự tốt không?")
-        best = _text(assessment.get("best_model"), "—")
-        good = _text(assessment.get("best_model_is_actually_good"), "")
-        rmse_cmp = _text(assessment.get("rmse_comparison"), "")
-        r2_expl = _text(assessment.get("r2_test_explanation"), "")
-        benchmark = _text(assessment.get("benchmark_explanation"), "")
-        assess = _text(assessment.get("assessment"), "")
+        if not isinstance(assessment, dict):
+            st.info(_text(assessment))
+        else:
+            best = _text(assessment.get("best_model"), "—")
+            good = _text(assessment.get("best_model_is_actually_good"), "")
+            rmse_cmp = _text(assessment.get("rmse_comparison"), "")
+            r2_expl = _text(assessment.get("r2_test_explanation"), "")
+            benchmark = _text(assessment.get("benchmark_explanation"), "")
+            assess = _text(assessment.get("assessment"), "")
 
-        a, b = st.columns(2)
-        with a:
-            st.metric("Model tốt nhất trong nhóm thử", best)
-        with b:
-            st.metric("Có thực sự tốt?", good or "—")
+            a, b = st.columns(2)
+            with a:
+                st.metric("Model tốt nhất trong nhóm thử", best)
+            with b:
+                st.metric("Có thực sự tốt?", good or "—")
 
-        if rmse_cmp:
-            st.markdown(f"**So sánh sai số:** {rmse_cmp}")
-        if r2_expl:
-            st.markdown(f"**R² test:** {r2_expl}")
-        if benchmark:
-            st.markdown(f"**Benchmark:** {benchmark}")
-        if assess:
-            st.info(assess)
+            if rmse_cmp:
+                st.markdown(f"**So sánh sai số:** {rmse_cmp}")
+            if r2_expl:
+                st.markdown(f"**R² test:** {r2_expl}")
+            if benchmark:
+                st.markdown(f"**Benchmark:** {benchmark}")
+            if assess:
+                st.info(assess)
 
     quality = data.get("statistical_quality", [])
     if quality:
         st.subheader("🔬 8. Các kiểm định — thực sự nói gì?")
-        for item in quality:
-            test = _text(item.get("test"), "Kiểm định")
-            result = _text(item.get("result"), "")
-            simple = _text(item.get("simple_explanation"), "")
-            impact = _text(item.get("impact_on_reading"), "")
+        for idx, item in enumerate(quality, start=1):
+            # Fix lỗi AttributeError khi Gemini trả statistical_quality là chuỗi.
+            if isinstance(item, dict):
+                test = _text(item.get("test"), f"Kiểm định {idx}")
+                result = _text(item.get("result"), "")
+                simple = _text(item.get("simple_explanation"), "")
+                impact = _text(item.get("impact_on_reading"), "")
+            else:
+                test = f"Kiểm định {idx}"
+                result = _text(item)
+                simple = ""
+                impact = ""
+
             with st.container(border=True):
                 st.markdown(f"**{test}**")
                 if result:
@@ -998,4 +1028,3 @@ __all__ = [
     "generate_research_ai_cached",
     "render_research_ai",
 ]
-
