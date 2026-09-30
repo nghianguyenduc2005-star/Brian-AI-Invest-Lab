@@ -57,19 +57,23 @@ CACHE_TTL_LISTING = 6 * 60 * 60
 #
 # Guest có thể bị giới hạn request/phút thấp hơn.
 # Dùng 4 giây/request để giảm rủi ro rate limit khi chia nhỏ lịch sử.
-REQUEST_SLEEP_SECONDS = 4.0
+REQUEST_SLEEP_SECONDS = 3.0
 
 # Khoảng thời gian ban đầu cho mỗi request. Nếu nguồn trả về sát
 # giới hạn số nến, code sẽ tự chia nhỏ đệ quy để không bị cắt dữ liệu.
-RESEARCH_CHUNK_DAYS = 365
+RESEARCH_CHUNK_DAYS = 120
 
 # Nguồn VNStock có thể giới hạn số nến trả về trên một request.
 # 80 ngày lịch luôn thấp hơn 100 phiên giao dịch, nên dùng 80 làm
 # ngưỡng an toàn để phát hiện response bị cắt và tiếp tục chia nhỏ.
-MAX_OHLCV_ROWS_PER_REQUEST = 80
+MAX_OHLCV_ROWS_PER_REQUEST = 95
 MIN_OHLCV_CHUNK_DAYS = 15
 MAX_OHLCV_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 3.0
+
+# Dùng chung timestamp request giữa toàn bộ nghiên cứu để tránh
+# các nhóm dữ liệu bắn request liên tiếp và chạm rate limit.
+_GLOBAL_REQUEST_STATE = {"last_request": None}
 
 
 # ============================================================
@@ -1690,6 +1694,109 @@ def _request_index_ohlcv(
     )
 
 
+def _load_index_range_complete(
+    market,
+    index_symbol,
+    start_date,
+    end_date,
+    request_state=None,
+):
+    """Lấy đủ lịch sử chỉ số, tự chia nếu response chạm giới hạn."""
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+
+    if start > end:
+        return pd.DataFrame()
+
+    if request_state is None:
+        request_state = _GLOBAL_REQUEST_STATE
+
+    _sleep_between_requests(request_state.get("last_request"))
+    request_state["last_request"] = time.monotonic()
+
+    try:
+        df = _request_index_ohlcv(
+            market,
+            index_symbol,
+            start,
+            end,
+        )
+    except Exception as error:
+        day_span = (end - start).days + 1
+        if day_span <= MIN_OHLCV_CHUNK_DAYS:
+            print(
+                f"[VNSTOCK] {index_symbol}: lỗi chunk "
+                f"{start.date()} -> {end.date()}: {error}"
+            )
+            return pd.DataFrame()
+        midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
+        left = _load_index_range_complete(
+            market, index_symbol, start, midpoint, request_state
+        )
+        right = _load_index_range_complete(
+            market,
+            index_symbol,
+            midpoint + pd.Timedelta(days=1),
+            end,
+            request_state,
+        )
+        parts = [x for x in (left, right) if x is not None and not x.empty]
+        if not parts:
+            return pd.DataFrame()
+        result = pd.concat(parts, axis=0).sort_index()
+        result = result[~result.index.duplicated(keep="last")]
+        return result.loc[start:end]
+
+    if df is None or df.empty:
+        time.sleep(RETRY_BACKOFF_SECONDS)
+        try:
+            df = _request_index_ohlcv(market, index_symbol, start, end)
+        except Exception:
+            df = pd.DataFrame()
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    try:
+        normalized = _normalize_ohlcv(df, stock=False)
+    except Exception:
+        normalized = pd.DataFrame()
+
+    day_span = (end - start).days + 1
+
+    if not normalized.empty and len(normalized) < MAX_OHLCV_ROWS_PER_REQUEST:
+        return normalized.loc[start:end]
+
+    if day_span <= MIN_OHLCV_CHUNK_DAYS:
+        print(
+            f"[VNSTOCK] {index_symbol}: cảnh báo chunk nhỏ "
+            f"{start.date()} -> {end.date()} trả {len(normalized)} dòng."
+        )
+        return normalized.loc[start:end]
+
+    midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
+    if midpoint < start or midpoint >= end:
+        return normalized.loc[start:end]
+
+    left = _load_index_range_complete(
+        market, index_symbol, start, midpoint, request_state
+    )
+    right = _load_index_range_complete(
+        market,
+        index_symbol,
+        midpoint + pd.Timedelta(days=1),
+        end,
+        request_state,
+    )
+    parts = [x for x in (left, right) if x is not None and not x.empty]
+    if not parts:
+        return pd.DataFrame()
+
+    result = pd.concat(parts, axis=0).sort_index()
+    result = result[~result.index.duplicated(keep="last")]
+    return result.loc[start:end]
+
+
 # ============================================================
 # LOAD STOCK DATA
 # ============================================================
@@ -1714,7 +1821,7 @@ def _load_stock_raw(
 
     cursor = start
 
-    request_state = {"last_request": None}
+    request_state = _GLOBAL_REQUEST_STATE
 
     while cursor <= end:
 
@@ -2317,35 +2424,151 @@ def _call_historical_method(
     if method is None:
         return None
 
-    # Ưu tiên start/end.
     try:
-
         return method(
-            start=pd.Timestamp(
-                start_date
-            ).strftime(
-                "%Y-%m-%d"
-            ),
-            end=pd.Timestamp(
-                end_date
-            ).strftime(
-                "%Y-%m-%d"
-            ),
+            start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
+            end=pd.Timestamp(end_date).strftime("%Y-%m-%d"),
         )
-
     except TypeError:
         pass
-
     except Exception:
         pass
 
-    # Fallback method không tham số.
     try:
-
         return method()
-
     except Exception:
         return None
+
+
+def _call_historical_method_range(
+    obj,
+    method_name,
+    start_date,
+    end_date,
+):
+    """Chỉ gọi API lịch sử với start/end; không fallback về toàn bộ lịch sử."""
+    method = getattr(obj, method_name, None)
+    if method is None:
+        return pd.DataFrame()
+
+    try:
+        data = method(
+            start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
+            end=pd.Timestamp(end_date).strftime("%Y-%m-%d"),
+        )
+    except TypeError:
+        print(
+            f"[VNSTOCK] {method_name}: phiên bản API hiện tại không hỗ trợ start/end."
+        )
+        return pd.DataFrame()
+    except Exception as error:
+        print(
+            f"[VNSTOCK] {method_name}: lỗi request "
+            f"{pd.Timestamp(start_date).date()} -> {pd.Timestamp(end_date).date()}: {error}"
+        )
+        return pd.DataFrame()
+
+    return data
+
+
+def _load_flow_range_complete(
+    obj,
+    method_name,
+    prefix,
+    start_date,
+    end_date,
+    request_state=None,
+):
+    """Lấy flow theo khoảng thời gian; response chạm giới hạn thì chia nhỏ."""
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+
+    if start > end:
+        return pd.DataFrame()
+
+    if request_state is None:
+        request_state = _GLOBAL_REQUEST_STATE
+
+    _sleep_between_requests(request_state.get("last_request"))
+    request_state["last_request"] = time.monotonic()
+
+    raw = _call_historical_method_range(
+        obj,
+        method_name,
+        start,
+        end,
+    )
+
+    normalized = _rename_flow_columns(
+        raw,
+        prefix,
+    )
+
+    if normalized is not None and not normalized.empty:
+        row_count = len(normalized)
+    else:
+        row_count = 0
+
+    day_span = (end - start).days + 1
+
+    if 0 < row_count < MAX_OHLCV_ROWS_PER_REQUEST:
+        return normalized.loc[start:end]
+
+    if row_count == 0:
+        if day_span <= MIN_OHLCV_CHUNK_DAYS:
+            print(
+                f"[VNSTOCK] {method_name}: không có dữ liệu "
+                f"{start.date()} -> {end.date()}."
+            )
+            return pd.DataFrame()
+        midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
+        left = _load_flow_range_complete(
+            obj, method_name, prefix, start, midpoint, request_state
+        )
+        right = _load_flow_range_complete(
+            obj,
+            method_name,
+            prefix,
+            midpoint + pd.Timedelta(days=1),
+            end,
+            request_state,
+        )
+        parts = [x for x in (left, right) if x is not None and not x.empty]
+        if not parts:
+            return pd.DataFrame()
+        result = pd.concat(parts, axis=0).sort_index()
+        result = result[~result.index.duplicated(keep="last")]
+        return result.loc[start:end]
+
+    if day_span <= MIN_OHLCV_CHUNK_DAYS:
+        print(
+            f"[VNSTOCK] {method_name}: cảnh báo chunk nhỏ "
+            f"{start.date()} -> {end.date()} trả {row_count} dòng."
+        )
+        return normalized.loc[start:end]
+
+    midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
+    if midpoint < start or midpoint >= end:
+        return normalized.loc[start:end]
+
+    left = _load_flow_range_complete(
+        obj, method_name, prefix, start, midpoint, request_state
+    )
+    right = _load_flow_range_complete(
+        obj,
+        method_name,
+        prefix,
+        midpoint + pd.Timedelta(days=1),
+        end,
+        request_state,
+    )
+    parts = [x for x in (left, right) if x is not None and not x.empty]
+    if not parts:
+        return pd.DataFrame()
+
+    result = pd.concat(parts, axis=0).sort_index()
+    result = result[~result.index.duplicated(keep="last")]
+    return result.loc[start:end]
 
 
 # ============================================================
@@ -2363,282 +2586,71 @@ def load_stock_flow_history(
 ):
 
     market = _create_market()
-
-    obj = market.equity(
-        normalize_symbol(
-            symbol
-        )
-    )
-
+    obj = market.equity(normalize_symbol(symbol))
+    request_state = _GLOBAL_REQUEST_STATE
     result_parts = []
 
-    # ========================================================
-    # TRADE HISTORY
-    # ========================================================
+    flow_specs = [
+        ("trade_history", "flow"),
+        ("foreign_flow", "foreign"),
+        ("proprietary_flow", "proprietary"),
+    ]
 
-    trade = _call_historical_method(
-        obj,
-        "trade_history",
-        start_date,
-        end_date,
-    )
-
-    if (
-        isinstance(
-            trade,
-            pd.DataFrame,
+    for method_name, prefix in flow_specs:
+        part = _load_flow_range_complete(
+            obj,
+            method_name,
+            prefix,
+            start_date,
+            end_date,
+            request_state=request_state,
         )
-        and not trade.empty
-    ):
-
-        trade = _rename_flow_columns(
-            trade,
-            "flow",
-        )
-
-        if not trade.empty:
-
-            result_parts.append(
-                trade
-            )
-
-        # Tổng hợp khối lượng/value
-        trade_raw = _normalize_datetime_index(
-            trade
-        )
-
-    # ========================================================
-    # FOREIGN
-    # ========================================================
-
-    foreign = _call_historical_method(
-        obj,
-        "foreign_flow",
-        start_date,
-        end_date,
-    )
-
-    foreign = _rename_flow_columns(
-        foreign,
-        "foreign",
-    )
-
-    if not foreign.empty:
-
-        result_parts.append(
-            foreign
-        )
-
-    # ========================================================
-    # PROPRIETARY
-    # ========================================================
-
-    proprietary = _call_historical_method(
-        obj,
-        "proprietary_flow",
-        start_date,
-        end_date,
-    )
-
-    proprietary = _rename_flow_columns(
-        proprietary,
-        "proprietary",
-    )
-
-    if not proprietary.empty:
-
-        result_parts.append(
-            proprietary
+        if part is not None and not part.empty:
+            result_parts.append(part)
+        print(
+            f"[RESEARCH] {normalize_symbol(symbol)} {method_name}: "
+            f"{len(part) if isinstance(part, pd.DataFrame) else 0} dòng"
         )
 
     if not result_parts:
-
         return pd.DataFrame()
 
-    # ========================================================
-    # MERGE
-    # ========================================================
-
-    merged = result_parts[
-        0
-    ].copy()
-
-    for part in result_parts[
-        1:
-    ]:
-
-        merged = merged.join(
-            part,
-            how="outer",
-        )
+    merged = result_parts[0].copy()
+    for part in result_parts[1:]:
+        merged = merged.join(part, how="outer")
 
     merged = (
         merged
         .sort_index()
-        .loc[
-            pd.Timestamp(
-                start_date
-            ):
-            pd.Timestamp(
-                end_date
-            )
-        ]
+        .loc[pd.Timestamp(start_date):pd.Timestamp(end_date)]
     )
 
-    # ========================================================
-    # DERIVED FLOW FACTORS
-    # ========================================================
-
-    volume_buy_cols = [
-        column
-        for column in merged.columns
-        if column.endswith(
-            "_buy_vol"
-        )
-    ]
-
-    volume_sell_cols = [
-        column
-        for column in merged.columns
-        if column.endswith(
-            "_sell_vol"
-        )
-    ]
-
-    value_buy_cols = [
-        column
-        for column in merged.columns
-        if column.endswith(
-            "_buy_val"
-        )
-    ]
-
-    value_sell_cols = [
-        column
-        for column in merged.columns
-        if column.endswith(
-            "_sell_val"
-        )
-    ]
-
-    # ========================================================
-    # FOREIGN NET
-    # ========================================================
-
-    if (
-        "foreign_buy_val" in merged.columns
-        and "foreign_sell_val" in merged.columns
-    ):
-
-        merged[
-            "foreign_net_val_calc"
-        ] = (
-            merged[
-                "foreign_buy_val"
-            ]
-            - merged[
-                "foreign_sell_val"
-            ]
+    if {"foreign_buy_val", "foreign_sell_val"}.issubset(merged.columns):
+        merged["foreign_net_val_calc"] = (
+            merged["foreign_buy_val"] - merged["foreign_sell_val"]
         )
 
-    if (
-        "foreign_buy_vol" in merged.columns
-        and "foreign_sell_vol" in merged.columns
-    ):
-
-        merged[
-            "foreign_net_vol_calc"
-        ] = (
-            merged[
-                "foreign_buy_vol"
-            ]
-            - merged[
-                "foreign_sell_vol"
-            ]
+    if {"foreign_buy_vol", "foreign_sell_vol"}.issubset(merged.columns):
+        merged["foreign_net_vol_calc"] = (
+            merged["foreign_buy_vol"] - merged["foreign_sell_vol"]
         )
 
-    # ========================================================
-    # PROPRIETARY NET
-    # ========================================================
-
-    if (
-        "proprietary_buy_val" in merged.columns
-        and "proprietary_sell_val" in merged.columns
-    ):
-
-        merged[
-            "proprietary_net_val_calc"
-        ] = (
-            merged[
-                "proprietary_buy_val"
-            ]
-            - merged[
-                "proprietary_sell_val"
-            ]
+    if {"proprietary_buy_val", "proprietary_sell_val"}.issubset(merged.columns):
+        merged["proprietary_net_val_calc"] = (
+            merged["proprietary_buy_val"] - merged["proprietary_sell_val"]
         )
 
-    if (
-        "proprietary_buy_vol" in merged.columns
-        and "proprietary_sell_vol" in merged.columns
-    ):
-
-        merged[
-            "proprietary_net_vol_calc"
-        ] = (
-            merged[
-                "proprietary_buy_vol"
-            ]
-            - merged[
-                "proprietary_sell_vol"
-            ]
+    if {"proprietary_buy_vol", "proprietary_sell_vol"}.issubset(merged.columns):
+        merged["proprietary_net_vol_calc"] = (
+            merged["proprietary_buy_vol"] - merged["proprietary_sell_vol"]
         )
 
-    # ========================================================
-    # FLOW MOMENTUM
-    # ========================================================
+    for column in list(merged.columns):
+        if any(token in str(column) for token in ["net_val", "net_vol", "buy_val", "sell_val"]):
+            merged[f"{column}_chg"] = merged[column].pct_change()
+            merged[f"{column}_sma20"] = merged[column].rolling(20).mean()
 
-    for column in list(
-        merged.columns
-    ):
-
-        if any(
-            token in str(column)
-            for token in [
-                "net_val",
-                "net_vol",
-                "buy_val",
-                "sell_val",
-            ]
-        ):
-
-            merged[
-                f"{column}_chg"
-            ] = (
-                merged[
-                    column
-                ]
-                .pct_change()
-            )
-
-            merged[
-                f"{column}_sma20"
-            ] = (
-                merged[
-                    column
-                ]
-                .rolling(
-                    20
-                )
-                .mean()
-            )
-
-    return merged.replace(
-        [
-            np.inf,
-            -np.inf,
-        ],
-        np.nan,
-    )
+    return merged.replace([np.inf, -np.inf], np.nan)
 
 
 # ============================================================
@@ -2954,14 +2966,9 @@ def load_market_factor_history(
 ):
 
     market = _create_market()
-
-    start = pd.Timestamp(
-        start_date
-    ).normalize()
-
-    end = pd.Timestamp(
-        end_date
-    ).normalize()
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+    request_state = _GLOBAL_REQUEST_STATE
 
     indices = {
         "VNINDEX": "market_vnindex",
@@ -2971,164 +2978,48 @@ def load_market_factor_history(
 
     result = None
 
-    last_request = None
-
     for index_symbol, prefix in indices.items():
-
-        _sleep_between_requests(
-            last_request
+        df = _load_index_range_complete(
+            market,
+            index_symbol,
+            start,
+            end,
+            request_state=request_state,
         )
 
-        request_start = time.monotonic()
+        print(
+            f"[RESEARCH] {index_symbol}: "
+            f"{len(df)} phiên | "
+            f"{df.index.min().date() if not df.empty else 'n/a'} -> "
+            f"{df.index.max().date() if not df.empty else 'n/a'}"
+        )
 
-        try:
-
-            df = _request_index_ohlcv(
-                market,
-                index_symbol,
-                start,
-                end,
-            )
-
-        except Exception:
-
-            last_request = request_start
-
+        if df is None or df.empty:
             continue
 
-        last_request = request_start
-
-        if (
-            df is None
-            or df.empty
-        ):
-            continue
-
-        try:
-
-            df = _normalize_ohlcv(
-                df,
-                stock=False,
-            )
-
-        except Exception:
-
-            continue
-
-        close = df[
-            "Close"
-        ]
-
-        temp = pd.DataFrame(
-            index=df.index
+        close = df["Close"]
+        temp = pd.DataFrame(index=df.index)
+        temp[f"{prefix}_close"] = close
+        temp[f"{prefix}_return"] = close.pct_change()
+        temp[f"{prefix}_return_pct"] = temp[f"{prefix}_return"] * 100
+        temp[f"{prefix}_momentum20"] = close / close.shift(20) - 1
+        temp[f"{prefix}_volatility20"] = (
+            temp[f"{prefix}_return"].rolling(20).std() * np.sqrt(252)
         )
-
-        temp[
-            f"{prefix}_close"
-        ] = close
-
-        temp[
-            f"{prefix}_return"
-        ] = close.pct_change()
-
-        temp[
-            f"{prefix}_return_pct"
-        ] = (
-            temp[
-                f"{prefix}_return"
-            ]
-            * 100
+        temp[f"{prefix}_volume"] = df["Volume"]
+        temp[f"{prefix}_value"] = (
+            df["Value"] if "Value" in df.columns else df["Close"] * df["Volume"]
         )
-
-        temp[
-            f"{prefix}_momentum20"
-        ] = (
-            close
-            / close.shift(
-                20
-            )
-            - 1
-        )
-
-        temp[
-            f"{prefix}_volatility20"
-        ] = (
-            temp[
-                f"{prefix}_return"
-            ]
-            .rolling(
-                20
-            )
-            .std()
-            * np.sqrt(
-                252
-            )
-        )
-
-        temp[
-            f"{prefix}_volume"
-        ] = df[
-            "Volume"
-        ]
-
-        if "Value" in df.columns:
-
-            temp[
-                f"{prefix}_value"
-            ] = df[
-                "Value"
-            ]
-
-        else:
-
-            temp[
-                f"{prefix}_value"
-            ] = (
-                df[
-                    "Close"
-                ]
-                * df[
-                    "Volume"
-                ]
-            )
 
         if result is None:
-
             result = temp
-
         else:
-
-            result = result.join(
-                temp,
-                how="outer",
-            )
+            result = result.join(temp, how="outer")
 
     if result is None:
-
         return pd.DataFrame()
 
-    result = (
-        result
-        .sort_index()
-        .loc[
-            start:end
-        ]
-    )
-
-    # ========================================================
-    # MARKET BREADTH PROXY
-    #
-    # Dùng số index return dương/âm từ các index có sẵn.
-    # Đây là proxy, không phải breadth toàn sàn.
-    # ========================================================
-
-    return result.replace(
-        [
-            np.inf,
-            -np.inf,
-        ],
-        np.nan,
-    )
+    return result.sort_index().loc[start:end].replace([np.inf, -np.inf], np.nan)
 
 
 # ============================================================
@@ -3151,232 +3042,63 @@ def load_sector_factor_history(
     )
 
     if not peers:
-
         return pd.DataFrame()
 
     market = _create_market()
-
-    start = pd.Timestamp(
-        start_date
-    ).normalize()
-
-    end = pd.Timestamp(
-        end_date
-    ).normalize()
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+    request_state = _GLOBAL_REQUEST_STATE
 
     peer_returns = []
-
-    last_request = None
-
     successful_peers = 0
 
     for peer in peers:
-
-        _sleep_between_requests(
-            last_request
+        df = _load_equity_range_complete(
+            market,
+            peer,
+            start,
+            end,
+            request_state=request_state,
         )
 
-        request_start = time.monotonic()
-
-        try:
-
-            df = _request_equity_ohlcv(
-                market,
-                peer,
-                start,
-                end,
-            )
-
-        except Exception:
-
-            last_request = request_start
-
-            continue
-
-        last_request = request_start
-
-        if (
-            df is None
-            or df.empty
-        ):
-            continue
-
-        try:
-
-            df = _normalize_ohlcv(
-                df,
-                stock=True,
-            )
-
-        except Exception:
-
-            continue
-
-        close = df[
-            "Close"
-        ]
-
-        ret = close.pct_change()
-
-        peer_returns.append(
-            ret.rename(
-                peer
-            )
+        print(
+            f"[RESEARCH] Sector peer {peer}: "
+            f"{len(df)} phiên | "
+            f"{df.index.min().date() if not df.empty else 'n/a'} -> "
+            f"{df.index.max().date() if not df.empty else 'n/a'}"
         )
 
+        if df is None or df.empty:
+            continue
+
+        peer_returns.append(df["Close"].pct_change().rename(peer))
         successful_peers += 1
 
     if not peer_returns:
-
         return pd.DataFrame()
 
-    peers_df = pd.concat(
-        peer_returns,
-        axis=1,
-    ).sort_index()
-
-    result = pd.DataFrame(
-        index=peers_df.index
+    peers_df = pd.concat(peer_returns, axis=1).sort_index()
+    result = pd.DataFrame(index=peers_df.index)
+    result["sector_return"] = peers_df.mean(axis=1, skipna=True)
+    result["sector_return_pct"] = result["sector_return"] * 100
+    result["sector_momentum20"] = (
+        (1 + result["sector_return"]).rolling(20).apply(np.prod, raw=True) - 1
     )
-
-    # ========================================================
-    # SECTOR DAILY GROWTH
-    # ========================================================
-
-    result[
-        "sector_return"
-    ] = peers_df.mean(
-        axis=1,
-        skipna=True,
+    result["sector_momentum60"] = (
+        (1 + result["sector_return"]).rolling(60).apply(np.prod, raw=True) - 1
     )
-
-    result[
-        "sector_return_pct"
-    ] = (
-        result[
-            "sector_return"
-        ]
-        * 100
+    result["sector_volatility20"] = (
+        result["sector_return"].rolling(20).std() * np.sqrt(252)
     )
+    denominator = peers_df.notna().sum(axis=1).replace(0, np.nan)
+    result["sector_positive_ratio"] = peers_df.gt(0).sum(axis=1) / denominator
+    result["sector_negative_ratio"] = peers_df.lt(0).sum(axis=1) / denominator
+    result["sector_peer_count"] = peers_df.notna().sum(axis=1)
 
-    # ========================================================
-    # SECTOR MOMENTUM
-    # ========================================================
+    result.attrs["peers_requested"] = peers
+    result.attrs["peers_loaded"] = successful_peers
 
-    result[
-        "sector_momentum20"
-    ] = (
-        (
-            1
-            + result[
-                "sector_return"
-            ]
-        )
-        .rolling(
-            20
-        )
-        .apply(
-            np.prod,
-            raw=True,
-        )
-        - 1
-    )
-
-    result[
-        "sector_momentum60"
-    ] = (
-        (
-            1
-            + result[
-                "sector_return"
-            ]
-        )
-        .rolling(
-            60
-        )
-        .apply(
-            np.prod,
-            raw=True,
-        )
-        - 1
-    )
-
-    # ========================================================
-    # SECTOR VOLATILITY
-    # ========================================================
-
-    result[
-        "sector_volatility20"
-    ] = (
-        result[
-            "sector_return"
-        ]
-        .rolling(
-            20
-        )
-        .std()
-        * np.sqrt(
-            252
-        )
-    )
-
-    # ========================================================
-    # SECTOR BREADTH
-    # ========================================================
-
-    result[
-        "sector_positive_ratio"
-    ] = (
-        peers_df
-        .gt(0)
-        .sum(
-            axis=1
-        )
-        / peers_df.notna()
-        .sum(
-            axis=1
-        )
-    )
-
-    result[
-        "sector_negative_ratio"
-    ] = (
-        peers_df
-        .lt(0)
-        .sum(
-            axis=1
-        )
-        / peers_df.notna()
-        .sum(
-            axis=1
-        )
-    )
-
-    result[
-        "sector_peer_count"
-    ] = (
-        peers_df
-        .notna()
-        .sum(
-            axis=1
-        )
-    )
-
-    result.attrs[
-        "peers_requested"
-    ] = peers
-
-    result.attrs[
-        "peers_loaded"
-    ] = successful_peers
-
-    return result.replace(
-        [
-            np.inf,
-            -np.inf,
-        ],
-        np.nan,
-    )
+    return result.replace([np.inf, -np.inf], np.nan)
 
 
 # ============================================================
@@ -3427,6 +3149,10 @@ def load_multifactor_research_history(
     # STOCK
     # ========================================================
 
+    print(
+        f"[RESEARCH] 1/4 Giá cổ phiếu {symbol}: {start.date()} -> {end.date()}"
+    )
+
     stock_raw = _load_stock_raw(
         symbol,
         start,
@@ -3436,6 +3162,10 @@ def load_multifactor_research_history(
     stock = add_indicators(
         stock_raw,
         la_co_phieu=True,
+    )
+
+    print(
+        f"[RESEARCH] Giá cổ phiếu hoàn tất: {len(stock_raw)} phiên."
     )
 
     # ========================================================
@@ -3450,6 +3180,8 @@ def load_multifactor_research_history(
     # FLOWS
     # ========================================================
 
+    print("[RESEARCH] 2/4 Dòng tiền / khối ngoại / tự doanh...")
+
     flow = load_stock_flow_history(
         symbol,
         start,
@@ -3460,6 +3192,8 @@ def load_multifactor_research_history(
     # MARKET
     # ========================================================
 
+    print("[RESEARCH] 3/4 VNINDEX / VN30 / HNX...")
+
     market = load_market_factor_history(
         start,
         end,
@@ -3469,10 +3203,16 @@ def load_multifactor_research_history(
     # SECTOR
     # ========================================================
 
+    print("[RESEARCH] 4/4 Nhóm ngành và cổ phiếu đồng ngành...")
+
     sector = load_sector_factor_history(
         symbol,
         start,
         end,
+    )
+
+    print(
+        f"[RESEARCH] Merge dữ liệu: stock={len(stock)} | flow={len(flow)} | market={len(market)} | sector={len(sector)}"
     )
 
     result = stock.copy()
@@ -3869,13 +3609,22 @@ def load_multifactor_research_history(
         0,
     )
 
-    return result.replace(
+    result = result.replace(
         [
             np.inf,
             -np.inf,
         ],
         np.nan,
     )
+
+    print(
+        f"[RESEARCH] HOÀN TẤT {symbol}: "
+        f"{len(result)} phiên | "
+        f"{result.index.min().date() if not result.empty else "n/a"} -> "
+        f"{result.index.max().date() if not result.empty else "n/a"}"
+    )
+
+    return result
 
 
 # ============================================================
