@@ -16,8 +16,9 @@ import streamlit as st
 
 AI_CACHE_TTL = 1800
 DEFAULT_MODEL = "gemini-3.8-flash"
-FALLBACK_MODELS = []
+FALLBACK_MODELS = ["gemini-3.7-flash"]
 SUPPORTED_RESEARCH_MODEL = "gemini-3.8-flash"
+FALLBACK_RETRY_MODEL = "gemini-3.7-flash"
 DEFAULT_AUTO_QUESTION = (
     "Hãy tự đọc TOÀN BỘ nghiên cứu của cổ phiếu này và viết một báo cáo phân tích định lượng "
     "chuyên nghiệp, chi tiết nhưng người mới cũng hiểu được. Hãy tổng hợp dữ liệu mẫu, "
@@ -532,7 +533,11 @@ def _call_gemini(prompt: str):
     client = None
 
     try:
-        client = genai.Client(api_key=api_key)
+        # Timeout ngắn để Gemini không thể treo cả tiến trình Streamlit quá lâu.
+        client = genai.Client(
+            api_key=api_key,
+            http_options={"timeout": 45000},
+        )
     except Exception as error:
         return {
             "ok": False,
@@ -582,12 +587,20 @@ def _call_gemini(prompt: str):
         except Exception as error:
             last_error = f"{model_name}: {error}"
 
+    error_text = last_error or "AI lỗi không xác định."
+    if "503" in error_text or "UNAVAILABLE" in error_text or "high demand" in error_text.lower():
+        error_text = (
+            "Gemini 3.8 Flash đang quá tải (503 UNAVAILABLE). "
+            "Hệ thống đã thử model dự phòng Gemini 3.7 Flash nhưng chưa nhận được phản hồi. "
+            "Bạn có thể bấm Thử lại sau ít phút."
+        )
+
     return {
         "ok": False,
         "text": "",
         "json": None,
         "model": requested_model,
-        "error": last_error or "AI lỗi không xác định.",
+        "error": error_text,
     }
 
 
@@ -754,15 +767,16 @@ def _render_json_result(ai_result: dict[str, Any]):
 
 
 def render_research_ai(result, symbol="", start_date=None, end_date=None):
-    """Tự động phân tích AI ngay sau khi nghiên cứu định lượng hoàn tất.
+    """Hiển thị Brian AI an toàn sau nghiên cứu.
 
-    Không cần người dùng bấm nút để chạy AI lần đầu.
-    AI chỉ chạy lại khi nội dung nghiên cứu / mã / khoảng thời gian thay đổi.
+    AI KHÔNG tự gọi Gemini khi trang vừa render.
+    Người dùng bấm nút để chạy AI, nhờ đó lỗi mạng/API không khóa toàn bộ trang nghiên cứu.
+    Kết quả AI được lưu theo fingerprint của nghiên cứu và không gọi lại khi Streamlit rerun.
     """
     st.divider()
     st.header("🧠 BRIAN AI — Phân tích toàn bộ nghiên cứu")
     st.caption(
-        "AI tự đọc kết quả nghiên cứu vừa chạy: thống kê mô tả, tương quan, OLS, Machine Learning, "
+        "AI đọc kết quả nghiên cứu vừa chạy: thống kê mô tả, tương quan, OLS, Machine Learning, "
         "importance, VIF, kiểm định, 1D/5D/20D và forecast; sau đó giải thích bằng ngôn ngữ dễ hiểu."
     )
 
@@ -780,37 +794,51 @@ def render_research_ai(result, symbol="", start_date=None, end_date=None):
     stored_signature = st.session_state.get("research_ai_signature")
     stored_result = st.session_state.get("research_ai_result")
 
-    # Khi có một nghiên cứu mới, bỏ kết quả hỏi thêm của nghiên cứu cũ.
+    # Nếu đã đổi mã hoặc khoảng thời gian thì không dùng kết quả AI cũ.
     if stored_signature != signature:
+        stored_result = None
+        st.session_state.pop("research_ai_result", None)
+        st.session_state.pop("research_ai_signature", None)
         st.session_state.pop("research_ai_followup_result", None)
         st.session_state.pop("research_ai_followup_question_used", None)
 
     # --------------------------------------------------------
-    # AUTO AI: chạy ngay sau khi nghiên cứu hoàn tất
+    # AI CHỈ CHẠY KHI NGƯỜI DÙNG CHỦ ĐỘNG BẤM NÚT.
+    # Điều này bảo vệ toàn bộ app khỏi một request Gemini bị treo.
     # --------------------------------------------------------
-    if stored_signature != signature or not stored_result:
-        context = build_research_ai_context(
-            result,
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
+    if stored_result is None:
+        st.info(
+            "Nghiên cứu đã hoàn tất. Bấm nút bên dưới để Brian AI đọc toàn bộ kết quả. "
+            "Phần nghiên cứu sẽ không bị khóa nếu Gemini gặp sự cố."
         )
 
-        with st.spinner("🧠 Brian AI đang đọc toàn bộ nghiên cứu và viết kết luận..."):
-            ai_result = generate_research_ai_cached(
-                context,
-                DEFAULT_AUTO_QUESTION,
+        if st.button(
+            "🤖 Brian AI — Phân tích toàn bộ nghiên cứu",
+            type="primary",
+            width="stretch",
+            key="research_ai_run",
+        ):
+            context = build_research_ai_context(
+                result,
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
             )
 
-        st.session_state["research_ai_result"] = ai_result
-        st.session_state["research_ai_signature"] = signature
-        st.session_state["research_ai_question_used"] = DEFAULT_AUTO_QUESTION
-        stored_result = ai_result
+            with st.spinner("🧠 Brian AI đang phân tích nghiên cứu..."):
+                ai_result = generate_research_ai_cached(
+                    context,
+                    DEFAULT_AUTO_QUESTION,
+                )
+
+            st.session_state["research_ai_result"] = ai_result
+            st.session_state["research_ai_signature"] = signature
+            st.session_state["research_ai_question_used"] = DEFAULT_AUTO_QUESTION
+            st.rerun()
+
+        return
 
     ai_result = stored_result
-    if not ai_result:
-        st.warning("AI chưa tạo được kết quả.")
-        return
 
     # --------------------------------------------------------
     # ERROR DISPLAY
@@ -819,8 +847,15 @@ def render_research_ai(result, symbol="", start_date=None, end_date=None):
         st.error("🧠 BRIAN AI chưa thể phân tích nghiên cứu.")
         st.code(ai_result.get("error", "Không xác định."))
         st.caption(
-            "Kiểm tra GEMINI_API_KEY trong Streamlit Secrets và kết nối mạng của ứng dụng."
+            "Phần nghiên cứu vẫn hoàn tất. Bạn có thể kiểm tra GEMINI_API_KEY hoặc thử lại sau."
         )
+        if st.button(
+            "🔄 Thử lại Brian AI",
+            key="research_ai_retry",
+        ):
+            st.session_state.pop("research_ai_result", None)
+            st.session_state["research_ai_signature"] = signature
+            st.rerun()
         return
 
     model_name = ai_result.get("model")
@@ -828,12 +863,12 @@ def render_research_ai(result, symbol="", start_date=None, end_date=None):
         st.caption(f"Brian AI sử dụng: {model_name}")
 
     # --------------------------------------------------------
-    # AUTO REPORT
+    # AUTO REPORT ĐÃ ĐƯỢC TẠO
     # --------------------------------------------------------
     _render_json_result(ai_result)
 
     # --------------------------------------------------------
-    # OPTIONAL FOLLOW-UP — không ảnh hưởng auto analysis
+    # OPTIONAL FOLLOW-UP
     # --------------------------------------------------------
     with st.expander("💬 Hỏi thêm Brian AI về nghiên cứu này", expanded=False):
         followup = st.text_area(
@@ -869,6 +904,7 @@ def render_research_ai(result, symbol="", start_date=None, end_date=None):
                     )
                 st.session_state["research_ai_followup_result"] = followup_result
                 st.session_state["research_ai_followup_question_used"] = followup
+                st.rerun()
 
         followup_result = st.session_state.get("research_ai_followup_result")
         if followup_result:
