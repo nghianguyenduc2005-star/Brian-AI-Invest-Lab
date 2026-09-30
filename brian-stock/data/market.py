@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 import time
-from datetime import datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -15,15 +14,13 @@ import streamlit as st
 # VNSTOCK API KEY / AUTH
 # ============================================================
 
-def _configure_vnstock_api_key():
+def _configure_vnstock_api_key() -> bool:
     """Ưu tiên Streamlit Secrets, sau đó tới biến môi trường."""
     key = os.environ.get("VNSTOCK_API_KEY", "").strip()
 
     if not key:
         try:
-            key = str(
-                st.secrets.get("VNSTOCK_API_KEY", "")
-            ).strip()
+            key = str(st.secrets.get("VNSTOCK_API_KEY", "")).strip()
         except Exception:
             key = ""
 
@@ -43,27 +40,19 @@ VNSTOCK_API_KEY_AVAILABLE = _configure_vnstock_api_key()
 
 try:
     from vnstock import Market
-
     VNSTOCK_AVAILABLE = True
-
 except Exception:
-
     try:
         from vnstock.ui import Market
-
         VNSTOCK_AVAILABLE = True
-
     except Exception:
-
         Market = None
         VNSTOCK_AVAILABLE = False
 
 
 try:
     from vnstock import Listing
-
     LISTING_AVAILABLE = True
-
 except Exception:
     Listing = None
     LISTING_AVAILABLE = False
@@ -77,34 +66,32 @@ CACHE_TTL_PRICE = 300
 CACHE_TTL_INDEX = 300
 CACHE_TTL_LATEST = 30
 CACHE_TTL_RESEARCH = 900
-CACHE_TTL_FLOW = 900
 CACHE_TTL_LISTING = 6 * 60 * 60
 
-# Giữ khoảng cách giữa request để tránh rate limit.
-# Guest hiện bị giới hạn thấp hơn Community có API key.
-REQUEST_SLEEP_SECONDS = (
-    1.25 if VNSTOCK_API_KEY_AVAILABLE else 3.25
-)
+# Guest: giữ dưới 20 request/phút.
+# API key: giữ dưới 60 request/phút.
+REQUEST_WINDOW_SECONDS = 60.0
+GUEST_MAX_REQUESTS_PER_MINUTE = 18
+API_KEY_MAX_REQUESTS_PER_MINUTE = 55
+GUEST_MIN_REQUEST_GAP = 3.5
+API_KEY_MIN_REQUEST_GAP = 1.25
+_REQUEST_TIMESTAMPS: list[float] = []
+_LAST_REQUEST_TIME: float | None = None
 
-# Khoảng thời gian ban đầu cho mỗi request. Nếu nguồn trả về sát
-# giới hạn số nến, code sẽ tự chia nhỏ đệ quy để không bị cắt dữ liệu.
+# 120 ngày lịch thường < 95 phiên giao dịch.
+# Nếu response chạm giới hạn, mới chia nhỏ tiếp.
 RESEARCH_CHUNK_DAYS = 120
-
-# Nguồn VNStock có thể giới hạn số nến trả về trên một request.
-# 80 ngày lịch luôn thấp hơn 100 phiên giao dịch, nên dùng 80 làm
-# ngưỡng an toàn để phát hiện response bị cắt và tiếp tục chia nhỏ.
-MAX_OHLCV_ROWS_PER_REQUEST = 95
-MIN_OHLCV_CHUNK_DAYS = 15
-MAX_OHLCV_RETRIES = 3
+MAX_ROWS_PER_OHLCV_REQUEST = 95
+MIN_CHUNK_DAYS = 15
+MAX_API_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 3.0
 
-# Dùng chung timestamp request giữa toàn bộ nghiên cứu để tránh
-# các nhóm dữ liệu bắn request liên tiếp và chạm rate limit.
-_GLOBAL_REQUEST_STATE = {"last_request": None}
 
+# ============================================================
+# ERROR / RATE LIMIT HELPERS
+# ============================================================
 
-def _extract_rate_limit_wait_seconds(error):
-    """Cố gắng đọc thời gian chờ do VNStock trả về."""
+def _extract_rate_limit_wait_seconds(error: Any) -> int | None:
     text = str(error or "")
     patterns = [
         r"Chờ\s*(\d+)\s*giây",
@@ -121,67 +108,104 @@ def _extract_rate_limit_wait_seconds(error):
     return None
 
 
-def _sleep_after_rate_limit(error):
-    """
-    Rate limit không được coi là "không có dữ liệu".
-    Chờ đủ một cửa sổ 60 giây rồi thử lại đúng request hiện tại.
-    """
-    global _REQUEST_TIMESTAMPS
-
-    suggested = _extract_rate_limit_wait_seconds(error)
-
-    # Guest báo thời gian còn lại theo cửa sổ hiện tại.
-    # Dù API báo 11-15-44 giây, luôn cộng đệm và tối thiểu 61 giây
-    # để tránh retry ngay trong cùng cửa sổ.
-    wait_seconds = max(
-        61,
-        (suggested or 60) + 1,
-    )
-
-    print(
-        f"[VNSTOCK] Rate limit: chờ {wait_seconds} giây "
-        f"trước khi thử lại đúng request."
-    )
-
-    time.sleep(wait_seconds)
-
-    # Sau khi chờ đủ một cửa sổ, các request cũ không còn hợp lệ
-    # trong rolling window của app.
-    _REQUEST_TIMESTAMPS = []
-
-
-def _is_rate_limit_error(error):
+def _is_rate_limit_error(error: Any) -> bool:
     text = str(error or "").lower()
     return any(
         marker in text
-        for marker in [
+        for marker in (
             "rate limit",
             "rate_limit",
             "too many requests",
             "maximum api request",
             "requests/minute",
             "requests/phút",
-        ]
+        )
     )
+
+
+def _reset_request_window() -> None:
+    global _REQUEST_TIMESTAMPS
+    _REQUEST_TIMESTAMPS = []
+
+
+def _sleep_after_rate_limit(error: Any) -> None:
+    """Chờ đủ một cửa sổ mới trước khi thử lại cùng request."""
+    suggested = _extract_rate_limit_wait_seconds(error)
+    wait_seconds = max(61, (suggested or 60) + 2)
+
+    print(
+        f"[VNSTOCK] Rate limit: chờ {wait_seconds} giây "
+        "trước khi thử lại đúng request."
+    )
+    time.sleep(wait_seconds)
+    _reset_request_window()
+
+
+def _throttle_request() -> None:
+    """Điều tiết request tập trung tại một chỗ, không sleep trùng."""
+    global _LAST_REQUEST_TIME, _REQUEST_TIMESTAMPS
+
+    now = time.monotonic()
+    max_requests = (
+        API_KEY_MAX_REQUESTS_PER_MINUTE
+        if VNSTOCK_API_KEY_AVAILABLE
+        else GUEST_MAX_REQUESTS_PER_MINUTE
+    )
+    min_gap = (
+        API_KEY_MIN_REQUEST_GAP
+        if VNSTOCK_API_KEY_AVAILABLE
+        else GUEST_MIN_REQUEST_GAP
+    )
+
+    _REQUEST_TIMESTAMPS = [
+        t for t in _REQUEST_TIMESTAMPS
+        if now - t < REQUEST_WINDOW_SECONDS
+    ]
+
+    if _LAST_REQUEST_TIME is not None:
+        gap = now - _LAST_REQUEST_TIME
+        if gap < min_gap:
+            time.sleep(min_gap - gap)
+            now = time.monotonic()
+
+    _REQUEST_TIMESTAMPS = [
+        t for t in _REQUEST_TIMESTAMPS
+        if now - t < REQUEST_WINDOW_SECONDS
+    ]
+
+    if len(_REQUEST_TIMESTAMPS) >= max_requests:
+        oldest = min(_REQUEST_TIMESTAMPS)
+        wait_seconds = max(
+            1.0,
+            REQUEST_WINDOW_SECONDS - (now - oldest) + 1.0,
+        )
+        print(
+            f"[VNSTOCK] Chủ động giữ dưới giới hạn: "
+            f"{len(_REQUEST_TIMESTAMPS)}/{max_requests}. "
+            f"Chờ {wait_seconds:.0f} giây."
+        )
+        time.sleep(wait_seconds)
+        now = time.monotonic()
+        _REQUEST_TIMESTAMPS = [
+            t for t in _REQUEST_TIMESTAMPS
+            if now - t < REQUEST_WINDOW_SECONDS
+        ]
+
+    _REQUEST_TIMESTAMPS.append(now)
+    _LAST_REQUEST_TIME = now
 
 
 # ============================================================
 # CACHE RESOURCE
 # ============================================================
 
-@st.cache_resource(
-    show_spinner=False,
-)
+@st.cache_resource(show_spinner=False)
 def _create_market():
-    # Secrets có thể được nạp sau khi module import trong một số môi trường;
-    # kiểm tra lại ngay trước khi tạo Market.
     global VNSTOCK_API_KEY_AVAILABLE
     VNSTOCK_API_KEY_AVAILABLE = _configure_vnstock_api_key()
 
     if not VNSTOCK_AVAILABLE or Market is None:
-        raise RuntimeError(
-            "Không tìm thấy vnstock Market."
-        )
+        raise RuntimeError("Không tìm thấy vnstock Market.")
 
     if not VNSTOCK_API_KEY_AVAILABLE:
         print(
@@ -191,7 +215,6 @@ def _create_market():
 
     try:
         return Market()
-
     except Exception as error:
         raise RuntimeError(
             f"Không khởi tạo được Market(): {error}"
@@ -199,1323 +222,276 @@ def _create_market():
 
 
 # ============================================================
-# BASIC
+# BASIC HELPERS
 # ============================================================
 
-def normalize_symbol(
-    symbol,
-):
-    if symbol is None:
-        return "HPG"
-
-    value = (
-        str(symbol)
-        .strip()
-        .upper()
-    )
-
-    value = re.sub(
-        r"\s+",
-        "",
-        value,
-    )
-
+def normalize_symbol(symbol: Any) -> str:
+    value = str(symbol or "HPG").strip().upper()
+    value = re.sub(r"\s+", "", value)
     if value.endswith(".VN"):
         value = value[:-3]
-
     return value or "HPG"
 
 
-def display_symbol(
-    symbol,
-):
-    if symbol is None:
-        return ""
-
-    value = (
-        str(symbol)
-        .strip()
-        .upper()
-    )
-
-    if value.endswith(".VN"):
-        value = value[:-3]
-
-    return value
+def display_symbol(symbol: Any) -> str:
+    return normalize_symbol(symbol)
 
 
-def _to_number(
-    value,
-    default=np.nan,
-):
+def _to_number(value: Any, default=np.nan) -> float:
     try:
         value = float(value)
-
-        if not np.isfinite(value):
-            return default
-
-        return value
-
+        return value if np.isfinite(value) else default
     except Exception:
         return default
 
 
-def _normalize_column_name(
-    value,
-):
-    text = (
-        str(value)
-        .strip()
-        .lower()
-    )
-
-    text = re.sub(
-        r"\s+",
-        "_",
-        text,
-    )
-
-    text = re.sub(
-        r"[-/]+",
-        "_",
-        text,
-    )
-
+def _normalize_column_name(value: Any) -> str:
+    text = str(value).strip().lower()
+    text = re.sub(r"\s+", "_", text)
+    text = re.sub(r"[-/]+", "_", text)
     return text
 
 
-# ============================================================
-# GENERIC COLUMN FINDER
-# ============================================================
-
-def _find_column(
-    df,
-    candidates,
-):
-    if (
-        df is None
-        or not isinstance(
-            df,
-            pd.DataFrame,
-        )
-        or df.empty
-    ):
+def _find_column(df: pd.DataFrame | None, candidates: list[str]) -> str | None:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return None
 
     mapping = {
-        _normalize_column_name(column): column
-        for column in df.columns
+        _normalize_column_name(col): col
+        for col in df.columns
     }
 
-    # Exact
     for candidate in candidates:
-
-        key = _normalize_column_name(
-            candidate
-        )
-
+        key = _normalize_column_name(candidate)
         if key in mapping:
             return mapping[key]
 
-    # Fuzzy
     for column in df.columns:
-
-        column_key = _normalize_column_name(
-            column
-        )
-
+        column_key = _normalize_column_name(column)
         for candidate in candidates:
-
-            candidate_key = _normalize_column_name(
-                candidate
-            )
-
-            if (
-                candidate_key in column_key
-                or column_key in candidate_key
-            ):
+            candidate_key = _normalize_column_name(candidate)
+            if candidate_key in column_key or column_key in candidate_key:
                 return column
 
     return None
 
 
 # ============================================================
-# DATETIME NORMALIZATION
+# DATETIME / OHLCV NORMALIZATION
 # ============================================================
 
-def _normalize_datetime_index(
-    df,
-):
-    if (
-        df is None
-        or df.empty
-    ):
+def _normalize_datetime_index(df: pd.DataFrame | None) -> pd.DataFrame:
+    if df is None or df.empty:
         return pd.DataFrame()
 
     work = df.copy()
-
     time_column = _find_column(
         work,
-        [
-            "time",
-            "date",
-            "datetime",
-            "timestamp",
-            "trading_date",
-            "tradingdate",
-        ],
+        ["time", "date", "datetime", "timestamp", "trading_date", "tradingdate"],
     )
 
     if time_column is not None:
-
-        work[
-            time_column
-        ] = pd.to_datetime(
-            work[
-                time_column
-            ],
-            errors="coerce",
-        )
-
-        work = (
-            work
-            .set_index(
-                time_column
-            )
-        )
-
+        work[time_column] = pd.to_datetime(work[time_column], errors="coerce")
+        work = work.set_index(time_column)
     else:
+        work.index = pd.to_datetime(work.index, errors="coerce")
 
-        work.index = pd.to_datetime(
-            work.index,
-            errors="coerce",
-        )
-
-    work = work[
-        ~work.index.isna()
-    ].copy()
-
-    work = (
-        work
-        .sort_index()
-    )
-
-    work = work[
-        ~work.index.duplicated(
-            keep="last"
-        )
-    ].copy()
-
+    work = work[~work.index.isna()].copy()
+    work = work.sort_index()
+    work = work[~work.index.duplicated(keep="last")].copy()
     return work
 
 
-# ============================================================
-# OHLCV NORMALIZATION
-# ============================================================
-
-def _normalize_ohlcv(
-    df,
-    stock=True,
-):
+def _normalize_ohlcv(df: Any, stock: bool = True) -> pd.DataFrame:
     if df is None:
-        raise ValueError(
-            "Nguồn dữ liệu trả về None."
-        )
+        raise ValueError("Nguồn dữ liệu trả về None.")
 
-    if not isinstance(
-        df,
-        pd.DataFrame,
-    ):
-        df = pd.DataFrame(
-            df
-        )
-
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
     if df.empty:
-        raise ValueError(
-            "Nguồn dữ liệu trả về DataFrame rỗng."
-        )
+        raise ValueError("Nguồn dữ liệu trả về DataFrame rỗng.")
 
     work = df.copy()
 
-    # MultiIndex
-    if isinstance(
-        work.columns,
-        pd.MultiIndex,
-    ):
+    if isinstance(work.columns, pd.MultiIndex):
+        work.columns = [
+            str(column[-1]) if isinstance(column, tuple) else str(column)
+            for column in work.columns
+        ]
 
-        columns = []
-
-        for column in work.columns:
-
-            if isinstance(
-                column,
-                tuple,
-            ):
-                columns.append(
-                    str(
-                        column[-1]
-                    )
-                )
-            else:
-                columns.append(
-                    str(
-                        column
-                    )
-                )
-
-        work.columns = columns
-
-    rename_map = {}
-
+    rename_map: dict[Any, str] = {}
     for column in work.columns:
+        key = _normalize_column_name(column)
+        if key in {"time", "date", "datetime", "timestamp", "trading_date", "tradingdate"}:
+            rename_map[column] = "Time"
+        elif key in {"open", "open_price", "openprice"}:
+            rename_map[column] = "Open"
+        elif key in {"high", "high_price", "highprice"}:
+            rename_map[column] = "High"
+        elif key in {"low", "low_price", "lowprice"}:
+            rename_map[column] = "Low"
+        elif key in {"close", "close_price", "closeprice", "last", "last_price", "lastprice"}:
+            rename_map[column] = "Close"
+        elif key in {"volume", "vol", "total_volume", "totalvolume", "matched_volume", "match_volume", "matchvolume"}:
+            rename_map[column] = "Volume"
+        elif key in {"value", "trading_value", "trade_value", "value_traded", "match_value", "matched_value", "turnover", "total_value"}:
+            rename_map[column] = "Value"
 
-        key = _normalize_column_name(
-            column
-        )
+    work = work.rename(columns=rename_map)
 
-        if key in {
-            "time",
-            "date",
-            "datetime",
-            "timestamp",
-            "trading_date",
-            "tradingdate",
-        }:
-
-            rename_map[
-                column
-            ] = "Time"
-
-        elif key in {
-            "open",
-            "open_price",
-            "openprice",
-        }:
-
-            rename_map[
-                column
-            ] = "Open"
-
-        elif key in {
-            "high",
-            "high_price",
-            "highprice",
-        }:
-
-            rename_map[
-                column
-            ] = "High"
-
-        elif key in {
-            "low",
-            "low_price",
-            "lowprice",
-        }:
-
-            rename_map[
-                column
-            ] = "Low"
-
-        elif key in {
-            "close",
-            "close_price",
-            "closeprice",
-            "last",
-            "last_price",
-            "lastprice",
-        }:
-
-            rename_map[
-                column
-            ] = "Close"
-
-        elif key in {
-            "volume",
-            "vol",
-            "total_volume",
-            "totalvolume",
-            "matched_volume",
-            "match_volume",
-            "matchvolume",
-        }:
-
-            rename_map[
-                column
-            ] = "Volume"
-
-        elif key in {
-            "value",
-            "trading_value",
-            "trade_value",
-            "value_traded",
-            "match_value",
-            "matched_value",
-            "turnover",
-            "total_value",
-        }:
-
-            rename_map[
-                column
-            ] = "Value"
-
-    work = work.rename(
-        columns=rename_map
-    )
-
-    # Datetime
     if "Time" in work.columns:
-
-        work[
-            "Time"
-        ] = pd.to_datetime(
-            work[
-                "Time"
-            ],
-            errors="coerce",
-        )
-
-        work = (
-            work
-            .set_index(
-                "Time"
-            )
-        )
-
+        work["Time"] = pd.to_datetime(work["Time"], errors="coerce")
+        work = work.set_index("Time")
     else:
+        work.index = pd.to_datetime(work.index, errors="coerce")
 
-        work.index = pd.to_datetime(
-            work.index,
-            errors="coerce",
-        )
+    work = work[~work.index.isna()].copy()
+    work = work.sort_index()
+    work = work[~work.index.duplicated(keep="last")].copy()
 
-    work = work[
-        ~work.index.isna()
-    ].copy()
-
-    work = (
-        work
-        .sort_index()
-    )
-
-    work = work[
-        ~work.index.duplicated(
-            keep="last"
-        )
-    ].copy()
-
-    required = [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-    ]
-
-    missing = [
-        column
-        for column in required
-        if column not in work.columns
-    ]
-
+    required = ["Open", "High", "Low", "Close"]
+    missing = [column for column in required if column not in work.columns]
     if missing:
-        raise ValueError(
-            "Thiếu cột OHLC: "
-            + ", ".join(
-                missing
-            )
-        )
+        raise ValueError("Thiếu cột OHLC: " + ", ".join(missing))
 
     if "Volume" not in work.columns:
+        work["Volume"] = 0.0
 
-        work[
-            "Volume"
-        ] = 0.0
-
-    for column in [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume",
-    ]:
-
-        work[
-            column
-        ] = pd.to_numeric(
-            work[
-                column
-            ],
-            errors="coerce",
-        )
-
+    for column in ["Open", "High", "Low", "Close", "Volume"]:
+        work[column] = pd.to_numeric(work[column], errors="coerce")
     if "Value" in work.columns:
+        work["Value"] = pd.to_numeric(work["Value"], errors="coerce")
 
-        work[
-            "Value"
-        ] = pd.to_numeric(
-            work[
-                "Value"
-            ],
-            errors="coerce",
-        )
-
-    # Giá cổ phiếu có thể về đơn vị nghìn.
+    # Một số nguồn trả giá cổ phiếu theo nghìn đồng.
     if stock:
+        median_price = work["Close"].dropna().median()
+        if pd.notna(median_price) and 0 < median_price < 1000:
+            for column in ["Open", "High", "Low", "Close"]:
+                work[column] *= 1000
 
-        median_price = (
-            work[
-                "Close"
-            ]
-            .dropna()
-            .median()
-        )
+    for column in ["Open", "High", "Low", "Close"]:
+        work.loc[work[column] <= 0, column] = np.nan
+    work.loc[work["Volume"] < 0, "Volume"] = np.nan
 
-        if (
-            pd.notna(
-                median_price
-            )
-            and median_price > 0
-            and median_price < 1000
-        ):
-
-            for column in [
-                "Open",
-                "High",
-                "Low",
-                "Close",
-            ]:
-
-                work[
-                    column
-                ] *= 1000
-
-            if "Value" in work.columns:
-                # Value thường đã là VND,
-                # không tự nhân nếu chưa chắc.
-                pass
-
-    for column in [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-    ]:
-
-        work.loc[
-            work[
-                column
-            ] <= 0,
-            column,
-        ] = np.nan
-
-    work.loc[
-        work[
-            "Volume"
-        ] < 0,
-        "Volume",
-    ] = np.nan
-
-    work = work.replace(
-        [
-            np.inf,
-            -np.inf,
-        ],
-        np.nan,
-    )
-
-    work = work.dropna(
-        subset=[
-            "Open",
-            "High",
-            "Low",
-            "Close",
-        ]
-    )
-
+    work = work.replace([np.inf, -np.inf], np.nan)
+    work = work.dropna(subset=["Open", "High", "Low", "Close"])
     if work.empty:
-        raise ValueError(
-            "Không còn OHLC hợp lệ."
-        )
+        raise ValueError("Không còn OHLC hợp lệ.")
 
     return work
 
 
 # ============================================================
-# RSI
+# TECHNICAL INDICATORS
 # ============================================================
 
-def rsi(
-    prices,
-    period=14,
-):
-
-    prices = pd.to_numeric(
-        prices,
-        errors="coerce",
-    )
-
+def rsi(prices: pd.Series, period: int = 14) -> pd.Series:
+    prices = pd.to_numeric(prices, errors="coerce")
     delta = prices.diff()
-
-    gain = delta.clip(
-        lower=0
-    )
-
-    loss = (
-        -delta.clip(
-            upper=0
-        )
-    )
-
-    avg_gain = (
-        gain
-        .ewm(
-            alpha=1 / period,
-            adjust=False,
-            min_periods=period,
-        )
-        .mean()
-    )
-
-    avg_loss = (
-        loss
-        .ewm(
-            alpha=1 / period,
-            adjust=False,
-            min_periods=period,
-        )
-        .mean()
-    )
-
-    relative = (
-        avg_gain
-        / avg_loss.replace(
-            0,
-            np.nan,
-        )
-    )
-
-    result = (
-        100
-        - (
-            100
-            / (
-                1
-                + relative
-            )
-        )
-    )
-
-    result = result.where(
-        ~(
-            (
-                avg_loss == 0
-            )
-            & (
-                avg_gain > 0
-            )
-        ),
-        100,
-    )
-
-    result = result.where(
-        ~(
-            (
-                avg_loss == 0
-            )
-            & (
-                avg_gain == 0
-            )
-        ),
-        50,
-    )
-
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    relative = avg_gain / avg_loss.replace(0, np.nan)
+    result = 100 - (100 / (1 + relative))
+    result = result.where(~((avg_loss == 0) & (avg_gain > 0)), 100)
+    result = result.where(~((avg_loss == 0) & (avg_gain == 0)), 50)
     return result
 
 
-# ============================================================
-# INDICATORS
-# ============================================================
+def add_indicators(df: pd.DataFrame, la_co_phieu: bool = False) -> pd.DataFrame:
+    work = _normalize_ohlcv(df, stock=la_co_phieu).copy()
+    close = work["Close"]
+    high = work["High"]
+    low = work["Low"]
+    volume = work["Volume"]
 
-def add_indicators(
-    df,
-    la_co_phieu=False,
-):
+    work["Return"] = close.pct_change()
+    work["ReturnPct"] = work["Return"] * 100
+    work["LogReturn"] = np.log(close / close.shift(1))
+    work["RSI"] = rsi(close, 14)
 
-    work = _normalize_ohlcv(
-        df,
-        stock=la_co_phieu,
-    ).copy()
+    for period in [9, 12, 20, 26, 50, 100, 200]:
+        work[f"EMA{period}"] = close.ewm(span=period, adjust=False).mean()
 
-    close = work[
-        "Close"
-    ]
+    for period in [5, 10, 20, 50, 100, 200]:
+        work[f"SMA{period}"] = close.rolling(period).mean()
 
-    high = work[
-        "High"
-    ]
+    for period in [20, 50, 100, 200]:
+        work[f"Price_vs_SMA{period}"] = (close / work[f"SMA{period}"] - 1) * 100
+        work[f"Price_vs_EMA{period}"] = (close / work[f"EMA{period}"] - 1) * 100
 
-    low = work[
-        "Low"
-    ]
+    work["MACD"] = work["EMA12"] - work["EMA26"]
+    work["MACD_Signal"] = work["MACD"].ewm(span=9, adjust=False).mean()
+    work["MACD_Hist"] = work["MACD"] - work["MACD_Signal"]
 
-    volume = work[
-        "Volume"
-    ]
+    rolling_std = close.rolling(20).std()
+    work["Bollinger_Mid"] = work["SMA20"]
+    work["Bollinger_Upper"] = work["SMA20"] + 2 * rolling_std
+    work["Bollinger_Lower"] = work["SMA20"] - 2 * rolling_std
+    work["Bollinger_Width"] = (work["Bollinger_Upper"] - work["Bollinger_Lower"]) / work["Bollinger_Mid"] * 100
+    work["Bollinger_Position"] = (close - work["Bollinger_Lower"]) / (work["Bollinger_Upper"] - work["Bollinger_Lower"])
 
-    # ========================================================
-    # PRICE RETURN
-    # ========================================================
+    for period in [5, 20, 60]:
+        work[f"Volatility{period}"] = work["Return"].rolling(period).std() * np.sqrt(252) * 100
+    work["Volatility_20D"] = work["Volatility20"] / 100
 
-    work[
-        "Return"
-    ] = close.pct_change()
-
-    work[
-        "ReturnPct"
-    ] = (
-        work[
-            "Return"
-        ]
-        * 100
-    )
-
-    # ========================================================
-    # LOG RETURN
-    # ========================================================
-
-    work[
-        "LogReturn"
-    ] = np.log(
-        close
-        / close.shift(1)
-    )
-
-    # ========================================================
-    # RSI
-    # ========================================================
-
-    work[
-        "RSI"
-    ] = rsi(
-        close,
-        14,
-    )
-
-    # ========================================================
-    # EMA
-    # ========================================================
-
-    for period in [
-        9,
-        12,
-        20,
-        26,
-        50,
-        100,
-        200,
-    ]:
-
-        work[
-            f"EMA{period}"
-        ] = (
-            close
-            .ewm(
-                span=period,
-                adjust=False,
-            )
-            .mean()
-        )
-
-    # ========================================================
-    # SMA
-    # ========================================================
-
-    for period in [
-        5,
-        10,
-        20,
-        50,
-        100,
-        200,
-    ]:
-
-        work[
-            f"SMA{period}"
-        ] = (
-            close
-            .rolling(
-                period
-            )
-            .mean()
-        )
-
-    # ========================================================
-    # DISTANCE FROM MA
-    # ========================================================
-
-    for period in [
-        20,
-        50,
-        100,
-        200,
-    ]:
-
-        sma_col = (
-            f"SMA{period}"
-        )
-
-        ema_col = (
-            f"EMA{period}"
-        )
-
-        if sma_col in work.columns:
-
-            work[
-                f"Price_vs_SMA{period}"
-            ] = (
-                (
-                    close
-                    / work[
-                        sma_col
-                    ]
-                )
-                - 1
-            ) * 100
-
-        if ema_col in work.columns:
-
-            work[
-                f"Price_vs_EMA{period}"
-            ] = (
-                (
-                    close
-                    / work[
-                        ema_col
-                    ]
-                )
-                - 1
-            ) * 100
-
-    # ========================================================
-    # MACD
-    # ========================================================
-
-    work[
-        "MACD"
-    ] = (
-        work[
-            "EMA12"
-        ]
-        - work[
-            "EMA26"
-        ]
-    )
-
-    work[
-        "MACD_Signal"
-    ] = (
-        work[
-            "MACD"
-        ]
-        .ewm(
-            span=9,
-            adjust=False,
-        )
-        .mean()
-    )
-
-    work[
-        "MACD_Hist"
-    ] = (
-        work[
-            "MACD"
-        ]
-        - work[
-            "MACD_Signal"
-        ]
-    )
-
-    # ========================================================
-    # BOLLINGER
-    # ========================================================
-
-    rolling_std = (
-        close
-        .rolling(
-            20
-        )
-        .std()
-    )
-
-    work[
-        "Bollinger_Mid"
-    ] = work[
-        "SMA20"
-    ]
-
-    work[
-        "Bollinger_Upper"
-    ] = (
-        work[
-            "SMA20"
-        ]
-        + 2 * rolling_std
-    )
-
-    work[
-        "Bollinger_Lower"
-    ] = (
-        work[
-            "SMA20"
-        ]
-        - 2 * rolling_std
-    )
-
-    work[
-        "Bollinger_Width"
-    ] = (
-        (
-            work[
-                "Bollinger_Upper"
-            ]
-            - work[
-                "Bollinger_Lower"
-            ]
-        )
-        / work[
-            "Bollinger_Mid"
-        ]
-        * 100
-    )
-
-    work[
-        "Bollinger_Position"
-    ] = (
-        (
-            close
-            - work[
-                "Bollinger_Lower"
-            ]
-        )
-        / (
-            work[
-                "Bollinger_Upper"
-            ]
-            - work[
-                "Bollinger_Lower"
-            ]
-        )
-    )
-
-    # ========================================================
-    # VOLATILITY
-    # ========================================================
-
-    for period in [
-        5,
-        20,
-        60,
-    ]:
-
-        work[
-            f"Volatility{period}"
-        ] = (
-            work[
-                "Return"
-            ]
-            .rolling(
-                period
-            )
-            .std()
-            * np.sqrt(
-                252
-            )
-            * 100
-        )
-
-    work[
-        "Volatility_20D"
-    ] = (
-        work[
-            "Volatility20"
-        ]
-        / 100
-    )
-
-    # ========================================================
-    # VOLUME
-    # ========================================================
-
-    for period in [
-        5,
-        20,
-        50,
-    ]:
-
-        work[
-            f"Volume_SMA{period}"
-        ] = (
-            volume
-            .rolling(
-                period
-            )
-            .mean()
-        )
-
-    work[
-        "Volume_Change"
-    ] = volume.pct_change()
-
-    work[
-        "Relative_Volume"
-    ] = (
-        volume
-        / work[
-            "Volume_SMA20"
-        ]
-    )
-
-    # ========================================================
-    # VALUE
-    # ========================================================
+    for period in [5, 20, 50]:
+        work[f"Volume_SMA{period}"] = volume.rolling(period).mean()
+    work["Volume_Change"] = volume.pct_change()
+    work["Relative_Volume"] = volume / work["Volume_SMA20"]
 
     if "Value" not in work.columns:
-
-        work[
-            "Value"
-        ] = (
-            close
-            * volume
-        )
-
+        work["Value"] = close * volume
     else:
+        work["Value"] = pd.to_numeric(work["Value"], errors="coerce")
+    work["Trading_Value"] = work["Value"]
+    work["Trading_Value_Change"] = work["Trading_Value"].pct_change()
+    work["Trading_Value_SMA20"] = work["Trading_Value"].rolling(20).mean()
 
-        work[
-            "Value"
-        ] = pd.to_numeric(
-            work[
-                "Value"
-            ],
-            errors="coerce",
-        )
-
-    work[
-        "Trading_Value"
-    ] = work[
-        "Value"
-    ]
-
-    work[
-        "Trading_Value_Change"
-    ] = (
-        work[
-            "Trading_Value"
-        ]
-        .pct_change()
-    )
-
-    work[
-        "Trading_Value_SMA20"
-    ] = (
-        work[
-            "Trading_Value"
-        ]
-        .rolling(
-            20
-        )
-        .mean()
-    )
-
-    # ========================================================
-    # RANGE
-    # ========================================================
-
-    work[
-        "Range"
-    ] = (
-        high
-        - low
-    )
-
-    work[
-        "Range_Percent"
-    ] = (
-        work[
-            "Range"
-        ]
-        / close
-        * 100
-    )
-
-    work[
-        "Body"
-    ] = (
-        close
-        - work[
-            "Open"
-        ]
-    )
-
-    work[
-        "Body_Percent"
-    ] = (
-        work[
-            "Body"
-        ]
-        / work[
-            "Open"
-        ]
-        * 100
-    )
-
-    # ========================================================
-    # ATR14
-    # ========================================================
-
-    true_range_1 = (
-        high
-        - low
-    )
-
-    true_range_2 = (
-        high
-        - close.shift(1)
-    ).abs()
-
-    true_range_3 = (
-        low
-        - close.shift(1)
-    ).abs()
+    work["Range"] = high - low
+    work["Range_Percent"] = work["Range"] / close * 100
+    work["Body"] = close - work["Open"]
+    work["Body_Percent"] = work["Body"] / work["Open"] * 100
 
     true_range = pd.concat(
-        [
-            true_range_1,
-            true_range_2,
-            true_range_3,
-        ],
+        [high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()],
         axis=1,
-    ).max(
-        axis=1
-    )
+    ).max(axis=1)
+    work["TrueRange"] = true_range
+    work["ATR14"] = true_range.rolling(14).mean()
+    work["ATR_Percent"] = work["ATR14"] / close * 100
 
-    work[
-        "TrueRange"
-    ] = true_range
+    for period in [1, 5, 10, 20, 60]:
+        work[f"Momentum{period}"] = close / close.shift(period) - 1
+        work[f"Momentum{period}Pct"] = work[f"Momentum{period}"] * 100
 
-    work[
-        "ATR14"
-    ] = (
-        true_range
-        .rolling(
-            14
-        )
-        .mean()
-    )
+    for period in [20, 50, 252]:
+        work[f"High{period}"] = high.rolling(period).max()
+        work[f"Low{period}"] = low.rolling(period).min()
+        work[f"Distance_From_High{period}"] = (close / work[f"High{period}"] - 1) * 100
+        work[f"Distance_From_Low{period}"] = (close / work[f"Low{period}"] - 1) * 100
 
-    work[
-        "ATR_Percent"
-    ] = (
-        work[
-            "ATR14"
-        ]
-        / close
-        * 100
-    )
+    low14 = low.rolling(14).min()
+    high14 = high.rolling(14).max()
+    spread = (high14 - low14).replace(0, np.nan)
+    work["Stochastic_K"] = (close - low14) / spread * 100
+    work["Stochastic_D"] = work["Stochastic_K"].rolling(3).mean()
 
-    # ========================================================
-    # MOMENTUM
-    # ========================================================
+    for period in [5, 10, 20]:
+        work[f"ROC{period}"] = (close / close.shift(period) - 1) * 100
 
-    for period in [
-        1,
-        5,
-        10,
-        20,
-        60,
-    ]:
+    work["OBV_Proxy"] = (np.sign(close.diff()) * volume).cumsum()
+    work["Dollar_Volume"] = close * volume
 
-        work[
-            f"Momentum{period}"
-        ] = (
-            close
-            / close.shift(
-                period
-            )
-            - 1
-        )
-
-        work[
-            f"Momentum{period}Pct"
-        ] = (
-            work[
-                f"Momentum{period}"
-            ]
-            * 100
-        )
-
-    # ========================================================
-    # HIGH / LOW
-    # ========================================================
-
-    for period in [
-        20,
-        50,
-        252,
-    ]:
-
-        work[
-            f"High{period}"
-        ] = (
-            high
-            .rolling(
-                period
-            )
-            .max()
-        )
-
-        work[
-            f"Low{period}"
-        ] = (
-            low
-            .rolling(
-                period
-            )
-            .min()
-        )
-
-        work[
-            f"Distance_From_High{period}"
-        ] = (
-            close
-            / work[
-                f"High{period}"
-            ]
-            - 1
-        ) * 100
-
-        work[
-            f"Distance_From_Low{period}"
-        ] = (
-            close
-            / work[
-                f"Low{period}"
-            ]
-            - 1
-        ) * 100
-
-    # ========================================================
-    # STOCHASTIC
-    # ========================================================
-
-    low14 = (
-        low
-        .rolling(
-            14
-        )
-        .min()
-    )
-
-    high14 = (
-        high
-        .rolling(
-            14
-        )
-        .max()
-    )
-
-    work[
-        "Stochastic_K"
-    ] = (
-        (
-            close
-            - low14
-        )
-        / (
-            high14
-            - low14
-        )
-        * 100
-    )
-
-    work[
-        "Stochastic_D"
-    ] = (
-        work[
-            "Stochastic_K"
-        ]
-        .rolling(
-            3
-        )
-        .mean()
-    )
-
-    # ========================================================
-    # ROC
-    # ========================================================
-
-    for period in [
-        5,
-        10,
-        20,
-    ]:
-
-        work[
-            f"ROC{period}"
-        ] = (
-            (
-                close
-                / close.shift(
-                    period
-                )
-            )
-            - 1
-        ) * 100
-
-    # ========================================================
-    # PRICE / VOLUME TREND
-    # ========================================================
-
-    work[
-        "OBV_Proxy"
-    ] = (
-        np.sign(
-            close.diff()
-        )
-        * volume
-    ).cumsum()
-
-    work[
-        "Dollar_Volume"
-    ] = (
-        close
-        * volume
-    )
-
-    # ========================================================
-    # CLEAN
-    # ========================================================
-
-    work = work.replace(
-        [
-            np.inf,
-            -np.inf,
-        ],
-        np.nan,
-    )
-
-    return work
+    return work.replace([np.inf, -np.inf], np.nan)
 
 
 # ============================================================
-# PERIOD -> DAYS
+# PERIOD HELPERS
 # ============================================================
 
-def _period_days(
-    period,
-):
-    key = str(
-        period or "1y"
-    ).strip().lower()
-
+def _period_days(period: str) -> int:
     mapping = {
         "1d": 5,
         "5d": 12,
@@ -1530,557 +506,235 @@ def _period_days(
         "10y": 3652,
         "max": 5000,
     }
-
-    return mapping.get(
-        key,
-        365,
-    )
+    return mapping.get(str(period or "1y").strip().lower(), 365)
 
 
 # ============================================================
-# REQUEST RATE LIMIT
+# GENERIC VNSTOCK CALL
 # ============================================================
 
-# Guest = 20 requests/phút. Chúng ta chủ động giữ ở 18 requests/phút
-# để có khoảng đệm và tránh việc chính code tự đẩy hệ thống vào 20/20.
-# Khi có API key, giữ ở 55 requests/phút thay vì sát trần 60.
-_REQUEST_WINDOW_SECONDS = 60.0
-_GUEST_MAX_REQUESTS_PER_MINUTE = 18
-_API_KEY_MAX_REQUESTS_PER_MINUTE = 55
-_REQUEST_TIMESTAMPS = []
+def _call_vnstock(callable_obj, *, label: str):
+    """Một điểm duy nhất để throttle + retry; không sleep trùng."""
+    last_error: Exception | None = None
 
-
-def _sleep_between_requests(
-    previous_request_time,
-):
-    global _REQUEST_TIMESTAMPS
-
-    now = time.monotonic()
-
-    # Chọn hạn mức an toàn theo trạng thái hiện tại.
-    max_requests = (
-        _API_KEY_MAX_REQUESTS_PER_MINUTE
-        if VNSTOCK_API_KEY_AVAILABLE
-        else _GUEST_MAX_REQUESTS_PER_MINUTE
-    )
-
-    target_delay = (
-        1.25
-        if VNSTOCK_API_KEY_AVAILABLE
-        else 3.5
-    )
-
-    # Xóa timestamp đã quá cửa sổ 60 giây.
-    _REQUEST_TIMESTAMPS = [
-        t
-        for t in _REQUEST_TIMESTAMPS
-        if now - t < _REQUEST_WINDOW_SECONDS
-    ]
-
-    # Giữ khoảng cách tối thiểu giữa hai request.
-    if previous_request_time is not None:
-        elapsed = now - previous_request_time
-        remaining_gap = target_delay - elapsed
-
-        if remaining_gap > 0:
-            time.sleep(remaining_gap)
-            now = time.monotonic()
-
-    # Sau khi ngủ theo khoảng cách, kiểm tra lại rolling window.
-    _REQUEST_TIMESTAMPS = [
-        t
-        for t in _REQUEST_TIMESTAMPS
-        if now - t < _REQUEST_WINDOW_SECONDS
-    ]
-
-    if len(_REQUEST_TIMESTAMPS) >= max_requests:
-        oldest = min(_REQUEST_TIMESTAMPS)
-        wait_seconds = max(
-            1.0,
-            _REQUEST_WINDOW_SECONDS - (now - oldest) + 1.0,
-        )
-
-        print(
-            f"[VNSTOCK] Đã dùng {len(_REQUEST_TIMESTAMPS)}/"
-            f"{max_requests} request trong 60 giây. "
-            f"Chờ {wait_seconds:.0f} giây để lấy slot tiếp theo."
-        )
-
-        time.sleep(wait_seconds)
-        now = time.monotonic()
-
-        _REQUEST_TIMESTAMPS = [
-            t
-            for t in _REQUEST_TIMESTAMPS
-            if now - t < _REQUEST_WINDOW_SECONDS
-        ]
-
-    # Ghi nhận request sắp thực hiện.
-    _REQUEST_TIMESTAMPS.append(
-        time.monotonic()
-    )
-
-
-# ============================================================
-# EQUITY OHLCV REQUEST
-# ============================================================
-
-def _request_equity_ohlcv(
-    market,
-    symbol,
-    start_date,
-    end_date,
-):
-    last_error = None
-
-    for attempt in range(1, MAX_OHLCV_RETRIES + 1):
-        _sleep_between_requests(None)
-
+    for attempt in range(1, MAX_API_RETRIES + 1):
+        _throttle_request()
         try:
-            return (
-                market
-                .equity(
-                    normalize_symbol(symbol)
-                )
-                .ohlcv(
-                    start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
-                    end=(
-                        pd.Timestamp(end_date)
-                        + pd.Timedelta(days=1)
-                    ).strftime("%Y-%m-%d"),
-                    interval="1D",
-                )
-            )
+            return callable_obj()
         except Exception as error:
             last_error = error
+            print(f"[VNSTOCK] {label}: lỗi lần {attempt}: {error}")
 
             if _is_rate_limit_error(error):
-                if attempt < MAX_OHLCV_RETRIES:
+                if attempt < MAX_API_RETRIES:
                     _sleep_after_rate_limit(error)
                     continue
                 raise
 
-            if attempt < MAX_OHLCV_RETRIES:
+            if attempt < MAX_API_RETRIES:
                 time.sleep(RETRY_BACKOFF_SECONDS * attempt)
-            else:
-                raise
+                continue
+            raise
 
     if last_error is not None:
         raise last_error
-
     return pd.DataFrame()
 
 
-def _load_equity_range_complete(
-    market,
-    symbol,
-    start_date,
-    end_date,
-    request_state=None,
-):
-    """
-    Lấy toàn bộ OHLCV trong một khoảng thời gian mà không chấp nhận
-    response bị cắt bởi giới hạn số nến của nguồn.
+# ============================================================
+# OHLCV REQUESTS
+# ============================================================
 
-    Nếu một request trả về quá gần giới hạn nến an toàn, khoảng thời
-    gian sẽ tự động được chia đôi và tải lại từng nửa.
-    """
-    start = pd.Timestamp(
-        start_date
-    ).normalize()
+def _request_equity_ohlcv(market, symbol, start_date, end_date):
+    equity = market.equity(normalize_symbol(symbol))
+    return _call_vnstock(
+        lambda: equity.ohlcv(
+            start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
+            end=(pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval="1D",
+        ),
+        label=f"OHLCV {normalize_symbol(symbol)} {pd.Timestamp(start_date).date()}→{pd.Timestamp(end_date).date()}",
+    )
 
-    end = pd.Timestamp(
-        end_date
-    ).normalize()
+
+def _request_index_ohlcv(market, index_symbol, start_date, end_date):
+    index_obj = market.index(index_symbol)
+    return _call_vnstock(
+        lambda: index_obj.ohlcv(
+            start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
+            end=(pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval="1D",
+        ),
+        label=f"INDEX {index_symbol} {pd.Timestamp(start_date).date()}→{pd.Timestamp(end_date).date()}",
+    )
+
+
+def _load_equity_range_complete(market, symbol, start_date, end_date) -> pd.DataFrame:
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
 
     if start > end:
         return pd.DataFrame()
 
-    if request_state is None:
-        request_state = {"last_request": None}
-
-    _sleep_between_requests(
-        request_state.get("last_request")
-    )
-
-    request_state["last_request"] = time.monotonic()
-
+    raw = _request_equity_ohlcv(market, symbol, start, end)
     try:
-        df = _request_equity_ohlcv(
-            market,
-            symbol,
-            start,
-            end,
-        )
-    except Exception:
-        # Cho phép lỗi ở mức chunk được xử lý rõ ràng ở nơi gọi.
-        raise
+        normalized = _normalize_ohlcv(raw, stock=True)
+    except Exception as error:
+        print(f"[VNSTOCK] {symbol}: không chuẩn hóa được chunk {start.date()}→{end.date()}: {error}")
+        return pd.DataFrame()
 
-    if df is None or df.empty:
-        # Empty response có thể là lỗi tạm thời của nguồn. Thử lại thêm
-        # một lần trước khi chấp nhận chunk rỗng.
-        time.sleep(RETRY_BACKOFF_SECONDS)
-        df = _request_equity_ohlcv(
-            market,
-            symbol,
-            start,
-            end,
-        )
+    if normalized.empty:
+        return pd.DataFrame()
 
-        if df is None or df.empty:
-            return pd.DataFrame()
+    span_days = (end - start).days + 1
 
-    try:
-        normalized = _normalize_ohlcv(
-            df,
-            stock=True,
-        )
-    except Exception:
-        normalized = pd.DataFrame()
+    # Nếu ít hơn ngưỡng, coi như đủ trong chunk.
+    if len(normalized) < MAX_ROWS_PER_OHLCV_REQUEST:
+        return normalized.loc[start:end]
 
-    day_span = (
-        end - start
-    ).days + 1
-
-    # Nếu response nhỏ hơn ngưỡng an toàn, coi như chunk đầy đủ.
-    # 90 ngày lịch luôn thấp hơn 100 phiên giao dịch.
-    if (
-        not normalized.empty
-        and len(normalized) < MAX_OHLCV_ROWS_PER_REQUEST
-    ):
-        return normalized
-
-    # Nếu chunk đã rất nhỏ mà vẫn chạm ngưỡng, không thể chia thêm
-    # một cách có ý nghĩa; trả dữ liệu hiện có nhưng đánh dấu để log.
-    if day_span <= MIN_OHLCV_CHUNK_DAYS:
+    if span_days <= MIN_CHUNK_DAYS:
         print(
-            f"[VNSTOCK] Cảnh báo: {symbol} trả về "
-            f"{len(normalized)} dòng trong chunk "
-            f"{start.date()} → {end.date()}."
+            f"[VNSTOCK] {symbol}: chunk nhỏ nhưng trả {len(normalized)} dòng; "
+            "giữ nguyên dữ liệu nhận được."
         )
-        return normalized
+        return normalized.loc[start:end]
 
-    midpoint = start + pd.Timedelta(
-        days=(day_span // 2) - 1
-    )
-
+    midpoint = start + pd.Timedelta(days=(span_days // 2) - 1)
     if midpoint < start or midpoint >= end:
-        return normalized
+        return normalized.loc[start:end]
 
-    left = _load_equity_range_complete(
-        market,
-        symbol,
-        start,
-        midpoint,
-        request_state=request_state,
+    print(
+        f"[VNSTOCK] {symbol}: response {len(normalized)} dòng, "
+        f"chia {start.date()}→{end.date()} thành 2 phần."
     )
 
+    left = _load_equity_range_complete(market, symbol, start, midpoint)
     right = _load_equity_range_complete(
         market,
         symbol,
         midpoint + pd.Timedelta(days=1),
         end,
-        request_state=request_state,
     )
-    pieces = [
-        part
-        for part in [left, right]
-        if part is not None and not part.empty
-    ]
+
+    pieces = [part for part in (left, right) if not part.empty]
     if not pieces:
         return pd.DataFrame()
-    result = pd.concat(
-        pieces,
-        axis=0,
-    )
-    result = (
-        result
-        .sort_index()
-        .loc[start:end]
-    )
-    result = result[
-        ~result.index.duplicated(
-            keep="last"
-        )
-    ]
-    return result
+
+    result = pd.concat(pieces, axis=0).sort_index()
+    result = result[~result.index.duplicated(keep="last")]
+    return result.loc[start:end]
 
 
-# ============================================================
-# INDEX OHLCV REQUEST
-# ============================================================
-
-def _request_index_ohlcv(
-    market,
-    index_symbol,
-    start_date,
-    end_date,
-):
-    last_error = None
-
-    for attempt in range(1, MAX_OHLCV_RETRIES + 1):
-        _sleep_between_requests(None)
-
-        try:
-            return (
-                market
-                .index(index_symbol)
-                .ohlcv(
-                    start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
-                    end=(
-                        pd.Timestamp(end_date)
-                        + pd.Timedelta(days=1)
-                    ).strftime("%Y-%m-%d"),
-                    interval="1D",
-                )
-            )
-        except Exception as error:
-            last_error = error
-
-            if _is_rate_limit_error(error):
-                if attempt < MAX_OHLCV_RETRIES:
-                    _sleep_after_rate_limit(error)
-                    continue
-                raise
-
-            if attempt < MAX_OHLCV_RETRIES:
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
-            else:
-                raise
-
-    if last_error is not None:
-        raise last_error
-
-    return pd.DataFrame()
-
-
-def _load_index_range_complete(
-    market,
-    index_symbol,
-    start_date,
-    end_date,
-    request_state=None,
-):
-    """Lấy đủ lịch sử chỉ số, tự chia nếu response chạm giới hạn."""
+def _load_index_range_complete(market, index_symbol, start_date, end_date) -> pd.DataFrame:
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
 
     if start > end:
         return pd.DataFrame()
 
-    if request_state is None:
-        request_state = _GLOBAL_REQUEST_STATE
-
-    _sleep_between_requests(request_state.get("last_request"))
-    request_state["last_request"] = time.monotonic()
-
     try:
-        df = _request_index_ohlcv(
-            market,
-            index_symbol,
-            start,
-            end,
-        )
+        raw = _request_index_ohlcv(market, index_symbol, start, end)
     except Exception as error:
         print(
-            f"[VNSTOCK] {index_symbol}: lỗi request "
-            f"{start.date()} -> {end.date()}: {error}"
+            f"[VNSTOCK] {index_symbol}: lỗi {start.date()}→{end.date()}: {error}"
         )
-        return pd.DataFrame()
-
-    if df is None or df.empty:
-        time.sleep(RETRY_BACKOFF_SECONDS)
-        try:
-            df = _request_index_ohlcv(market, index_symbol, start, end)
-        except Exception:
-            df = pd.DataFrame()
-
-    if df is None or df.empty:
         return pd.DataFrame()
 
     try:
-        normalized = _normalize_ohlcv(df, stock=False)
-    except Exception:
-        normalized = pd.DataFrame()
+        normalized = _normalize_ohlcv(raw, stock=False)
+    except Exception as error:
+        print(f"[VNSTOCK] {index_symbol}: không chuẩn hóa được: {error}")
+        return pd.DataFrame()
 
-    day_span = (end - start).days + 1
+    if normalized.empty:
+        return pd.DataFrame()
 
-    if not normalized.empty and len(normalized) < MAX_OHLCV_ROWS_PER_REQUEST:
+    span_days = (end - start).days + 1
+    if len(normalized) < MAX_ROWS_PER_OHLCV_REQUEST:
         return normalized.loc[start:end]
 
-    if day_span <= MIN_OHLCV_CHUNK_DAYS:
-        print(
-            f"[VNSTOCK] {index_symbol}: cảnh báo chunk nhỏ "
-            f"{start.date()} -> {end.date()} trả {len(normalized)} dòng."
-        )
+    if span_days <= MIN_CHUNK_DAYS:
         return normalized.loc[start:end]
 
-    midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
+    midpoint = start + pd.Timedelta(days=(span_days // 2) - 1)
     if midpoint < start or midpoint >= end:
         return normalized.loc[start:end]
 
-    left = _load_index_range_complete(
-        market, index_symbol, start, midpoint, request_state
-    )
+    left = _load_index_range_complete(market, index_symbol, start, midpoint)
     right = _load_index_range_complete(
         market,
         index_symbol,
         midpoint + pd.Timedelta(days=1),
         end,
-        request_state,
     )
-    parts = [x for x in (left, right) if x is not None and not x.empty]
-    if not parts:
+
+    pieces = [part for part in (left, right) if not part.empty]
+    if not pieces:
         return pd.DataFrame()
 
-    result = pd.concat(parts, axis=0).sort_index()
+    result = pd.concat(pieces, axis=0).sort_index()
     result = result[~result.index.duplicated(keep="last")]
     return result.loc[start:end]
 
 
 # ============================================================
-# LOAD STOCK DATA
+# STOCK LOAD
 # ============================================================
 
-def _load_stock_raw(
-    symbol,
-    start_date,
-    end_date,
-    progress_callback=None,
-):
-    """
-    Lấy OHLCV đầy đủ trong khoảng yêu cầu.
-
-    Chiến lược:
-    1. Thử đúng MỘT request cho toàn bộ khoảng thời gian trước.
-       Nếu nguồn trả đủ dữ liệu thì dùng ngay, tránh 10+ request.
-    2. Nếu response có dấu hiệu bị giới hạn/cắt, mới chuyển sang
-       phân đoạn 120 ngày và tự chia nhỏ khi cần.
-    3. Không tự ý bỏ dữ liệu; cuối pipeline vẫn có bước kiểm tra
-       độ đầy đủ theo lịch VN-Index.
-    """
-
+def _load_stock_raw(symbol, start_date, end_date, progress_callback=None) -> pd.DataFrame:
     market = _create_market()
-
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
+    symbol_norm = normalize_symbol(symbol)
 
     if start > end:
-        raise ValueError(
-            f"Khoảng ngày không hợp lệ: {start.date()} → {end.date()}."
-        )
-
-    symbol_norm = normalize_symbol(symbol)
+        raise ValueError("Khoảng ngày không hợp lệ.")
 
     if progress_callback:
         progress_callback(
-            f"Đang tải toàn bộ lịch sử {symbol_norm} "
-            f"({start.date()} → {end.date()})..."
+            f"Đang tải {symbol_norm}: {start.date()} → {end.date()}..."
         )
 
-    # --------------------------------------------------------
-    # FAST PATH: một request cho toàn bộ khoảng
-    # --------------------------------------------------------
-    request_state = {"last_request": None}
-
-    _sleep_between_requests(
-        request_state.get("last_request")
-    )
-    request_state["last_request"] = time.monotonic()
-
-    direct = pd.DataFrame()
+    # FAST PATH: đúng khoảng người dùng yêu cầu, một request duy nhất.
     try:
-        direct = _request_equity_ohlcv(
-            market,
-            symbol_norm,
-            start,
-            end,
-        )
+        direct = _request_equity_ohlcv(market, symbol_norm, start, end)
+        direct = _normalize_ohlcv(direct, stock=True)
     except Exception as error:
-        print(
-            f"[VNSTOCK] Fast path {symbol_norm} lỗi: {error}. "
-            "Chuyển sang phân đoạn."
-        )
+        print(f"[VNSTOCK] FAST {symbol_norm} lỗi: {error}")
+        direct = pd.DataFrame()
 
-    direct_normalized = pd.DataFrame()
-    if direct is not None and not direct.empty:
-        try:
-            direct_normalized = _normalize_ohlcv(
-                direct,
-                stock=True,
-            )
-        except Exception:
-            direct_normalized = pd.DataFrame()
+    if not direct.empty:
+        first_date = direct.index.min().normalize()
+        last_date = direct.index.max().normalize()
+        covers_start = first_date <= start + pd.Timedelta(days=5)
+        covers_end = last_date >= end - pd.Timedelta(days=5)
 
-    # Nếu request toàn khoảng trả về nhiều hơn ngưỡng giới hạn
-    # an toàn, hoặc phủ gần như toàn bộ khoảng yêu cầu, dùng ngay.
-    # Nếu chỉ trả đúng/tiệm cận 100 dòng thì rất có thể đã bị cắt.
-    if not direct_normalized.empty:
-        direct_first = direct_normalized.index.min()
-        direct_last = direct_normalized.index.max()
-        first_gap_days = (direct_first - start).days
-        requested_days = (end - start).days + 1
-
-        direct_is_likely_complete = (
-            len(direct_normalized) >= MAX_OHLCV_ROWS_PER_REQUEST
-            and first_gap_days <= 5
-            and direct_last >= end - pd.Timedelta(days=5)
-        )
-
-        # Với khoảng rất dài, chỉ cần response > 100 dòng đã là dấu
-        # hiệu mạnh rằng nguồn đã không áp giới hạn 100 nến cho request.
-        if len(direct_normalized) > MAX_OHLCV_ROWS_PER_REQUEST:
-            direct_is_likely_complete = True
-
-        if (
-            requested_days <= 120
-            and direct_last >= end - pd.Timedelta(days=5)
-        ):
-            direct_is_likely_complete = True
-
-        if direct_is_likely_complete:
-            raw = direct_normalized.loc[start:end].copy()
-            raw = raw[~raw.index.duplicated(keep="last")]
-
-            if progress_callback:
-                progress_callback(
-                    f"Đã nhận {len(raw)} phiên {symbol_norm} "
-                    f"trong 1 request."
-                )
-
+        # Không còn lỗi cũ: tuyệt đối KHÔNG coi "99 dòng" là complete nếu
+        # response thực tế chỉ phủ vài tháng cuối của một khoảng 3 năm.
+        if covers_start and covers_end:
+            result = direct.loc[start:end].copy()
+            result = result[~result.index.duplicated(keep="last")]
             print(
-                f"[VNSTOCK] FAST {symbol_norm}: "
-                f"{len(raw)} phiên | "
-                f"{raw.index.min().date()} → {raw.index.max().date()}"
+                f"[VNSTOCK] FAST {symbol_norm}: {len(result)} phiên | "
+                f"{result.index.min().date()} → {result.index.max().date()} | "
+                f"yêu cầu {start.date()} → {end.date()}"
             )
-            return raw
+            return result
 
         print(
-            f"[VNSTOCK] FAST {symbol_norm}: chỉ nhận "
-            f"{len(direct_normalized)} dòng | "
-            f"{direct_first.date()} → {direct_last.date()}. "
-            "Có khả năng bị cắt; chuyển sang phân đoạn."
+            f"[VNSTOCK] FAST {symbol_norm}: {len(direct)} phiên | "
+            f"{first_date.date()} → {last_date.date()} | "
+            "response không phủ đủ khoảng, chuyển sang chunk."
         )
 
-    # --------------------------------------------------------
-    # FALLBACK: phân đoạn theo thời gian
-    # --------------------------------------------------------
-    chunks = []
+    # FALLBACK: 120 ngày lịch/chunk.
+    chunks: list[pd.DataFrame] = []
     cursor = start
-    total_days = max(
-        1,
-        (end - start).days + 1,
-    )
     chunk_number = 0
-    estimated_chunks = int(
-        np.ceil(
-            total_days / RESEARCH_CHUNK_DAYS
-        )
-    )
+    estimated_chunks = int(np.ceil(((end - start).days + 1) / RESEARCH_CHUNK_DAYS))
 
     while cursor <= end:
         chunk_number += 1
-
         chunk_end = min(
             cursor + pd.Timedelta(days=RESEARCH_CHUNK_DAYS - 1),
             end,
@@ -2088,246 +742,96 @@ def _load_stock_raw(
 
         if progress_callback:
             progress_callback(
-                f"Đang tải {symbol_norm}: đoạn "
-                f"{chunk_number}/{estimated_chunks} "
+                f"Đang tải {symbol_norm}: đoạn {chunk_number}/{estimated_chunks} "
                 f"({cursor.date()} → {chunk_end.date()})..."
             )
 
-        df_chunk = _load_equity_range_complete(
-            market,
-            symbol_norm,
-            cursor,
-            chunk_end,
-            request_state=request_state,
-        )
+        try:
+            chunk = _load_equity_range_complete(
+                market,
+                symbol_norm,
+                cursor,
+                chunk_end,
+            )
+        except Exception as error:
+            print(
+                f"[VNSTOCK] {symbol_norm}: chunk {cursor.date()}→{chunk_end.date()} lỗi: {error}"
+            )
+            chunk = pd.DataFrame()
 
-        if df_chunk is not None and not df_chunk.empty:
-            chunks.append(df_chunk)
+        if not chunk.empty:
+            chunks.append(chunk)
 
         cursor = chunk_end + pd.Timedelta(days=1)
 
     if not chunks:
-        raise ValueError(
-            f"Không có dữ liệu giá {symbol_norm}."
-        )
+        raise ValueError(f"Không có dữ liệu giá {symbol_norm}.")
 
-    raw = pd.concat(chunks, axis=0)
-    raw = _normalize_ohlcv(raw, stock=True)
-    raw = raw.loc[start:end]
-    raw = raw[~raw.index.duplicated(keep="last")]
+    result = pd.concat(chunks, axis=0).sort_index()
+    result = _normalize_ohlcv(result, stock=True)
+    result = result.loc[start:end]
+    result = result[~result.index.duplicated(keep="last")]
 
-    if raw.empty:
+    if result.empty:
         raise ValueError(
             f"Không có dữ liệu hợp lệ cho {symbol_norm} "
-            f"trong khoảng {start.date()} → {end.date()}."
-        )
-
-    if progress_callback:
-        progress_callback(
-            f"Đã tải {len(raw)} phiên {symbol_norm} "
-            f"sau {chunk_number} đoạn."
+            f"{start.date()} → {end.date()}."
         )
 
     print(
-        f"[VNSTOCK] CHUNKED {symbol_norm}: "
-        f"{len(raw)} phiên | "
-        f"{raw.index.min().date()} → {raw.index.max().date()} "
-        f"| yêu cầu {start.date()} → {end.date()}"
+        f"[VNSTOCK] CHUNKED {symbol_norm}: {len(result)} phiên | "
+        f"{result.index.min().date()} → {result.index.max().date()} | "
+        f"yêu cầu {start.date()} → {end.date()}"
     )
-
-    return raw
+    return result
 
 
 # ============================================================
-# OLD PUBLIC STOCK API
+# PUBLIC STOCK DATA
 # ============================================================
 
-@st.cache_data(
-    ttl=CACHE_TTL_PRICE,
-    show_spinner=False,
-)
-def load_market_data(
-    symbol,
-    period="1y",
-):
-
-    start = (
-        pd.Timestamp.today()
-        - pd.Timedelta(
-            days=_period_days(
-                period
-            )
-        )
-    ).date()
-
-    end = (
-        pd.Timestamp.today()
-        .date()
-    )
-
-    raw = _load_stock_raw(
-        symbol,
-        start,
-        end,
-    )
-
-    data = add_indicators(
-        raw,
-        la_co_phieu=True,
-    )
-
-    data.attrs[
-        "symbol"
-    ] = normalize_symbol(
-        symbol
-    )
-
-    data.attrs[
-        "source"
-    ] = "Vnstock"
-
+@st.cache_data(ttl=CACHE_TTL_PRICE, show_spinner=False)
+def load_market_data(symbol, period="1y"):
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.Timedelta(days=_period_days(period))
+    raw = _load_stock_raw(symbol, start, end)
+    data = add_indicators(raw, la_co_phieu=True)
+    data.attrs["symbol"] = normalize_symbol(symbol)
+    data.attrs["source"] = "Vnstock"
     return data
 
 
-# ============================================================
-# LOAD VNINDEX
-# ============================================================
-
-@st.cache_data(
-    ttl=CACHE_TTL_INDEX,
-    show_spinner=False,
-)
+@st.cache_data(ttl=CACHE_TTL_INDEX, show_spinner=False)
 def load_vnindex_data():
-
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.Timedelta(days=450)
     market = _create_market()
-
-    end = (
-        pd.Timestamp.today()
-        .date()
-    )
-
-    start = (
-        pd.Timestamp(
-            end
-        )
-        - pd.Timedelta(
-            days=450
-        )
-    ).date()
-
-    request_state = _GLOBAL_REQUEST_STATE
-
-    df = _load_index_range_complete(
-        market,
-        "VNINDEX",
-        start,
-        end,
-        request_state=request_state,
-    )
-
-    if df is None or df.empty:
-        raise ValueError(
-            "Không lấy được dữ liệu VNINDEX."
-        )
-
-    data = _normalize_ohlcv(
-        df,
-        stock=False,
-    )
-
-    data = add_indicators(
-        data,
-        la_co_phieu=False,
-    )
-
-    data.attrs[
-        "symbol"
-    ] = "VNINDEX"
-
-    data.attrs[
-        "source"
-    ] = "Vnstock"
-
+    df = _load_index_range_complete(market, "VNINDEX", start, end)
+    if df.empty:
+        raise ValueError("Không lấy được dữ liệu VNINDEX.")
+    data = add_indicators(df, la_co_phieu=False)
+    data.attrs["symbol"] = "VNINDEX"
+    data.attrs["source"] = "Vnstock"
     return data
 
 
-# ============================================================
-# LATEST PRICE
-# ============================================================
-
-@st.cache_data(
-    ttl=CACHE_TTL_LATEST,
-    show_spinner=False,
-)
-def load_latest_price(
-    symbol,
-):
-
-    data = load_market_data(
-        symbol,
-        "5d",
-    )
-
+@st.cache_data(ttl=CACHE_TTL_LATEST, show_spinner=False)
+def load_latest_price(symbol):
+    data = load_market_data(symbol, "5d")
     if data.empty:
+        raise ValueError("Không có dữ liệu mới nhất.")
 
-        raise ValueError(
-            "Không có dữ liệu mới nhất."
-        )
-
-    last = data.iloc[
-        -1
-    ]
-
-    price = _to_number(
-        last.get(
-            "Close"
-        )
-    )
-
-    if len(data) >= 2:
-
-        previous = _to_number(
-            data[
-                "Close"
-            ].iloc[
-                -2
-            ]
-        )
-
-    else:
-
-        previous = price
-
-    if (
-        previous is not None
-        and previous != 0
-    ):
-
-        change = (
-            price
-            / previous
-            - 1
-        ) * 100
-
-    else:
-
-        change = np.nan
+    last = data.iloc[-1]
+    price = _to_number(last.get("Close"))
+    previous = _to_number(data["Close"].iloc[-2]) if len(data) >= 2 else price
+    change = (price / previous - 1) * 100 if previous not in (None, 0) else np.nan
 
     return {
-        "ma": display_symbol(
-            symbol
-        ),
+        "ma": display_symbol(symbol),
         "gia": price,
         "thay_doi": change,
-        "khoi_luong": _to_number(
-            last.get(
-                "Volume"
-            ),
-            0.0,
-        ),
-        "thoi_gian": data.index[
-            -1
-        ],
+        "khoi_luong": _to_number(last.get("Volume"), 0.0),
+        "thoi_gian": data.index[-1],
     }
 
 
@@ -2335,872 +839,164 @@ def load_latest_price(
 # SNAPSHOT
 # ============================================================
 
-def market_snapshot(
-    data,
-):
-
-    if (
-        data is None
-        or data.empty
-    ):
+def market_snapshot(data):
+    if data is None or data.empty:
         return {}
 
-    last = data.iloc[
-        -1
-    ]
-
-    previous = (
-        data.iloc[
-            -2
-        ]
-        if len(data) >= 2
-        else last
+    last = data.iloc[-1]
+    previous = data.iloc[-2] if len(data) >= 2 else last
+    price = _to_number(last.get("Close"))
+    previous_price = _to_number(previous.get("Close"))
+    change = (
+        (price / previous_price - 1) * 100
+        if previous_price not in (None, 0)
+        else np.nan
     )
 
-    price = _to_number(
-        last.get(
-            "Close"
-        )
-    )
-
-    previous_price = _to_number(
-        previous.get(
-            "Close"
-        )
-    )
-
-    if (
-        price is not None
-        and previous_price is not None
-        and previous_price != 0
-    ):
-
-        change = (
-            price
-            / previous_price
-            - 1
-        ) * 100
-
-    else:
-
-        change = np.nan
-
-    def get_column(
-        name,
-    ):
-        return _to_number(
-            last.get(
-                name
-            )
-        )
+    def get_column(name):
+        return _to_number(last.get(name))
 
     return {
         "price": price,
         "change_1d": change,
-        "return_1d": get_column(
-            "ReturnPct"
-        ),
-        "rsi": get_column(
-            "RSI"
-        ),
-        "macd": get_column(
-            "MACD"
-        ),
-        "sma20": get_column(
-            "SMA20"
-        ),
-        "sma50": get_column(
-            "SMA50"
-        ),
-        "volatility20": get_column(
-            "Volatility20"
-        ),
-        "volume": get_column(
-            "Volume"
-        ),
-        "trading_value": get_column(
-            "Trading_Value"
-        ),
-        "atr14": get_column(
-            "ATR14"
-        ),
-        "relative_volume": get_column(
-            "Relative_Volume"
-        ),
+        "return_1d": get_column("ReturnPct"),
+        "rsi": get_column("RSI"),
+        "macd": get_column("MACD"),
+        "sma20": get_column("SMA20"),
+        "sma50": get_column("SMA50"),
+        "volatility20": get_column("Volatility20"),
+        "volume": get_column("Volume"),
+        "trading_value": get_column("Trading_Value"),
+        "atr14": get_column("ATR14"),
+        "relative_volume": get_column("Relative_Volume"),
     }
 
 
 # ============================================================
-# TRADING / FLOW COLUMN EXTRACTION
+# LEGACY FLOW COMPATIBILITY — KHÔNG GỌI API
 # ============================================================
 
-def _extract_date_column(
-    df,
-):
-    return _find_column(
-        df,
-        [
-            "time",
-            "date",
-            "datetime",
-            "trading_date",
-            "tradingdate",
-        ],
+def load_stock_flow_history(symbol, start_date, end_date):
+    """
+    Giữ hàm để các module cũ không lỗi import.
+    KHÔNG gọi trade_history / foreign_flow / proprietary_flow.
+    """
+    print(
+        f"[RESEARCH] Bỏ qua flow API cho {normalize_symbol(symbol)}: "
+        "Guest không dùng trade_history/foreign_flow/proprietary_flow."
     )
-
-
-def _extract_volume_column(
-    df,
-):
-    return _find_column(
-        df,
-        [
-            "matched_volume",
-            "match_volume",
-            "matchvolume",
-            "total_match_volume",
-            "volume",
-            "vol",
-        ],
-    )
-
-
-def _extract_value_column(
-    df,
-):
-    return _find_column(
-        df,
-        [
-            "matched_value",
-            "match_value",
-            "matchvalue",
-            "total_value",
-            "trading_value",
-            "value_traded",
-            "value",
-            "turnover",
-        ],
-    )
-
-
-def _rename_flow_columns(
-    df,
-    prefix,
-):
-
-    if (
-        df is None
-        or df.empty
-    ):
-        return pd.DataFrame()
-
-    work = df.copy()
-
-    date_column = _extract_date_column(
-        work
-    )
-
-    if date_column is not None:
-
-        work[
-            date_column
-        ] = pd.to_datetime(
-            work[
-                date_column
-            ],
-            errors="coerce",
-        )
-
-        work = work[
-            work[
-                date_column
-            ].notna()
-        ].copy()
-
-        work = (
-            work
-            .set_index(
-                date_column
-            )
-            .sort_index()
-        )
-
-    else:
-
-        work.index = pd.to_datetime(
-            work.index,
-            errors="coerce",
-        )
-
-        work = work[
-            ~work.index.isna()
-        ].copy()
-
-    rename = {}
-
-    groups = {
-        "buy_vol": [
-            "buy_vol",
-            "buy_volume",
-            "total_buy_volume",
-            "foreign_buy_volume",
-            "proprietary_buy_volume",
-        ],
-        "sell_vol": [
-            "sell_vol",
-            "sell_volume",
-            "total_sell_volume",
-            "foreign_sell_volume",
-            "proprietary_sell_volume",
-        ],
-        "net_vol": [
-            "net_vol",
-            "net_volume",
-            "net_buy_volume",
-            "foreign_net_volume",
-            "proprietary_net_volume",
-        ],
-        "buy_val": [
-            "buy_val",
-            "buy_value",
-            "foreign_buy_value",
-            "proprietary_buy_value",
-        ],
-        "sell_val": [
-            "sell_val",
-            "sell_value",
-            "foreign_sell_value",
-            "proprietary_sell_value",
-        ],
-        "net_val": [
-            "net_val",
-            "net_value",
-            "net_buy_value",
-            "foreign_net_value",
-            "proprietary_net_value",
-        ],
-        "active_buy_volume": [
-            "active_buy_volume",
-            "total_buy_trade_volume",
-            "buy_trade_volume",
-        ],
-        "active_sell_volume": [
-            "active_sell_volume",
-            "total_sell_trade_volume",
-            "sell_trade_volume",
-        ],
-        "active_buy_value": [
-            "active_buy_value",
-            "total_buy_trade_value",
-            "buy_trade_value",
-        ],
-        "active_sell_value": [
-            "active_sell_value",
-            "total_sell_trade_value",
-            "sell_trade_value",
-        ],
-    }
-
-    for normalized_name, candidates in groups.items():
-
-        column = _find_column(
-            work,
-            candidates,
-        )
-
-        if column is not None:
-
-            rename[
-                column
-            ] = (
-                f"{prefix}_{normalized_name}"
-            )
-
-    work = work.rename(
-        columns=rename
-    )
-
-    for column in work.columns:
-
-        work[
-            column
-        ] = pd.to_numeric(
-            work[
-                column
-            ],
-            errors="coerce",
-        )
-
-    result_columns = [
-        column
-        for column in work.columns
-        if str(column).startswith(
-            f"{prefix}_"
-        )
-    ]
-
-    if not result_columns:
-
-        return pd.DataFrame()
-
-    result = work[
-        result_columns
-    ].copy()
-
-    return (
-        result
-        .sort_index()
-        .groupby(
-            result.index
-        )
-        .last()
-    )
-
-
-# ============================================================
-# CALL FLOW METHOD WITH COMPATIBILITY
-# ============================================================
-
-def _call_historical_method(
-    obj,
-    method_name,
-    start_date,
-    end_date,
-):
-    method = getattr(
-        obj,
-        method_name,
-        None,
-    )
-
-    if method is None:
-        return None
-
-    try:
-        return method(
-            start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
-            end=pd.Timestamp(end_date).strftime("%Y-%m-%d"),
-        )
-    except TypeError:
-        pass
-    except Exception:
-        pass
-
-    try:
-        return method()
-    except Exception:
-        return None
-
-
-def _call_historical_method_range(
-    obj,
-    method_name,
-    start_date,
-    end_date,
-):
-    """Chỉ gọi API lịch sử với start/end; không fallback về toàn bộ lịch sử."""
-    method = getattr(obj, method_name, None)
-    if method is None:
-        return pd.DataFrame()
-
-    for attempt in range(1, MAX_OHLCV_RETRIES + 1):
-        _sleep_between_requests(None)
-
-        try:
-            return method(
-                start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
-                end=pd.Timestamp(end_date).strftime("%Y-%m-%d"),
-            )
-
-        except TypeError:
-            print(
-                f"[VNSTOCK] {method_name}: phiên bản API hiện tại "
-                f"không hỗ trợ start/end."
-            )
-            return pd.DataFrame()
-
-        except Exception as error:
-            if _is_rate_limit_error(error):
-                if attempt < MAX_OHLCV_RETRIES:
-                    _sleep_after_rate_limit(error)
-                    continue
-
-                # Không biến rate-limit thành DataFrame rỗng.
-                # Làm vậy sẽ kích hoạt chia nhỏ đệ quy và tiếp tục
-                # tiêu request vô hạn.
-                raise RuntimeError(
-                    f"VNStock rate limit khi gọi {method_name}: {error}"
-                ) from error
-
-            if attempt < MAX_OHLCV_RETRIES:
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
-                continue
-
-            raise
-
     return pd.DataFrame()
 
 
-def _load_flow_range_complete(
-    obj,
-    method_name,
-    prefix,
-    start_date,
-    end_date,
-    request_state=None,
-):
-    """Lấy flow theo khoảng thời gian; response chạm giới hạn thì chia nhỏ."""
-    start = pd.Timestamp(start_date).normalize()
-    end = pd.Timestamp(end_date).normalize()
-
-    if start > end:
-        return pd.DataFrame()
-
-    if request_state is None:
-        request_state = _GLOBAL_REQUEST_STATE
-
-    _sleep_between_requests(request_state.get("last_request"))
-    request_state["last_request"] = time.monotonic()
-
-    raw = _call_historical_method_range(
-        obj,
-        method_name,
-        start,
-        end,
-    )
-
-    normalized = _rename_flow_columns(
-        raw,
-        prefix,
-    )
-
-    if normalized is not None and not normalized.empty:
-        row_count = len(normalized)
-    else:
-        row_count = 0
-
-    day_span = (end - start).days + 1
-
-    if 0 < row_count < MAX_OHLCV_ROWS_PER_REQUEST:
-        return normalized.loc[start:end]
-
-    if row_count == 0:
-        print(
-            f"[VNSTOCK] {method_name}: không có dữ liệu "
-            f"{start.date()} -> {end.date()}."
-        )
-        # Quan trọng: không coi empty là rate-limit và không đệ quy
-        # mù để tạo thêm hàng chục request.
-        return pd.DataFrame()
-
-    if row_count >= MAX_OHLCV_ROWS_PER_REQUEST:
-        print(
-            f"[VNSTOCK] {method_name}: nguồn trả {row_count} dòng "
-            f"cho khoảng {start.date()} -> {end.date()}; "
-            f"không tự đệ quy vì giới hạn row của API này chưa được xác nhận."
-        )
-
-    return normalized.loc[start:end]
-
-
 # ============================================================
-# FLOW HISTORY
+# LISTING / METADATA
 # ============================================================
 
-@st.cache_data(
-    ttl=CACHE_TTL_FLOW,
-    show_spinner=False,
-)
-def load_stock_flow_history(
-    symbol,
-    start_date,
-    end_date,
-):
-
-    market = _create_market()
-    obj = market.equity(normalize_symbol(symbol))
-    request_state = _GLOBAL_REQUEST_STATE
-    result_parts = []
-
-    flow_specs = [
-        ("trade_history", "flow"),
-        ("foreign_flow", "foreign"),
-        ("proprietary_flow", "proprietary"),
-    ]
-
-    for method_name, prefix in flow_specs:
-        part = _load_flow_range_complete(
-            obj,
-            method_name,
-            prefix,
-            start_date,
-            end_date,
-            request_state=request_state,
-        )
-        if part is not None and not part.empty:
-            result_parts.append(part)
-        print(
-            f"[RESEARCH] {normalize_symbol(symbol)} {method_name}: "
-            f"{len(part) if isinstance(part, pd.DataFrame) else 0} dòng"
-        )
-
-    if not result_parts:
-        return pd.DataFrame()
-
-    merged = result_parts[0].copy()
-    for part in result_parts[1:]:
-        merged = merged.join(part, how="outer")
-
-    merged = (
-        merged
-        .sort_index()
-        .loc[pd.Timestamp(start_date):pd.Timestamp(end_date)]
-    )
-
-    if {"foreign_buy_val", "foreign_sell_val"}.issubset(merged.columns):
-        merged["foreign_net_val_calc"] = (
-            merged["foreign_buy_val"] - merged["foreign_sell_val"]
-        )
-
-    if {"foreign_buy_vol", "foreign_sell_vol"}.issubset(merged.columns):
-        merged["foreign_net_vol_calc"] = (
-            merged["foreign_buy_vol"] - merged["foreign_sell_vol"]
-        )
-
-    if {"proprietary_buy_val", "proprietary_sell_val"}.issubset(merged.columns):
-        merged["proprietary_net_val_calc"] = (
-            merged["proprietary_buy_val"] - merged["proprietary_sell_val"]
-        )
-
-    if {"proprietary_buy_vol", "proprietary_sell_vol"}.issubset(merged.columns):
-        merged["proprietary_net_vol_calc"] = (
-            merged["proprietary_buy_vol"] - merged["proprietary_sell_vol"]
-        )
-
-    for column in list(merged.columns):
-        if any(token in str(column) for token in ["net_val", "net_vol", "buy_val", "sell_val"]):
-            merged[f"{column}_chg"] = merged[column].pct_change()
-            merged[f"{column}_sma20"] = merged[column].rolling(20).mean()
-
-    return merged.replace([np.inf, -np.inf], np.nan)
-
-
-# ============================================================
-# LISTING
-# ============================================================
-
-@st.cache_data(
-    ttl=CACHE_TTL_LISTING,
-    show_spinner=False,
-)
+@st.cache_data(ttl=CACHE_TTL_LISTING, show_spinner=False)
 def _load_listing():
-
     if not LISTING_AVAILABLE or Listing is None:
-
         return pd.DataFrame()
 
     try:
-
-        listing = Listing(
-            source="VCI"
-        )
-
-        df = listing.all_symbols(
-            to_df=True
-        )
-
-        if (
-            isinstance(
-                df,
-                pd.DataFrame,
-            )
-            and not df.empty
-        ):
-
+        listing = Listing(source="VCI")
+        df = listing.all_symbols(to_df=True)
+        if isinstance(df, pd.DataFrame) and not df.empty:
             return df
-
-    except Exception:
-        pass
-
+    except Exception as error:
+        print(f"[VNSTOCK] Listing lỗi: {error}")
     return pd.DataFrame()
 
 
-def _get_stock_metadata(
-    symbol,
-):
-
+def _get_stock_metadata(symbol):
     listing = _load_listing()
-
+    target = normalize_symbol(symbol)
+    empty = {
+        "symbol": target,
+        "sector": "",
+        "icb_code": "",
+        "icb_code4": "",
+    }
     if listing.empty:
+        return empty
 
-        return {
-            "symbol": normalize_symbol(symbol),
-            "sector": "",
-            "icb_code": "",
-            "icb_code4": "",
-        }
-
-    symbol_column = _find_column(
-        listing,
-        [
-            "symbol",
-            "ticker",
-            "code",
-        ],
-    )
-
+    symbol_column = _find_column(listing, ["symbol", "ticker", "code"])
     if symbol_column is None:
-
-        return {
-            "symbol": normalize_symbol(symbol),
-            "sector": "",
-            "icb_code": "",
-            "icb_code4": "",
-        }
-
-    target = normalize_symbol(
-        symbol
-    )
+        return empty
 
     values = (
-        listing[
-            symbol_column
-        ]
+        listing[symbol_column]
         .astype(str)
         .str.upper()
-        .str.replace(
-            ".VN",
-            "",
-            regex=False,
-        )
+        .str.replace(".VN", "", regex=False)
     )
-
-    rows = listing[
-        values == target
-    ]
-
+    rows = listing[values == target]
     if rows.empty:
+        return empty
 
-        return {
-            "symbol": target,
-            "sector": "",
-            "icb_code": "",
-            "icb_code4": "",
-        }
+    row = rows.iloc[0]
+    sector_column = _find_column(listing, ["icb_name", "industry_name", "industry", "sector"])
+    icb_column = _find_column(listing, ["icb_code", "industry_code"])
+    icb4_column = _find_column(listing, ["icb_code4", "industry_code4"])
 
-    row = rows.iloc[
-        0
-    ]
-
-    sector_column = _find_column(
-        listing,
-        [
-            "icb_name",
-            "industry_name",
-            "industry",
-            "sector",
-        ],
-    )
-
-    icb_column = _find_column(
-        listing,
-        [
-            "icb_code",
-            "industry_code",
-        ],
-    )
-
-    icb4_column = _find_column(
-        listing,
-        [
-            "icb_code4",
-            "industry_code4",
-        ],
-    )
-
-    sector = ""
-
-    if sector_column is not None:
-
-        value = row.get(
-            sector_column
-        )
-
-        if pd.notna(
-            value
-        ):
-
-            sector = str(
-                value
-            ).strip()
-
-    icb_code = ""
-
-    if icb_column is not None:
-
-        value = row.get(
-            icb_column
-        )
-
-        if pd.notna(
-            value
-        ):
-
-            icb_code = str(
-                value
-            ).strip()
-
-    icb_code4 = ""
-
-    if icb4_column is not None:
-
-        value = row.get(
-            icb4_column
-        )
-
-        if pd.notna(
-            value
-        ):
-
-            icb_code4 = str(
-                value
-            ).strip()
+    def text_value(column):
+        value = row.get(column) if column is not None else ""
+        return str(value).strip() if pd.notna(value) else ""
 
     return {
         "symbol": target,
-        "sector": sector,
-        "icb_code": icb_code,
-        "icb_code4": icb_code4,
+        "sector": text_value(sector_column),
+        "icb_code": text_value(icb_column),
+        "icb_code4": text_value(icb4_column),
     }
 
 
-# ============================================================
-# SECTOR PEERS
-# ============================================================
-
-def _get_sector_peers(
-    symbol,
-    max_peers=5,
-):
-
+def _get_sector_peers(symbol, max_peers=5):
     listing = _load_listing()
-
     if listing.empty:
-
         return []
 
-    symbol_column = _find_column(
-        listing,
-        [
-            "symbol",
-            "ticker",
-            "code",
-        ],
-    )
-
-    industry_column = _find_column(
-        listing,
-        [
-            "icb_code4",
-            "icb_code",
-            "industry_code",
-        ],
-    )
-
-    if (
-        symbol_column is None
-        or industry_column is None
-    ):
-
+    symbol_column = _find_column(listing, ["symbol", "ticker", "code"])
+    industry_column = _find_column(listing, ["icb_code4", "icb_code", "industry_code"])
+    if symbol_column is None or industry_column is None:
         return []
 
-    target = normalize_symbol(
-        symbol
-    )
-
-    target_rows = listing[
-        listing[
-            symbol_column
-        ]
+    target = normalize_symbol(symbol)
+    values = (
+        listing[symbol_column]
         .astype(str)
         .str.upper()
-        .str.replace(
-            ".VN",
-            "",
-            regex=False,
-        )
-        .eq(
-            target
-        )
-    ]
-
+        .str.replace(".VN", "", regex=False)
+    )
+    target_rows = listing[values == target]
     if target_rows.empty:
-
         return []
 
-    target_code = str(
-        target_rows.iloc[
-            0
-        ][
-            industry_column
-        ]
-    ).strip()
-
-    if not target_code:
-
+    target_code = str(target_rows.iloc[0][industry_column]).strip()
+    if not target_code or target_code.lower() == "nan":
         return []
 
-    peer_symbols = (
-        listing[
-            listing[
-                industry_column
-            ]
-            .astype(str)
-            .str.strip()
-            .eq(
-                target_code
-            )
-        ][
-            symbol_column
-        ]
-        .astype(str)
+    same = listing[
+        listing[industry_column].astype(str).str.strip().eq(target_code)
+    ][symbol_column]
+
+    peers = (
+        same.astype(str)
         .str.upper()
-        .str.replace(
-            ".VN",
-            "",
-            regex=False,
-        )
+        .str.replace(".VN", "", regex=False)
         .tolist()
     )
-
-    peer_symbols = [
-        peer
-        for peer in peer_symbols
-        if peer != target
-    ]
-
-    return peer_symbols[
-        :max_peers
-    ]
+    return [peer for peer in peers if peer != target][:max_peers]
 
 
 # ============================================================
-# MARKET FACTOR HISTORY
+# MARKET FACTORS
 # ============================================================
 
-@st.cache_data(
-    ttl=CACHE_TTL_RESEARCH,
-    show_spinner=False,
-)
-def load_market_factor_history(
-    start_date,
-    end_date,
-):
-
+@st.cache_data(ttl=CACHE_TTL_RESEARCH, show_spinner=False)
+def load_market_factor_history(start_date, end_date):
     market = _create_market()
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
-    request_state = _GLOBAL_REQUEST_STATE
 
     indices = {
         "VNINDEX": "market_vnindex",
@@ -3211,23 +1007,17 @@ def load_market_factor_history(
     result = None
 
     for index_symbol, prefix in indices.items():
-        df = _load_index_range_complete(
-            market,
-            index_symbol,
-            start,
-            end,
-            request_state=request_state,
-        )
+        df = _load_index_range_complete(market, index_symbol, start, end)
+        if df.empty:
+            print(
+                f"[RESEARCH] {index_symbol}: không có dữ liệu, bỏ qua."
+            )
+            continue
 
         print(
-            f"[RESEARCH] {index_symbol}: "
-            f"{len(df)} phiên | "
-            f"{df.index.min().date() if not df.empty else 'n/a'} -> "
-            f"{df.index.max().date() if not df.empty else 'n/a'}"
+            f"[RESEARCH] {index_symbol}: {len(df)} phiên | "
+            f"{df.index.min().date()} → {df.index.max().date()}"
         )
-
-        if df is None or df.empty:
-            continue
 
         close = df["Close"]
         temp = pd.DataFrame(index=df.index)
@@ -3235,18 +1025,11 @@ def load_market_factor_history(
         temp[f"{prefix}_return"] = close.pct_change()
         temp[f"{prefix}_return_pct"] = temp[f"{prefix}_return"] * 100
         temp[f"{prefix}_momentum20"] = close / close.shift(20) - 1
-        temp[f"{prefix}_volatility20"] = (
-            temp[f"{prefix}_return"].rolling(20).std() * np.sqrt(252)
-        )
+        temp[f"{prefix}_volatility20"] = temp[f"{prefix}_return"].rolling(20).std() * np.sqrt(252)
         temp[f"{prefix}_volume"] = df["Volume"]
-        temp[f"{prefix}_value"] = (
-            df["Value"] if "Value" in df.columns else df["Close"] * df["Volume"]
-        )
+        temp[f"{prefix}_value"] = df["Value"] if "Value" in df.columns else df["Close"] * df["Volume"]
 
-        if result is None:
-            result = temp
-        else:
-            result = result.join(temp, how="outer")
+        result = temp if result is None else result.join(temp, how="outer")
 
     if result is None:
         return pd.DataFrame()
@@ -3255,54 +1038,37 @@ def load_market_factor_history(
 
 
 # ============================================================
-# SECTOR FACTOR VIA PEERS
+# SECTOR FACTORS
 # ============================================================
 
-@st.cache_data(
-    ttl=CACHE_TTL_RESEARCH,
-    show_spinner=False,
-)
-def load_sector_factor_history(
-    symbol,
-    start_date,
-    end_date,
-):
-
-    peers = _get_sector_peers(
-        symbol,
-        max_peers=5,
-    )
-
+@st.cache_data(ttl=CACHE_TTL_RESEARCH, show_spinner=False)
+def load_sector_factor_history(symbol, start_date, end_date):
+    peers = _get_sector_peers(symbol, max_peers=5)
     if not peers:
+        print(f"[RESEARCH] {normalize_symbol(symbol)}: không tìm được peer cùng ngành.")
         return pd.DataFrame()
 
     market = _create_market()
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
-    request_state = _GLOBAL_REQUEST_STATE
-
     peer_returns = []
     successful_peers = 0
 
     for peer in peers:
-        df = _load_equity_range_complete(
-            market,
-            peer,
-            start,
-            end,
-            request_state=request_state,
-        )
+        try:
+            df = _load_equity_range_complete(market, peer, start, end)
+        except Exception as error:
+            print(f"[RESEARCH] Sector peer {peer}: lỗi {error}")
+            df = pd.DataFrame()
 
-        print(
-            f"[RESEARCH] Sector peer {peer}: "
-            f"{len(df)} phiên | "
-            f"{df.index.min().date() if not df.empty else 'n/a'} -> "
-            f"{df.index.max().date() if not df.empty else 'n/a'}"
-        )
-
-        if df is None or df.empty:
+        if df.empty:
+            print(f"[RESEARCH] Sector peer {peer}: không có dữ liệu, bỏ qua.")
             continue
 
+        print(
+            f"[RESEARCH] Sector peer {peer}: {len(df)} phiên | "
+            f"{df.index.min().date()} → {df.index.max().date()}"
+        )
         peer_returns.append(df["Close"].pct_change().rename(peer))
         successful_peers += 1
 
@@ -3313,15 +1079,9 @@ def load_sector_factor_history(
     result = pd.DataFrame(index=peers_df.index)
     result["sector_return"] = peers_df.mean(axis=1, skipna=True)
     result["sector_return_pct"] = result["sector_return"] * 100
-    result["sector_momentum20"] = (
-        (1 + result["sector_return"]).rolling(20).apply(np.prod, raw=True) - 1
-    )
-    result["sector_momentum60"] = (
-        (1 + result["sector_return"]).rolling(60).apply(np.prod, raw=True) - 1
-    )
-    result["sector_volatility20"] = (
-        result["sector_return"].rolling(20).std() * np.sqrt(252)
-    )
+    result["sector_momentum20"] = (1 + result["sector_return"]).rolling(20).apply(np.prod, raw=True) - 1
+    result["sector_momentum60"] = (1 + result["sector_return"]).rolling(60).apply(np.prod, raw=True) - 1
+    result["sector_volatility20"] = result["sector_return"].rolling(20).std() * np.sqrt(252)
     denominator = peers_df.notna().sum(axis=1).replace(0, np.nan)
     result["sector_positive_ratio"] = peers_df.gt(0).sum(axis=1) / denominator
     result["sector_negative_ratio"] = peers_df.lt(0).sum(axis=1) / denominator
@@ -3329,52 +1089,31 @@ def load_sector_factor_history(
 
     result.attrs["peers_requested"] = peers
     result.attrs["peers_loaded"] = successful_peers
-
     return result.replace([np.inf, -np.inf], np.nan)
 
 
-
 # ============================================================
-# RESEARCH PROGRESS + COMPLETENESS VALIDATION
+# RESEARCH PROGRESS
 # ============================================================
 
 def _research_progress_ui():
-    """
-    Tạo progress bar và vùng trạng thái cho màn hình nghiên cứu.
-    Không đặt trong st.cache_data để tiến độ luôn hiện mỗi lần chạy.
-    """
     try:
-        progress = st.progress(
-            0,
-            text="1/6 Đang chuẩn bị nghiên cứu..."
-        )
+        progress = st.progress(0, text="1/4 Đang chuẩn bị nghiên cứu...")
         status = st.empty()
         return progress, status
     except Exception:
         return None, None
 
 
-def _update_research_progress(
-    progress,
-    status,
-    step,
-    message,
-):
-    text_value = f"{step}/6 {message}"
-
-    print(
-        f"[RESEARCH] {text_value}"
-    )
+def _update_research_progress(progress, status, step, message):
+    text_value = f"{step}/4 {message}"
+    print(f"[RESEARCH] {text_value}")
 
     if progress is not None:
         try:
-            progress.progress(
-                int(step / 6 * 100),
-                text=text_value,
-            )
+            progress.progress(int(step / 4 * 100), text=text_value)
         except Exception:
             pass
-
     if status is not None:
         try:
             status.info(text_value)
@@ -3382,1261 +1121,406 @@ def _update_research_progress(
             pass
 
 
-def _date_index(index):
-    """
-    Chuẩn hóa index ngày về DatetimeIndex không timezone.
-    """
-    if index is None:
+# ============================================================
+# COMPLETENESS — KHÔNG CÒN FLOW BẮT BUỘC
+# ============================================================
+
+def _date_index(index) -> pd.DatetimeIndex:
+    values = pd.to_datetime(index, errors="coerce")
+    try:
+        if getattr(values, "tz", None) is not None:
+            values = values.tz_localize(None)
+    except Exception:
+        pass
+    values = pd.DatetimeIndex(values).normalize()
+    values = values[~values.isna()]
+    return values[~values.duplicated()].sort_values()
+
+
+def _coverage_info(df, columns=None) -> pd.DatetimeIndex:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DatetimeIndex([])
-
-    values = pd.to_datetime(
-        index,
-        errors="coerce",
-    )
-
-    if getattr(values, "tz", None) is not None:
-        values = values.tz_localize(None)
-
-    values = pd.DatetimeIndex(
-        values
-    ).normalize()
-
-    values = values[
-        ~values.isna()
-    ]
-
-    return values[
-        ~values.duplicated()
-    ].sort_values()
-
-
-def _coverage_info(
-    df,
-    columns=None,
-):
-    """
-    Trả về các ngày thực sự có dữ liệu của một DataFrame.
-    Nếu columns được truyền, một ngày chỉ được coi là có dữ liệu
-    khi ít nhất một cột trong nhóm có giá trị.
-    """
-    if (
-        df is None
-        or not isinstance(df, pd.DataFrame)
-        or df.empty
-    ):
-        return pd.DatetimeIndex([])
-
-    work = df.copy()
-
-    idx = _date_index(
-        work.index
-    )
-
     if columns is None:
-        return idx
+        return _date_index(df.index)
 
-    valid_columns = [
-        column
-        for column in columns
-        if column in work.columns
-    ]
-
+    valid_columns = [column for column in columns if column in df.columns]
     if not valid_columns:
         return pd.DatetimeIndex([])
 
-    mask = (
-        work[
-            valid_columns
-        ]
-        .notna()
-        .any(axis=1)
-    )
-
-    covered = pd.DatetimeIndex(
-        pd.to_datetime(
-            work.index[
-                mask
-            ],
-            errors="coerce",
-        )
-    ).normalize()
-
-    return covered[
-        ~covered.isna()
-    ].unique().sort_values()
+    mask = df[valid_columns].notna().any(axis=1)
+    return _date_index(df.index[mask])
 
 
-def _missing_dates(
-    expected_dates,
-    actual_dates,
-):
-    expected = _date_index(
-        expected_dates
-    )
-    actual = _date_index(
-        actual_dates
-    )
-
-    return expected.difference(
-        actual
-    )
+def _missing_dates(expected_dates, actual_dates) -> pd.DatetimeIndex:
+    return _date_index(expected_dates).difference(_date_index(actual_dates))
 
 
-def _format_missing_dates(
-    dates,
-    limit=12,
-):
+def _format_missing_dates(dates, limit=12) -> str:
     if len(dates) == 0:
         return ""
-
-    sample = [
-        str(
-            pd.Timestamp(
-                value
-            ).date()
-        )
-        for value in dates[:limit]
-    ]
-
-    suffix = (
-        f" ... +{len(dates) - limit} ngày"
-        if len(dates) > limit
-        else ""
-    )
-
+    sample = [str(pd.Timestamp(value).date()) for value in dates[:limit]]
+    suffix = f" ... +{len(dates) - limit} ngày" if len(dates) > limit else ""
     return ", ".join(sample) + suffix
 
 
-def _validate_research_completeness(
-    symbol,
-    start,
-    end,
-    stock,
-    flow,
-    market,
-    sector,
-):
-    """
-    Kiểm tra dataset trước khi đưa vào mô hình.
+def _validate_research_completeness(symbol, start, end, stock, market, sector):
+    if stock is None or stock.empty:
+        raise ValueError(f"{symbol}: không có dữ liệu cổ phiếu.")
 
-    Quy tắc:
-    - Dùng lịch giao dịch VNINDEX làm lịch chuẩn của thị trường.
-    - Không chấp nhận stock bị mất phiên trong khoảng mà cổ phiếu đã tồn tại.
-    - Không chấp nhận flow/foreign/proprietary mất ngày trong khoảng yêu cầu.
-    - Không chấp nhận các chỉ số thị trường thiếu ngày.
-    - Sector phải có dữ liệu peer trên từng ngày chuẩn.
-    """
-    if (
-        market is None
-        or market.empty
-        or "market_vnindex_close" not in market.columns
-    ):
-        raise ValueError(
-            "Không có đủ dữ liệu VN-Index để kiểm tra lịch giao dịch chuẩn."
-        )
+    report: dict[str, Any] = {
+        "requested_start": str(start.date()),
+        "requested_end": str(end.date()),
+        "stock_days": len(stock),
+        "market": {},
+        "sector": {},
+    }
 
-    expected = _coverage_info(
-        market,
-        ["market_vnindex_close"],
-    )
+    # Chỉ dùng VNINDEX làm lịch chuẩn nếu có. Không bắt VN30/HNX/sector phải đủ.
+    expected = pd.DatetimeIndex([])
+    if market is not None and not market.empty and "market_vnindex_close" in market.columns:
+        expected = _coverage_info(market, ["market_vnindex_close"])
+        expected = expected[(expected >= start) & (expected <= end)]
 
-    expected = expected[
-        (expected >= start)
-        & (expected <= end)
-    ]
+    if not expected.empty:
+        stock_dates = _coverage_info(stock)
+        stock_first = stock_dates.min()
+        effective = expected[expected >= stock_first]
+        missing_stock = _missing_dates(effective, stock_dates)
+        report["expected_trading_days"] = len(expected)
+        report["stock_first"] = str(stock_first.date())
+        report["stock_last"] = str(stock_dates.max().date())
+        report["stock_missing_days"] = len(missing_stock)
 
-    if expected.empty:
-        raise ValueError(
-            "Không xác định được lịch giao dịch trong khoảng nghiên cứu."
-        )
+        if len(missing_stock) > 0:
+            print(
+                f"[RESEARCH] Cảnh báo {symbol}: thiếu {len(missing_stock)} phiên theo lịch VNINDEX: "
+                f"{_format_missing_dates(missing_stock)}"
+            )
+    else:
+        report["expected_trading_days"] = len(stock)
+        print("[RESEARCH] Không có VNINDEX để làm lịch chuẩn; vẫn cho phép chạy dataset cổ phiếu.")
 
-    # --------------------------------------------------------
-    # STOCK
-    # --------------------------------------------------------
-    stock_dates = _coverage_info(
-        stock
-    )
-
-    if stock_dates.empty:
-        raise ValueError(
-            f"{symbol}: không có dữ liệu cổ phiếu."
-        )
-
-    stock_first = stock_dates.min()
-    stock_last = stock_dates.max()
-
-    if stock_last < expected.max():
-        raise ValueError(
-            f"{symbol}: dữ liệu kết thúc ở {stock_last.date()}, "
-            f"nhưng yêu cầu tới {expected.max().date()}."
-        )
-
-    effective_expected_stock = expected[
-        expected >= stock_first
-    ]
-
-    missing_stock = _missing_dates(
-        effective_expected_stock,
-        stock_dates,
-    )
-
-    if len(missing_stock) > 0:
-        raise ValueError(
-            f"{symbol}: thiếu {len(missing_stock)} phiên giao dịch "
-            f"theo lịch VN-Index. Các ngày đầu: "
-            f"{_format_missing_dates(missing_stock)}"
-        )
-
-    # --------------------------------------------------------
-    # MARKET INDICES
-    # --------------------------------------------------------
-    market_specs = {
+    for label, column in {
         "VNINDEX": "market_vnindex_close",
         "VN30": "market_vn30_close",
         "HNXINDEX": "market_hnx_close",
-    }
+    }.items():
+        if market is not None and column in market.columns:
+            actual = _coverage_info(market, [column])
+            missing = _missing_dates(expected, actual) if not expected.empty else pd.DatetimeIndex([])
+            report["market"][label] = {
+                "actual": len(actual),
+                "missing": len(missing),
+            }
+            if len(missing) > 0:
+                print(
+                    f"[RESEARCH] Cảnh báo {label}: thiếu {len(missing)} ngày, bỏ qua phần ngày thiếu."
+                )
 
-    market_coverage = {}
-
-    for index_name, close_column in market_specs.items():
-        if close_column not in market.columns:
-            raise ValueError(
-                f"Thiếu dữ liệu {index_name} trong bộ Market."
-            )
-
-        actual = _coverage_info(
-            market,
-            [close_column],
-        )
-
-        missing = _missing_dates(
-            expected,
-            actual,
-        )
-
-        market_coverage[
-            index_name
-        ] = {
-            "expected": len(expected),
-            "actual": len(actual),
-            "missing": len(missing),
+    if sector is not None and not sector.empty and "sector_peer_count" in sector.columns:
+        report["sector"] = {
+            "peers_requested": sector.attrs.get("peers_requested", []),
+            "peers_loaded": sector.attrs.get("peers_loaded", 0),
+            "days": len(sector),
         }
-
-        if len(missing) > 0:
-            raise ValueError(
-                f"{index_name}: thiếu {len(missing)} phiên "
-                f"trong khoảng nghiên cứu. Ngày đầu: "
-                f"{_format_missing_dates(missing)}"
-            )
-
-    # --------------------------------------------------------
-    # FLOW / FOREIGN / PROPRIETARY
-    # --------------------------------------------------------
-    flow_specs = {
-        "dòng tiền": "flow_",
-        "khối ngoại": "foreign_",
-        "tự doanh": "proprietary_",
-    }
-
-    flow_coverage = {}
-
-    if flow is None or flow.empty:
-        raise ValueError(
-            "Không lấy được dữ liệu dòng tiền / khối ngoại / tự doanh."
-        )
-
-    for label, prefix in flow_specs.items():
-        columns = [
-            column
-            for column in flow.columns
-            if str(column).startswith(prefix)
-        ]
-
-        if not columns:
-            raise ValueError(
-                f"Không có cột dữ liệu cho {label}."
-            )
-
-        actual = _coverage_info(
-            flow,
-            columns,
-        )
-
-        missing = _missing_dates(
-            expected,
-            actual,
-        )
-
-        flow_coverage[
-            label
-        ] = {
-            "expected": len(expected),
-            "actual": len(actual),
-            "missing": len(missing),
-        }
-
-        if len(missing) > 0:
-            raise ValueError(
-                f"{label}: thiếu {len(missing)} phiên "
-                f"trong khoảng nghiên cứu. Ngày đầu: "
-                f"{_format_missing_dates(missing)}"
-            )
-
-    # --------------------------------------------------------
-    # SECTOR
-    # --------------------------------------------------------
-    if (
-        sector is None
-        or sector.empty
-        or "sector_peer_count" not in sector.columns
-    ):
-        raise ValueError(
-            "Không có đủ dữ liệu nhóm ngành để xác thực."
-        )
-
-    sector_index = _date_index(
-        sector.index
-    )
-
-    sector_count = pd.to_numeric(
-        sector[
-            "sector_peer_count"
-        ],
-        errors="coerce",
-    )
-
-    sector_available = sector_index[
-        sector_count.fillna(0).gt(0).to_numpy()
-    ]
-
-    missing_sector = _missing_dates(
-        expected,
-        sector_available,
-    )
-
-    if len(missing_sector) > 0:
-        raise ValueError(
-            f"Nhóm ngành thiếu dữ liệu ở {len(missing_sector)} phiên. "
-            f"Ngày đầu: {_format_missing_dates(missing_sector)}"
-        )
-
-    # --------------------------------------------------------
-    # FINAL REPORT
-    # --------------------------------------------------------
-    report = {
-        "expected_trading_days": len(expected),
-        "stock_days": len(stock_dates),
-        "stock_first": str(stock_first.date()),
-        "stock_last": str(stock_last.date()),
-        "market": market_coverage,
-        "flow": flow_coverage,
-        "sector_days": len(sector_available),
-    }
+    else:
+        print("[RESEARCH] Không có dữ liệu ngành/peer; tiếp tục không có sector factor.")
 
     return report
-
 
 
 # ============================================================
 # MULTIFACTOR RESEARCH DATASET
 # ============================================================
 
-def load_multifactor_research_history(
-    symbol,
-    start_date,
-    end_date,
-):
+def load_multifactor_research_history(symbol, start_date, end_date):
     """
-    DATASET NGHIÊN CỨU ĐẦY ĐỦ:
+    Pipeline nghiên cứu mới:
+      1) OHLCV cổ phiếu + technical factors
+      2) VNINDEX/VN30/HNX (nếu có)
+      3) Peer ngành (nếu lấy được)
+      4) Merge + target + kiểm tra
 
-    1. Technical factors của cổ phiếu.
-    2. Trading flow.
-    3. Foreign flow.
-    4. Proprietary flow.
-    5. Market factors.
-    6. Sector factors.
-
-    Tất cả được align theo ngày.
+    QUAN TRỌNG:
+    - Không gọi trade_history.
+    - Không gọi foreign_flow.
+    - Không gọi proprietary_flow.
+    - Không dùng flow để chặn dataset.
     """
-
-    symbol = normalize_symbol(
-        symbol
-    )
-
-    start = pd.Timestamp(
-        start_date
-    ).normalize()
-
-    end = pd.Timestamp(
-        end_date
-    ).normalize()
+    symbol = normalize_symbol(symbol)
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
 
     if start > end:
-
-        raise ValueError(
-            "Ngày bắt đầu phải nhỏ hơn ngày kết thúc."
-        )
+        raise ValueError("Ngày bắt đầu phải nhỏ hơn ngày kết thúc.")
 
     progress, status = _research_progress_ui()
 
-    # ========================================================
-    # STOCK
-    # ========================================================
-
+    # --------------------------------------------------------
+    # 1. STOCK
+    # --------------------------------------------------------
     _update_research_progress(
         progress,
         status,
         1,
         f"Đang tải giá cổ phiếu {symbol} ({start.date()} → {end.date()})... "
-        f"({'API key' if VNSTOCK_API_KEY_AVAILABLE else 'Guest'})"
+        f"({'API key' if VNSTOCK_API_KEY_AVAILABLE else 'Guest'})",
     )
 
     stock_raw = _load_stock_raw(
         symbol,
         start,
         end,
-        progress_callback=(
-            lambda message: _update_research_progress(
-                progress,
-                status,
-                1,
-                message,
-            )
+        progress_callback=lambda message: _update_research_progress(
+            progress,
+            status,
+            1,
+            message,
         ),
     )
+    stock = add_indicators(stock_raw, la_co_phieu=True)
+    print(f"[RESEARCH] Giá cổ phiếu hoàn tất: {len(stock)} phiên.")
 
-    stock = add_indicators(
-        stock_raw,
-        la_co_phieu=True,
-    )
-
-    print(
-        f"[RESEARCH] Giá cổ phiếu hoàn tất: {len(stock_raw)} phiên."
-    )
-
-
-    # ========================================================
-    # STOCK META
-    # ========================================================
-
-    metadata = _get_stock_metadata(
-        symbol
-    )
-
-    # ========================================================
-    # FLOWS
-    # ========================================================
-
+    # --------------------------------------------------------
+    # 2. MARKET
+    # --------------------------------------------------------
     _update_research_progress(
         progress,
         status,
         2,
-        "Đang tải dòng tiền, khối ngoại và tự doanh..."
+        "Đang tải VN-Index, VN30 và HNX...",
     )
+    market = load_market_factor_history(start, end)
 
-    flow = load_stock_flow_history(
-        symbol,
-        start,
-        end,
-    )
-
-    # ========================================================
-    # MARKET
-    # ========================================================
-
+    # --------------------------------------------------------
+    # 3. SECTOR
+    # --------------------------------------------------------
     _update_research_progress(
         progress,
         status,
         3,
-        "Đang tải VN-Index, VN30 và HNX..."
+        "Đang tải dữ liệu nhóm ngành và cổ phiếu cùng ngành...",
     )
+    sector = load_sector_factor_history(symbol, start, end)
 
-    market = load_market_factor_history(
-        start,
-        end,
-    )
-
-    # ========================================================
-    # SECTOR
-    # ========================================================
-
+    # --------------------------------------------------------
+    # 4. MERGE / TARGET
+    # --------------------------------------------------------
     _update_research_progress(
         progress,
         status,
         4,
-        "Đang tải dữ liệu nhóm ngành và các cổ phiếu cùng ngành..."
+        "Ghép dataset, tạo biến mục tiêu và kiểm tra dữ liệu...",
     )
 
-    sector = load_sector_factor_history(
-        symbol,
-        start,
-        end,
-    )
-
-    _update_research_progress(
-        progress,
-        status,
-        5,
-        "Kiểm tra độ đầy đủ của toàn bộ dữ liệu 3 năm..."
-    )
-
+    metadata = _get_stock_metadata(symbol)
     completeness = _validate_research_completeness(
         symbol,
         start,
         end,
         stock,
-        flow,
         market,
         sector,
     )
 
-    print(
-        f"[RESEARCH] Kiểm tra đủ dữ liệu: "
-        f"{completeness['expected_trading_days']} phiên chuẩn | "
-        f"{completeness['stock_days']} phiên cổ phiếu."
-    )
-
     result = stock.copy()
 
-    # ========================================================
-    # MERGE FLOW
-    # ========================================================
+    if isinstance(market, pd.DataFrame) and not market.empty:
+        market = market[~market.index.duplicated(keep="last")]
+        result = result.join(market, how="left")
 
-    if (
-        isinstance(
-            flow,
-            pd.DataFrame,
-        )
-        and not flow.empty
-    ):
+    if isinstance(sector, pd.DataFrame) and not sector.empty:
+        sector_cols = [column for column in sector.columns if str(column).startswith("sector_")]
+        if sector_cols:
+            sector = sector[~sector.index.duplicated(keep="last")]
+            result = result.join(sector[sector_cols], how="left")
 
-        flow = flow[
-            ~flow.index.duplicated(
-                keep="last"
-            )
-        ]
+    # Relative performance vs market.
+    if "market_vnindex_return" in result.columns:
+        result["stock_minus_market_1d"] = result["Return"] - result["market_vnindex_return"]
+    if "market_vnindex_momentum20" in result.columns:
+        result["stock_minus_market_momentum20"] = result["Momentum20"] - result["market_vnindex_momentum20"]
+    if "sector_return" in result.columns:
+        result["stock_minus_sector_1d"] = result["Return"] - result["sector_return"]
+    if "sector_momentum20" in result.columns:
+        result["stock_minus_sector_momentum20"] = result["Momentum20"] - result["sector_momentum20"]
 
-        result = result.join(
-            flow,
-            how="left",
-        )
-
-    # ========================================================
-    # MERGE MARKET
-    # ========================================================
-
-    if (
-        isinstance(
-            market,
-            pd.DataFrame,
-        )
-        and not market.empty
-    ):
-
-        market = market[
-            ~market.index.duplicated(
-                keep="last"
-            )
-        ]
-
-        result = result.join(
-            market,
-            how="left",
-        )
-
-    # ========================================================
-    # MERGE SECTOR
-    # ========================================================
-
-    if (
-        isinstance(
-            sector,
-            pd.DataFrame,
-        )
-        and not sector.empty
-    ):
-
-        sector = sector[
-            ~sector.index.duplicated(
-                keep="last"
-            )
-        ]
-
-        # Không merge peer raw.
-        result = result.join(
-            sector[
-                [
-                    column
-                    for column in sector.columns
-                    if column.startswith(
-                        "sector_"
-                    )
-                ]
-            ],
-            how="left",
-        )
-
-    # ========================================================
-    # CROSS MARKET / STOCK FACTORS
-    # ========================================================
-
-    if (
-        "market_vnindex_return"
-        in result.columns
-    ):
-
-        result[
-            "stock_minus_market_1d"
-        ] = (
-            result[
-                "Return"
-            ]
-            - result[
-                "market_vnindex_return"
-            ]
-        )
-
-    if (
-        "market_vnindex_momentum20"
-        in result.columns
-    ):
-
-        result[
-            "stock_minus_market_momentum20"
-        ] = (
-            result[
-                "Momentum20"
-            ]
-            - result[
-                "market_vnindex_momentum20"
-            ]
-        )
-
-    if (
-        "sector_return"
-        in result.columns
-    ):
-
-        result[
-            "stock_minus_sector_1d"
-        ] = (
-            result[
-                "Return"
-            ]
-            - result[
-                "sector_return"
-            ]
-        )
-
-    if (
-        "sector_momentum20"
-        in result.columns
-    ):
-
-        result[
-            "stock_minus_sector_momentum20"
-        ] = (
-            result[
-                "Momentum20"
-            ]
-            - result[
-                "sector_momentum20"
-            ]
-        )
-
-    # ========================================================
-    # FLOW RATIOS
-    # ========================================================
-
-    ratio_pairs = [
-        (
-            "foreign_buy_val",
-            "foreign_sell_val",
-            "foreign_buy_sell_value_ratio",
-        ),
-        (
-            "proprietary_buy_val",
-            "proprietary_sell_val",
-            "proprietary_buy_sell_value_ratio",
-        ),
-        (
-            "foreign_buy_vol",
-            "foreign_sell_vol",
-            "foreign_buy_sell_volume_ratio",
-        ),
-        (
-            "proprietary_buy_vol",
-            "proprietary_sell_vol",
-            "proprietary_buy_sell_volume_ratio",
-        ),
-    ]
-
-    for buy_column, sell_column, output_column in ratio_pairs:
-
-        if (
-            buy_column in result.columns
-            and sell_column in result.columns
-        ):
-
-            denominator = (
-                result[
-                    sell_column
-                ]
-                .abs()
-                .replace(
-                    0,
-                    np.nan,
-                )
-            )
-
-            result[
-                output_column
-            ] = (
-                result[
-                    buy_column
-                ]
-                / denominator
-            )
-
-    # ========================================================
-    # FLOW NET / TRADING VALUE RATIOS
-    # ========================================================
-
-    flow_ratio_pairs = [
-        (
-            "foreign_net_val_calc",
-            "Trading_Value",
-            "foreign_net_value_to_trading_value",
-        ),
-        (
-            "proprietary_net_val_calc",
-            "Trading_Value",
-            "proprietary_net_value_to_trading_value",
-        ),
-    ]
-
-    for numerator, denominator, output in flow_ratio_pairs:
-
-        if (
-            numerator in result.columns
-            and denominator in result.columns
-        ):
-
-            result[
-                output
-            ] = (
-                result[
-                    numerator
-                ]
-                / result[
-                    denominator
-                ].replace(
-                    0,
-                    np.nan,
-                )
-            )
-
-    # ========================================================
-    # MARKET BREADTH ACROSS AVAILABLE INDICES
-    # ========================================================
-
+    # Market breadth.
     market_return_columns = [
         column
         for column in result.columns
-        if (
-            column.endswith(
-                "_return"
-            )
-            and column.startswith(
-                "market_"
-            )
-        )
+        if str(column).startswith("market_") and str(column).endswith("_return")
     ]
-
     if market_return_columns:
+        result["market_positive_index_count"] = result[market_return_columns].gt(0).sum(axis=1)
+        result["market_negative_index_count"] = result[market_return_columns].lt(0).sum(axis=1)
+        result["market_average_return"] = result[market_return_columns].mean(axis=1)
 
-        result[
-            "market_positive_index_count"
-        ] = (
-            result[
-                market_return_columns
-            ]
-            .gt(0)
-            .sum(
-                axis=1
-            )
-        )
+    # Targets: giữ tương thích với ML hiện tại.
+    close = result["Close"]
+    for horizon, periods in {"1D": 1, "5D": 5, "20D": 20}.items():
+        result[f"Target_{horizon}"] = close.shift(-periods) / close - 1
+        result[f"Target_{horizon}_Pct"] = result[f"Target_{horizon}"] * 100
 
-        result[
-            "market_negative_index_count"
-        ] = (
-            result[
-                market_return_columns
-            ]
-            .lt(0)
-            .sum(
-                axis=1
-            )
-        )
+    result.attrs["symbol"] = symbol
+    result.attrs["display_symbol"] = display_symbol(symbol)
+    result.attrs["source"] = "Vnstock multifactor (không flow API)"
+    result.attrs["research_start"] = str(start.date())
+    result.attrs["research_end"] = str(end.date())
+    result.attrs["sector"] = metadata.get("sector", "")
+    result.attrs["icb_code"] = metadata.get("icb_code", "")
+    result.attrs["icb_code4"] = metadata.get("icb_code4", "")
+    result.attrs["sector_peers"] = sector.attrs.get("peers_requested", []) if not sector.empty else []
+    result.attrs["sector_peers_loaded"] = sector.attrs.get("peers_loaded", 0) if not sector.empty else 0
+    result.attrs["completeness"] = completeness
 
-        result[
-            "market_average_return"
-        ] = (
-            result[
-                market_return_columns
-            ]
-            .mean(
-                axis=1
-            )
-        )
+    result = result.replace([np.inf, -np.inf], np.nan)
 
-    # ========================================================
-    # TARGETS
-    #
-    # Đây là biến phụ thuộc cho nghiên cứu.
-    # ========================================================
-
-    close = result[
-        "Close"
-    ]
-
-    for horizon, periods in {
-        "1D": 1,
-        "5D": 5,
-        "20D": 20,
-    }.items():
-
-        result[
-            f"Target_{horizon}"
-        ] = (
-            close.shift(
-                -periods
-            )
-            / close
-            - 1
-        )
-
-        result[
-            f"Target_{horizon}_Pct"
-        ] = (
-            result[
-                f"Target_{horizon}"
-            ]
-            * 100
-        )
-
-    # ========================================================
-    # ATTRS
-    # ========================================================
-
-    result.attrs[
-        "symbol"
-    ] = symbol
-
-    result.attrs[
-        "display_symbol"
-    ] = display_symbol(
-        symbol
-    )
-
-    result.attrs[
-        "source"
-    ] = "Vnstock multifactor"
-
-    result.attrs[
-        "research_start"
-    ] = str(
-        start.date()
-    )
-
-    result.attrs[
-        "research_end"
-    ] = str(
-        end.date()
-    )
-
-    result.attrs[
-        "sector"
-    ] = metadata.get(
-        "sector",
-        "",
-    )
-
-    result.attrs[
-        "icb_code"
-    ] = metadata.get(
-        "icb_code",
-        "",
-    )
-
-    result.attrs[
-        "icb_code4"
-    ] = metadata.get(
-        "icb_code4",
-        "",
-    )
-
-    result.attrs[
-        "sector_peers"
-    ] = sector.attrs.get(
-        "peers_requested",
-        [],
-    )
-
-    result.attrs[
-        "sector_peers_loaded"
-    ] = sector.attrs.get(
-        "peers_loaded",
-        0,
-    )
-
-    result = result.replace(
-        [
-            np.inf,
-            -np.inf,
-        ],
-        np.nan,
-    )
-
-    _update_research_progress(
-        progress,
-        status,
-        6,
-        "Hoàn tất ghép dataset và tạo biến mục tiêu..."
-    )
-
-    start_label = (
-        result.index.min().date()
-        if not result.empty
-        else "n/a"
-    )
-    end_label = (
-        result.index.max().date()
-        if not result.empty
-        else "n/a"
-    )
+    if not result.empty:
+        start_label = result.index.min().date()
+        end_label = result.index.max().date()
+    else:
+        start_label = "n/a"
+        end_label = "n/a"
 
     print(
-        f"[RESEARCH] HOÀN TẤT {symbol}: "
-        f"{len(result)} phiên | "
-        f"{start_label} -> {end_label}"
+        f"[RESEARCH] HOÀN TẤT {symbol}: {len(result)} phiên | "
+        f"{start_label} → {end_label}"
     )
 
     if progress is not None:
         try:
             progress.progress(
                 100,
-                text=(
-                    f"6/6 Hoàn tất: {len(result)} phiên | "
-                    f"{start_label} → {end_label}"
-                ),
+                text=f"4/4 Hoàn tất: {len(result)} phiên | {start_label} → {end_label}",
             )
         except Exception:
             pass
-
     if status is not None:
         try:
             status.success(
-                (
-                    f"Đã hoàn tất nghiên cứu {symbol}: "
-                    f"{len(result)} phiên, "
-                    f"{start_label} → {end_label}."
-                )
+                f"Đã hoàn tất nghiên cứu {symbol}: {len(result)} phiên, {start_label} → {end_label}."
             )
         except Exception:
             pass
-
-    result.attrs[
-        "completeness"
-    ] = completeness
 
     return result
 
 
 # ============================================================
-# RESEARCH HISTORY COMPATIBILITY
+# COMPATIBILITY ALIASES
 # ============================================================
 
-def load_research_history(
-    symbol,
-    start_date,
-    end_date,
-):
-
-    data = load_multifactor_research_history(
-        symbol,
-        start_date,
-        end_date,
-    )
-
-    return data
+def load_research_history(symbol, start_date, end_date):
+    return load_multifactor_research_history(symbol, start_date, end_date)
 
 
-# ============================================================
-# MARKET DATA COMPATIBILITY
-# ============================================================
+def market_data(symbol, period="1y"):
+    return load_market_data(symbol, period)
 
-def market_data(
-    symbol,
-    period="1y",
-):
 
-    return load_market_data(
-        symbol,
-        period,
-    )
+def get_research_data(symbol, start_date, end_date):
+    return load_multifactor_research_history(symbol, start_date, end_date)
+
+
+def load_full_research_data(symbol, start_date, end_date):
+    return load_multifactor_research_history(symbol, start_date, end_date)
 
 
 # ============================================================
 # NEWS SENTIMENT
 # ============================================================
 
-def classify_news(
-    title,
-):
-
-    text = str(
-        title or ""
-    ).lower()
+def classify_news(title: str) -> str:
+    text = str(title or "").lower()
 
     positive_words = [
-        "tăng",
-        "tích cực",
-        "lợi nhuận",
-        "kỷ lục",
-        "tăng trưởng",
-        "bứt phá",
-        "vượt kỳ vọng",
-        "vượt kế hoạch",
-        "hưởng lợi",
-        "cải thiện",
+        "tăng", "tích cực", "lợi nhuận", "kỷ lục", "tăng trưởng",
+        "bứt phá", "vượt kỳ vọng", "vượt kế hoạch", "hưởng lợi", "cải thiện",
     ]
-
     negative_words = [
-        "giảm",
-        "tiêu cực",
-        "thua lỗ",
-        "rủi ro",
-        "sụt giảm",
-        "áp lực",
-        "bán tháo",
-        "khó khăn",
-        "nợ xấu",
-        "cảnh báo",
-        "điều tra",
-        "vi phạm",
+        "giảm", "tiêu cực", "thua lỗ", "rủi ro", "sụt giảm", "áp lực",
+        "bán tháo", "khó khăn", "nợ xấu", "cảnh báo", "điều tra", "vi phạm",
     ]
 
-    positive = sum(
-        word in text
-        for word in positive_words
-    )
-
-    negative = sum(
-        word in text
-        for word in negative_words
-    )
+    positive = sum(word in text for word in positive_words)
+    negative = sum(word in text for word in negative_words)
 
     if positive > negative:
         return "positive"
-
     if negative > positive:
         return "negative"
-
     return "neutral"
 
 
 # ============================================================
-# LEGACY OLS
+# OLS / RANDOM FOREST / QUANT
 # ============================================================
 
-def run_ols(
-    data,
-):
-
-    if (
-        data is None
-        or data.empty
-    ):
+def run_ols(data):
+    if data is None or data.empty:
         return None
-
     try:
-
         import statsmodels.api as sm
-
     except Exception:
         return None
 
     candidate = [
-        "RSI",
-        "MACD",
-        "MACD_Hist",
-        "Volatility20",
-        "Volume_Change",
-        "Momentum20",
-        "Range_Percent",
-        "Relative_Volume",
-        "market_vnindex_return",
-        "market_vnindex_momentum20",
-        "sector_return",
-        "sector_momentum20",
-        "foreign_net_val_calc",
-        "proprietary_net_val_calc",
+        "RSI", "MACD", "MACD_Hist", "Volatility20", "Volume_Change",
+        "Momentum20", "Range_Percent", "Relative_Volume",
+        "market_vnindex_return", "market_vnindex_momentum20",
+        "sector_return", "sector_momentum20",
     ]
-
-    features = [
-        column
-        for column in candidate
-        if column in data.columns
-    ]
-
+    features = [column for column in candidate if column in data.columns]
     if not features:
         return None
 
-    dataset = data[
-        features
-        + ["Return"]
-    ].replace(
-        [
-            np.inf,
-            -np.inf,
-        ],
-        np.nan,
-    ).dropna()
-
+    dataset = data[features + ["Return"]].replace([np.inf, -np.inf], np.nan).dropna()
     if len(dataset) < 50:
         return None
 
     try:
-
-        X = sm.add_constant(
-            dataset[
-                features
-            ],
-            has_constant="add",
-        )
-
-        y = dataset[
-            "Return"
-        ]
-
-        return (
-            sm.OLS(
-                y,
-                X,
-            )
-            .fit(
-                cov_type="HC3"
-            )
-        )
-
+        X = sm.add_constant(dataset[features], has_constant="add")
+        return sm.OLS(dataset["Return"], X).fit(cov_type="HC3")
     except Exception:
-
         return None
 
 
-# ============================================================
-# RANDOM FOREST
-# ============================================================
-
-def run_random_forest(
-    data,
-):
-
-    if (
-        data is None
-        or data.empty
-    ):
+def run_random_forest(data):
+    if data is None or data.empty:
         return None
-
     try:
-
-        from sklearn.ensemble import (
-            RandomForestRegressor,
-        )
-
+        from sklearn.ensemble import RandomForestRegressor
     except Exception:
         return None
 
     excluded = {
-        "Target_1D",
-        "Target_5D",
-        "Target_20D",
-        "Target_1D_Pct",
-        "Target_5D_Pct",
-        "Target_20D_Pct",
+        "Target_1D", "Target_5D", "Target_20D",
+        "Target_1D_Pct", "Target_5D_Pct", "Target_20D_Pct",
     }
-
     features = [
         column
         for column in data.columns
-        if (
-            column not in excluded
-            and pd.api.types.is_numeric_dtype(
-                data[column]
-            )
-        )
+        if column not in excluded and pd.api.types.is_numeric_dtype(data[column])
     ]
-
-    if not features:
+    if not features or "Target_1D" not in data.columns:
         return None
 
-    work = data[
-        features
-        + ["Target_1D"]
-    ].replace(
-        [
-            np.inf,
-            -np.inf,
-        ],
-        np.nan,
-    )
-
-    X = work[
-        features
-    ].copy()
-
-    y = work[
-        "Target_1D"
-    ].copy()
+    work = data[features + ["Target_1D"]].replace([np.inf, -np.inf], np.nan)
+    X = work[features].copy()
+    y = work["Target_1D"].copy()
 
     for column in X.columns:
-
-        median = X[
-            column
-        ].median()
-
-        if pd.isna(
-            median
-        ):
-            median = 0.0
-
-        X[
-            column
-        ] = X[
-            column
-        ].fillna(
-            median
-        )
+        median = X[column].median()
+        X[column] = X[column].fillna(0.0 if pd.isna(median) else median)
 
     valid = y.notna()
-
-    X = X.loc[
-        valid
-    ]
-
-    y = y.loc[
-        valid
-    ]
-
+    X = X.loc[valid]
+    y = y.loc[valid]
     if len(X) < 80:
         return None
 
-    split = int(
-        len(X)
-        * 0.8
-    )
-
+    split = int(len(X) * 0.8)
     if split < 40:
         return None
 
@@ -4647,777 +1531,191 @@ def run_random_forest(
         random_state=42,
         n_jobs=-1,
     )
-
     try:
-
-        model.fit(
-            X.iloc[
-                :split
-            ],
-            y.iloc[
-                :split
-            ],
-        )
-
-        prediction = float(
-            model.predict(
-                X.iloc[
-                    [
-                        -1
-                    ]
-                ]
-            )[0]
-        )
-
-        importance = dict(
-            zip(
-                features,
-                model.feature_importances_,
-            )
-        )
-
+        model.fit(X.iloc[:split], y.iloc[:split])
+        prediction = float(model.predict(X.iloc[[-1]])[0])
         return {
             "model": model,
             "prediction": prediction,
-            "importance": importance,
+            "importance": dict(zip(features, model.feature_importances_)),
         }
-
     except Exception:
-
         return None
 
 
-# ============================================================
-# BUILD QUANT — FULL FACTOR VERSION
-# ============================================================
-
-def build_quant(
-    data,
-):
-
-    if (
-        data is None
-        or data.empty
-    ):
+def build_quant(data):
+    if data is None or data.empty:
         return None
 
     try:
-
-        from sklearn.ensemble import (
-            ExtraTreesRegressor,
-            GradientBoostingRegressor,
-            RandomForestRegressor,
-        )
-
-        from sklearn.linear_model import (
-            ElasticNet,
-            Lasso,
-            Ridge,
-        )
-
-        from sklearn.metrics import (
-            mean_absolute_error,
-            mean_squared_error,
-            r2_score,
-        )
-
-        from sklearn.pipeline import (
-            Pipeline,
-        )
-
-        from sklearn.preprocessing import (
-            StandardScaler,
-        )
-
+        from sklearn.ensemble import ExtraTreesRegressor, GradientBoostingRegressor, RandomForestRegressor
+        from sklearn.linear_model import ElasticNet, Lasso, Ridge
+        from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
     except Exception:
         return None
 
-    # ========================================================
-    # ALL NUMERIC FACTORS
-    # ========================================================
-
     excluded = {
-        "Target_1D",
-        "Target_5D",
-        "Target_20D",
-        "Target_1D_Pct",
-        "Target_5D_Pct",
-        "Target_20D_Pct",
+        "Target_1D", "Target_5D", "Target_20D",
+        "Target_1D_Pct", "Target_5D_Pct", "Target_20D_Pct",
     }
-
     features = [
         column
         for column in data.columns
-        if (
-            column not in excluded
-            and pd.api.types.is_numeric_dtype(
-                data[column]
-            )
-        )
+        if column not in excluded and pd.api.types.is_numeric_dtype(data[column])
     ]
-
-    # Không dùng target/current future leakage.
-    leakage_names = {
-        column
-        for column in features
-        if str(
-            column
-        ).startswith(
-            "Target_"
-        )
-    }
-
-    features = [
-        column
-        for column in features
-        if column not in leakage_names
-    ]
-
     if not features:
-
         return None
 
     results = {}
-
-    # ========================================================
-    # THREE HORIZONS
-    # ========================================================
-
-    for horizon in [
-        "1D",
-        "5D",
-        "20D",
-    ]:
-
-        target_column = (
-            f"Target_{horizon}"
-        )
-
+    for horizon in ["1D", "5D", "20D"]:
+        target_column = f"Target_{horizon}"
         if target_column not in data.columns:
             continue
 
-        work = data[
-            features
-            + [
-                target_column
-            ]
-        ].replace(
-            [
-                np.inf,
-                -np.inf,
-            ],
-            np.nan,
-        ).copy()
+        work = data[features + [target_column]].replace([np.inf, -np.inf], np.nan).copy()
+        X = work[features].copy()
+        y = work[target_column].copy()
 
-        X = work[
-            features
-        ].copy()
-
-        y = work[
-            target_column
-        ].copy()
-
-        # Median fill.
         for column in X.columns:
-
-            median = X[
-                column
-            ].median()
-
-            if pd.isna(
-                median
-            ):
-                median = 0.0
-
-            X[
-                column
-            ] = X[
-                column
-            ].fillna(
-                median
-            )
+            median = X[column].median()
+            X[column] = X[column].fillna(0.0 if pd.isna(median) else median)
 
         valid = y.notna()
-
-        X = X.loc[
-            valid
-        ]
-
-        y = y.loc[
-            valid
-        ]
+        X = X.loc[valid]
+        y = y.loc[valid]
 
         if len(X) < 60:
             continue
 
-        split = int(
-            len(X)
-            * 0.8
-        )
-
-        if (
-            split < 30
-            or len(X) - split < 10
-        ):
+        split = int(len(X) * 0.8)
+        if split < 30 or len(X) - split < 10:
             continue
 
-        X_train = X.iloc[
-            :split
-        ]
-
-        X_test = X.iloc[
-            split:
-        ]
-
-        y_train = y.iloc[
-            :split
-        ]
-
-        y_test = y.iloc[
-            split:
-        ]
-
         models = [
-            (
-                "Ridge",
-                Pipeline(
-                    [
-                        (
-                            "scaler",
-                            StandardScaler(),
-                        ),
-                        (
-                            "model",
-                            Ridge(
-                                alpha=1.0
-                            ),
-                        ),
-                    ]
-                ),
-            ),
-            (
-                "Lasso",
-                Pipeline(
-                    [
-                        (
-                            "scaler",
-                            StandardScaler(),
-                        ),
-                        (
-                            "model",
-                            Lasso(
-                                alpha=0.0001,
-                                max_iter=50000,
-                            ),
-                        ),
-                    ]
-                ),
-            ),
-            (
-                "Elastic Net",
-                Pipeline(
-                    [
-                        (
-                            "scaler",
-                            StandardScaler(),
-                        ),
-                        (
-                            "model",
-                            ElasticNet(
-                                alpha=0.0001,
-                                l1_ratio=0.5,
-                                max_iter=50000,
-                            ),
-                        ),
-                    ]
-                ),
-            ),
-            (
-                "Random Forest",
-                RandomForestRegressor(
-                    n_estimators=300,
-                    max_depth=8,
-                    min_samples_leaf=3,
-                    random_state=42,
-                    n_jobs=-1,
-                ),
-            ),
-            (
-                "Extra Trees",
-                ExtraTreesRegressor(
-                    n_estimators=300,
-                    max_depth=8,
-                    min_samples_leaf=3,
-                    random_state=42,
-                    n_jobs=-1,
-                ),
-            ),
-            (
-                "Gradient Boosting",
-                GradientBoostingRegressor(
-                    n_estimators=250,
-                    learning_rate=0.03,
-                    max_depth=3,
-                    min_samples_leaf=3,
-                    random_state=42,
-                ),
-            ),
+            ("Ridge", Pipeline([("scaler", StandardScaler()), ("model", Ridge(alpha=1.0))])),
+            ("Lasso", Pipeline([("scaler", StandardScaler()), ("model", Lasso(alpha=0.0001, max_iter=50000))])),
+            ("Elastic Net", Pipeline([("scaler", StandardScaler()), ("model", ElasticNet(alpha=0.0001, l1_ratio=0.5, max_iter=50000))])),
+            ("Random Forest", RandomForestRegressor(n_estimators=300, max_depth=8, min_samples_leaf=3, random_state=42, n_jobs=-1)),
+            ("Extra Trees", ExtraTreesRegressor(n_estimators=300, max_depth=8, min_samples_leaf=3, random_state=42, n_jobs=-1)),
+            ("Gradient Boosting", GradientBoostingRegressor(n_estimators=250, learning_rate=0.03, max_depth=3, min_samples_leaf=3, random_state=42)),
         ]
 
         rows = []
-
         fitted = {}
-
         predictions = {}
 
         for name, model in models:
-
             try:
+                model.fit(X.iloc[:split], y.iloc[:split])
+                pred = np.asarray(model.predict(X.iloc[split:]), dtype=float)
+                actual = np.asarray(y.iloc[split:], dtype=float)
+                mse = float(mean_squared_error(actual, pred))
+                rows.append({
+                    "Mô hình": name,
+                    "MAE": float(mean_absolute_error(actual, pred)),
+                    "MSE": mse,
+                    "RMSE": float(np.sqrt(mse)),
+                    "R²": float(r2_score(actual, pred)),
+                })
+                fitted[name] = model
+                predictions[name] = pred
+            except Exception as error:
+                print(f"[QUANT] {name}/{horizon}: lỗi {error}")
 
-                model.fit(
-                    X_train,
-                    y_train,
-                )
+        models_df = pd.DataFrame(rows)
+        if not models_df.empty:
+            models_df = models_df.sort_values("RMSE", ascending=True).reset_index(drop=True)
 
-                pred = np.asarray(
-                    model.predict(
-                        X_test
-                    ),
-                    dtype=float,
-                )
+        importance_df = pd.DataFrame()
+        if not models_df.empty:
+            best_name = str(models_df.iloc[0]["Mô hình"])
+            best_model = fitted.get(best_name)
+            raw_model = best_model
+            if best_model is not None and hasattr(best_model, "named_steps"):
+                raw_model = best_model.named_steps.get("model", best_model)
+            if raw_model is not None and hasattr(raw_model, "feature_importances_"):
+                importance_df = pd.DataFrame({
+                    "Biến": X.columns,
+                    "Importance": raw_model.feature_importances_,
+                }).sort_values("Importance", ascending=False).reset_index(drop=True)
 
-                actual = np.asarray(
-                    y_test,
-                    dtype=float,
-                )
-
-                mae = float(
-                    mean_absolute_error(
-                        actual,
-                        pred,
-                    )
-                )
-
-                mse = float(
-                    mean_squared_error(
-                        actual,
-                        pred,
-                    )
-                )
-
-                rmse = float(
-                    np.sqrt(
-                        mse
-                    )
-                )
-
-                try:
-
-                    r2 = float(
-                        r2_score(
-                            actual,
-                            pred,
-                        )
-                    )
-
-                except Exception:
-
-                    r2 = np.nan
-
-                rows.append(
-                    {
-                        "Mô hình": name,
-                        "MAE": mae,
-                        "MSE": mse,
-                        "RMSE": rmse,
-                        "R²": r2,
-                    }
-                )
-
-                fitted[
-                    name
-                ] = model
-
-                predictions[
-                    name
-                ] = pred
-
-            except Exception:
-                continue
-
-        models_df = (
-            pd.DataFrame(
-                rows
-            )
-            .sort_values(
-                "RMSE",
-                ascending=True,
-            )
-            .reset_index(
-                drop=True
-            )
-        )
-
-        # ====================================================
-        # FEATURE IMPORTANCE BEST TREE
-        # ====================================================
-
-        tree_importance = pd.DataFrame()
-
-        if (
-            not models_df.empty
-        ):
-
-            best_name = str(
-                models_df.iloc[
-                    0
-                ][
-                    "Mô hình"
-                ]
-            )
-
-            best_model = fitted.get(
-                best_name
-            )
-
-            if best_model is not None:
-
-                raw_model = best_model
-
-                if hasattr(
-                    best_model,
-                    "named_steps",
-                ):
-
-                    raw_model = (
-                        best_model
-                        .named_steps
-                        .get(
-                            "model",
-                            best_model,
-                        )
-                    )
-
-                if hasattr(
-                    raw_model,
-                    "feature_importances_",
-                ):
-
-                    tree_importance = (
-                        pd.DataFrame(
-                            {
-                                "Biến": X.columns,
-                                "Importance": (
-                                    raw_model
-                                    .feature_importances_
-                                ),
-                            }
-                        )
-                        .sort_values(
-                            "Importance",
-                            ascending=False,
-                        )
-                        .reset_index(
-                            drop=True
-                        )
-                    )
-
-        results[
-            horizon
-        ] = {
+        results[horizon] = {
             "observations": len(X),
-            "train": len(X_train),
-            "test": len(X_test),
+            "train": len(X.iloc[:split]),
+            "test": len(X.iloc[split:]),
             "features": features,
             "models": models_df,
             "fitted": fitted,
             "predictions": predictions,
-            "tree_importance": tree_importance,
+            "tree_importance": importance_df,
         }
 
-    if not results:
-        return None
-
-    return results
+    return results or None
 
 
 # ============================================================
-# SNAPSHOT FACTOR SUMMARY
+# FACTOR GROUPS / CORRELATION
 # ============================================================
 
-def research_factor_groups(
-    data,
-):
+def research_factor_groups(data):
+    if data is None or data.empty:
+        return {"technical": [], "flow": [], "foreign": [], "proprietary": [], "market": [], "sector": []}
 
-    if (
-        data is None
-        or data.empty
-    ):
-
-        return {
-            "technical": [],
-            "flow": [],
-            "foreign": [],
-            "proprietary": [],
-            "market": [],
-            "sector": [],
-        }
-
-    columns = [
-        str(column)
-        for column in data.columns
-    ]
-
+    columns = [str(column) for column in data.columns]
     return {
         "technical": [
-            column
-            for column in columns
-            if not (
-                column.startswith(
-                    "market_"
-                )
-                or column.startswith(
-                    "sector_"
-                )
-                or column.startswith(
-                    "foreign_"
-                )
-                or column.startswith(
-                    "proprietary_"
-                )
-                or column.startswith(
-                    "flow_"
-                )
-                or column.startswith(
-                    "Target_"
-                )
-            )
+            column for column in columns
+            if not any(column.startswith(prefix) for prefix in ("market_", "sector_", "foreign_", "proprietary_", "flow_", "Target_"))
         ],
-        "flow": [
-            column
-            for column in columns
-            if (
-                column.startswith(
-                    "flow_"
-                )
-                or "Trading_Value" in column
-            )
-        ],
-        "foreign": [
-            column
-            for column in columns
-            if column.startswith(
-                "foreign_"
-            )
-        ],
-        "proprietary": [
-            column
-            for column in columns
-            if column.startswith(
-                "proprietary_"
-            )
-        ],
-        "market": [
-            column
-            for column in columns
-            if column.startswith(
-                "market_"
-            )
-        ],
-        "sector": [
-            column
-            for column in columns
-            if column.startswith(
-                "sector_"
-            )
-        ],
+        "flow": [column for column in columns if "Trading_Value" in column or column.startswith("flow_")],
+        "foreign": [],
+        "proprietary": [],
+        "market": [column for column in columns if column.startswith("market_")],
+        "sector": [column for column in columns if column.startswith("sector_")],
     }
 
 
-# ============================================================
-# FACTOR IMPORTANCE — CORRELATION
-# ============================================================
-
-def factor_correlation_table(
-    data,
-    target_column,
-):
-
-    if (
-        data is None
-        or data.empty
-        or target_column not in data.columns
-    ):
-
+def factor_correlation_table(data, target_column):
+    if data is None or data.empty or target_column not in data.columns:
         return pd.DataFrame()
 
-    excluded = {
-        "Target_1D",
-        "Target_5D",
-        "Target_20D",
-        "Target_1D_Pct",
-        "Target_5D_Pct",
-        "Target_20D_Pct",
-    }
-
+    excluded = {"Target_1D", "Target_5D", "Target_20D", "Target_1D_Pct", "Target_5D_Pct", "Target_20D_Pct"}
     rows = []
-
-    y = pd.to_numeric(
-        data[
-            target_column
-        ],
-        errors="coerce",
-    )
+    y = pd.to_numeric(data[target_column], errors="coerce")
 
     for column in data.columns:
-
-        if column == target_column:
+        if column == target_column or column in excluded:
+            continue
+        if not pd.api.types.is_numeric_dtype(data[column]):
             continue
 
-        if column in excluded:
+        x = pd.to_numeric(data[column], errors="coerce")
+        valid = x.notna() & y.notna()
+        x_valid = x.loc[valid]
+        y_valid = y.loc[valid]
+        if len(x_valid) < 20:
             continue
 
-        if not pd.api.types.is_numeric_dtype(
-            data[
-                column
-            ]
-        ):
-            continue
-
-        x = pd.to_numeric(
-            data[
-                column
-            ],
-            errors="coerce",
-        )
-
-        valid = (
-            x.notna()
-            & y.notna()
-        )
-
-        x_valid = x.loc[
-            valid
-        ]
-
-        y_valid = y.loc[
-            valid
-        ]
-
-        if len(
-            x_valid
-        ) < 20:
-            continue
-
-        try:
-
-            pearson = float(
-                x_valid.corr(
-                    y_valid,
-                    method="pearson",
-                )
-            )
-
-        except Exception:
-
-            pearson = np.nan
-
-        try:
-
-            spearman = float(
-                x_valid.corr(
-                    y_valid,
-                    method="spearman",
-                )
-            )
-
-        except Exception:
-
-            spearman = np.nan
-
-        rows.append(
-            {
-                "Biến": column,
-                "Pearson": pearson,
-                "Spearman": spearman,
-                "|Spearman|": (
-                    abs(
-                        spearman
-                    )
-                    if np.isfinite(
-                        spearman
-                    )
-                    else np.nan
-                ),
-            }
-        )
+        pearson = x_valid.corr(y_valid, method="pearson")
+        spearman = x_valid.corr(y_valid, method="spearman")
+        rows.append({
+            "Biến": column,
+            "Pearson": float(pearson) if pd.notna(pearson) else np.nan,
+            "Spearman": float(spearman) if pd.notna(spearman) else np.nan,
+            "|Spearman|": abs(float(spearman)) if pd.notna(spearman) else np.nan,
+        })
 
     if not rows:
         return pd.DataFrame()
 
-    return (
-        pd.DataFrame(
-            rows
-        )
-        .sort_values(
-            "|Spearman|",
-            ascending=False,
-            na_position="last",
-        )
-        .reset_index(
-            drop=True
-        )
-    )
+    return pd.DataFrame(rows).sort_values("|Spearman|", ascending=False, na_position="last").reset_index(drop=True)
 
 
-# ============================================================
-# FINAL FACTOR DATASET
-# ============================================================
-
-def build_research_factor_dataset(
-    data,
-    target_column="Target_20D",
-):
-
-    correlation = factor_correlation_table(
-        data,
-        target_column,
-    )
-
+def build_research_factor_dataset(data, target_column="Target_20D"):
     return {
         "data": data,
-        "correlation": correlation,
-        "groups": research_factor_groups(
-            data
-        ),
+        "correlation": factor_correlation_table(data, target_column),
+        "groups": research_factor_groups(data),
     }
-
-
-# ============================================================
-# ALIASES FOR FUTURE PAGES
-# ============================================================
-
-def get_research_data(
-    symbol,
-    start_date,
-    end_date,
-):
-
-    return load_multifactor_research_history(
-        symbol,
-        start_date,
-        end_date,
-    )
-
-
-def load_full_research_data(
-    symbol,
-    start_date,
-    end_date,
-):
-
-    return load_multifactor_research_history(
-        symbol,
-        start_date,
-        end_date,
-    )
