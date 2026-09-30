@@ -122,15 +122,32 @@ def _extract_rate_limit_wait_seconds(error):
 
 
 def _sleep_after_rate_limit(error):
-    wait_seconds = _extract_rate_limit_wait_seconds(error)
-    if wait_seconds is None:
-        wait_seconds = 5 if VNSTOCK_API_KEY_AVAILABLE else 12
-    # thêm 1 giây để tránh vừa chạm ngưỡng cửa sổ rate limit
-    wait_seconds += 1
-    print(
-        f"[VNSTOCK] Rate limit: chờ {wait_seconds} giây trước khi thử lại."
+    """
+    Rate limit không được coi là "không có dữ liệu".
+    Chờ đủ một cửa sổ 60 giây rồi thử lại đúng request hiện tại.
+    """
+    global _REQUEST_TIMESTAMPS
+
+    suggested = _extract_rate_limit_wait_seconds(error)
+
+    # Guest báo thời gian còn lại theo cửa sổ hiện tại.
+    # Dù API báo 11-15-44 giây, luôn cộng đệm và tối thiểu 61 giây
+    # để tránh retry ngay trong cùng cửa sổ.
+    wait_seconds = max(
+        61,
+        (suggested or 60) + 1,
     )
+
+    print(
+        f"[VNSTOCK] Rate limit: chờ {wait_seconds} giây "
+        f"trước khi thử lại đúng request."
+    )
+
     time.sleep(wait_seconds)
+
+    # Sau khi chờ đủ một cửa sổ, các request cũ không còn hợp lệ
+    # trong rolling window của app.
+    _REQUEST_TIMESTAMPS = []
 
 
 def _is_rate_limit_error(error):
@@ -1524,34 +1541,84 @@ def _period_days(
 # REQUEST RATE LIMIT
 # ============================================================
 
+# Guest = 20 requests/phút. Chúng ta chủ động giữ ở 18 requests/phút
+# để có khoảng đệm và tránh việc chính code tự đẩy hệ thống vào 20/20.
+# Khi có API key, giữ ở 55 requests/phút thay vì sát trần 60.
+_REQUEST_WINDOW_SECONDS = 60.0
+_GUEST_MAX_REQUESTS_PER_MINUTE = 18
+_API_KEY_MAX_REQUESTS_PER_MINUTE = 55
+_REQUEST_TIMESTAMPS = []
+
+
 def _sleep_between_requests(
     previous_request_time,
 ):
-    if previous_request_time is None:
-        return
+    global _REQUEST_TIMESTAMPS
 
-    elapsed = (
-        time.monotonic()
-        - previous_request_time
+    now = time.monotonic()
+
+    # Chọn hạn mức an toàn theo trạng thái hiện tại.
+    max_requests = (
+        _API_KEY_MAX_REQUESTS_PER_MINUTE
+        if VNSTOCK_API_KEY_AVAILABLE
+        else _GUEST_MAX_REQUESTS_PER_MINUTE
     )
 
-    # Tính lại hạn mức theo trạng thái API key hiện tại.
-    # Điều này giúp Streamlit nhận Secret mới ngay sau khi restart.
     target_delay = (
         1.25
         if VNSTOCK_API_KEY_AVAILABLE
-        else 3.25
+        else 3.5
     )
 
-    remaining = (
-        target_delay
-        - elapsed
-    )
+    # Xóa timestamp đã quá cửa sổ 60 giây.
+    _REQUEST_TIMESTAMPS = [
+        t
+        for t in _REQUEST_TIMESTAMPS
+        if now - t < _REQUEST_WINDOW_SECONDS
+    ]
 
-    if remaining > 0:
-        time.sleep(
-            remaining
+    # Giữ khoảng cách tối thiểu giữa hai request.
+    if previous_request_time is not None:
+        elapsed = now - previous_request_time
+        remaining_gap = target_delay - elapsed
+
+        if remaining_gap > 0:
+            time.sleep(remaining_gap)
+            now = time.monotonic()
+
+    # Sau khi ngủ theo khoảng cách, kiểm tra lại rolling window.
+    _REQUEST_TIMESTAMPS = [
+        t
+        for t in _REQUEST_TIMESTAMPS
+        if now - t < _REQUEST_WINDOW_SECONDS
+    ]
+
+    if len(_REQUEST_TIMESTAMPS) >= max_requests:
+        oldest = min(_REQUEST_TIMESTAMPS)
+        wait_seconds = max(
+            1.0,
+            _REQUEST_WINDOW_SECONDS - (now - oldest) + 1.0,
         )
+
+        print(
+            f"[VNSTOCK] Đã dùng {len(_REQUEST_TIMESTAMPS)}/"
+            f"{max_requests} request trong 60 giây. "
+            f"Chờ {wait_seconds:.0f} giây để lấy slot tiếp theo."
+        )
+
+        time.sleep(wait_seconds)
+        now = time.monotonic()
+
+        _REQUEST_TIMESTAMPS = [
+            t
+            for t in _REQUEST_TIMESTAMPS
+            if now - t < _REQUEST_WINDOW_SECONDS
+        ]
+
+    # Ghi nhận request sắp thực hiện.
+    _REQUEST_TIMESTAMPS.append(
+        time.monotonic()
+    )
 
 
 # ============================================================
@@ -1567,6 +1634,8 @@ def _request_equity_ohlcv(
     last_error = None
 
     for attempt in range(1, MAX_OHLCV_RETRIES + 1):
+        _sleep_between_requests(None)
+
         try:
             return (
                 market
@@ -1584,12 +1653,16 @@ def _request_equity_ohlcv(
             )
         except Exception as error:
             last_error = error
-            if _is_rate_limit_error(error):
-                _sleep_after_rate_limit(error)
-            elif attempt < MAX_OHLCV_RETRIES:
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
-            if attempt >= MAX_OHLCV_RETRIES:
+            if _is_rate_limit_error(error):
+                if attempt < MAX_OHLCV_RETRIES:
+                    _sleep_after_rate_limit(error)
+                    continue
+                raise
+
+            if attempt < MAX_OHLCV_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+            else:
                 raise
 
     if last_error is not None:
@@ -1746,6 +1819,8 @@ def _request_index_ohlcv(
     last_error = None
 
     for attempt in range(1, MAX_OHLCV_RETRIES + 1):
+        _sleep_between_requests(None)
+
         try:
             return (
                 market
@@ -1761,12 +1836,16 @@ def _request_index_ohlcv(
             )
         except Exception as error:
             last_error = error
-            if _is_rate_limit_error(error):
-                _sleep_after_rate_limit(error)
-            elif attempt < MAX_OHLCV_RETRIES:
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
-            if attempt >= MAX_OHLCV_RETRIES:
+            if _is_rate_limit_error(error):
+                if attempt < MAX_OHLCV_RETRIES:
+                    _sleep_after_rate_limit(error)
+                    continue
+                raise
+
+            if attempt < MAX_OHLCV_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+            else:
                 raise
 
     if last_error is not None:
@@ -1782,16 +1861,7 @@ def _load_index_range_complete(
     end_date,
     request_state=None,
 ):
-    """
-    Lấy lịch sử chỉ số với chiến lược ưu tiên 1 request.
-
-    Quan trọng:
-    - Không chia nhỏ chỉ vì DataFrame có >95 dòng.
-    - Chỉ chia nhỏ khi response có dấu hiệu bị cắt phạm vi ngày
-      (ví dụ 3 năm nhưng chỉ trả 100 phiên gần nhất).
-    - Điều này tránh việc VN-Index/VN30/HNX biến thành hàng chục
-      request khi start/end thực tế đã trả đủ lịch sử.
-    """
+    """Lấy đủ lịch sử chỉ số, tự chia nếu response chạm giới hạn."""
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
 
@@ -1812,79 +1882,46 @@ def _load_index_range_complete(
             end,
         )
     except Exception as error:
-        if _is_rate_limit_error(error):
-            _sleep_after_rate_limit(error)
-            request_state["last_request"] = time.monotonic()
-            try:
-                df = _request_index_ohlcv(
-                    market,
-                    index_symbol,
-                    start,
-                    end,
-                )
-            except Exception:
-                raise
-        else:
-            raise
+        print(
+            f"[VNSTOCK] {index_symbol}: lỗi request "
+            f"{start.date()} -> {end.date()}: {error}"
+        )
+        return pd.DataFrame()
+
+    if df is None or df.empty:
+        time.sleep(RETRY_BACKOFF_SECONDS)
+        try:
+            df = _request_index_ohlcv(market, index_symbol, start, end)
+        except Exception:
+            df = pd.DataFrame()
 
     if df is None or df.empty:
         return pd.DataFrame()
 
     try:
-        normalized = _normalize_ohlcv(
-            df,
-            stock=False,
-        )
+        normalized = _normalize_ohlcv(df, stock=False)
     except Exception:
-        return pd.DataFrame()
-
-    normalized = normalized.sort_index()
-    normalized = normalized[
-        ~normalized.index.duplicated(keep="last")
-    ]
-    normalized = normalized.loc[start:end]
-
-    if normalized.empty:
-        return normalized
-
-    first_actual = normalized.index.min().normalize()
-    last_actual = normalized.index.max().normalize()
-
-    # Cho phép chênh vài ngày lịch do cuối tuần/ngày nghỉ lễ.
-    # Nếu lệch lớn, response có khả năng bị giới hạn số dòng.
-    start_gap = (first_actual - start).days
-    end_gap = (end - last_actual).days
-    coverage_tolerance_days = 7
-
-    coverage_looks_complete = (
-        start_gap <= coverage_tolerance_days
-        and end_gap <= coverage_tolerance_days
-    )
-
-    # Nếu response bao phủ toàn phạm vi yêu cầu thì dùng luôn.
-    # Đây là điểm quan trọng để 3/6 không biến thành hàng chục request.
-    if coverage_looks_complete:
-        return normalized
+        normalized = pd.DataFrame()
 
     day_span = (end - start).days + 1
 
+    if not normalized.empty and len(normalized) < MAX_OHLCV_ROWS_PER_REQUEST:
+        return normalized.loc[start:end]
+
     if day_span <= MIN_OHLCV_CHUNK_DAYS:
-        return normalized
+        print(
+            f"[VNSTOCK] {index_symbol}: cảnh báo chunk nhỏ "
+            f"{start.date()} -> {end.date()} trả {len(normalized)} dòng."
+        )
+        return normalized.loc[start:end]
 
-    # Response có dấu hiệu bị cắt -> chia đôi và tải từng nửa.
     midpoint = start + pd.Timedelta(days=(day_span // 2) - 1)
-
     if midpoint < start or midpoint >= end:
-        return normalized
+        return normalized.loc[start:end]
 
     left = _load_index_range_complete(
-        market,
-        index_symbol,
-        start,
-        midpoint,
-        request_state,
+        market, index_symbol, start, midpoint, request_state
     )
-
     right = _load_index_range_complete(
         market,
         index_symbol,
@@ -1892,25 +1929,12 @@ def _load_index_range_complete(
         end,
         request_state,
     )
-
-    parts = [
-        part
-        for part in (left, right)
-        if part is not None and not part.empty
-    ]
-
+    parts = [x for x in (left, right) if x is not None and not x.empty]
     if not parts:
         return pd.DataFrame()
 
-    result = pd.concat(
-        parts,
-        axis=0,
-    ).sort_index()
-
-    result = result[
-        ~result.index.duplicated(keep="last")
-    ]
-
+    result = pd.concat(parts, axis=0).sort_index()
+    result = result[~result.index.duplicated(keep="last")]
     return result.loc[start:end]
 
 
@@ -2673,70 +2697,46 @@ def _call_historical_method_range(
     method_name,
     start_date,
     end_date,
-    max_attempts=3,
 ):
-    """
-    Gọi đúng khoảng start/end.
-    Quan trọng: không biến lỗi rate-limit thành DataFrame rỗng,
-    vì làm vậy caller sẽ tưởng là thiếu dữ liệu và tiếp tục chia nhỏ,
-    khiến số request tăng vô hạn.
-    """
+    """Chỉ gọi API lịch sử với start/end; không fallback về toàn bộ lịch sử."""
     method = getattr(obj, method_name, None)
     if method is None:
         return pd.DataFrame()
 
-    last_error = None
+    for attempt in range(1, MAX_OHLCV_RETRIES + 1):
+        _sleep_between_requests(None)
 
-    for attempt in range(1, max_attempts + 1):
         try:
-            data = method(
+            return method(
                 start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
                 end=pd.Timestamp(end_date).strftime("%Y-%m-%d"),
             )
 
-            if data is None:
-                return pd.DataFrame()
-
-            return data
-
-        except TypeError as error:
-            # Không hỗ trợ start/end: không fallback về toàn bộ lịch sử,
-            # vì có thể tải cực lớn và phá giới hạn request.
+        except TypeError:
             print(
                 f"[VNSTOCK] {method_name}: phiên bản API hiện tại "
-                f"không hỗ trợ start/end: {error}"
+                f"không hỗ trợ start/end."
             )
             return pd.DataFrame()
 
         except Exception as error:
-            last_error = error
-
             if _is_rate_limit_error(error):
-                if attempt < max_attempts:
+                if attempt < MAX_OHLCV_RETRIES:
                     _sleep_after_rate_limit(error)
                     continue
 
+                # Không biến rate-limit thành DataFrame rỗng.
+                # Làm vậy sẽ kích hoạt chia nhỏ đệ quy và tiếp tục
+                # tiêu request vô hạn.
                 raise RuntimeError(
-                    f"VNStock rate-limit khi lấy {method_name} "
-                    f"{pd.Timestamp(start_date).date()} → "
-                    f"{pd.Timestamp(end_date).date()}"
+                    f"VNStock rate limit khi gọi {method_name}: {error}"
                 ) from error
 
-            if attempt < max_attempts:
-                time.sleep(
-                    RETRY_BACKOFF_SECONDS * attempt
-                )
+            if attempt < MAX_OHLCV_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
                 continue
 
-            print(
-                f"[VNSTOCK] {method_name}: lỗi request "
-                f"{pd.Timestamp(start_date).date()} → "
-                f"{pd.Timestamp(end_date).date()}: {error}"
-            )
-            return pd.DataFrame()
-
-    if last_error is not None:
-        raise last_error
+            raise
 
     return pd.DataFrame()
 
@@ -2749,14 +2749,7 @@ def _load_flow_range_complete(
     end_date,
     request_state=None,
 ):
-    """
-    Lấy dữ liệu flow đúng khoảng start/end.
-
-    Không tự chia nhỏ hàng loạt request như OHLCV.
-    Các hàm lịch sử flow của Market Layer hỗ trợ start/end;
-    việc auto-paginate thuộc lớp dữ liệu phía dưới. Chỉ fallback
-    một lần nếu response rỗng ở khoảng dài để tránh vòng lặp request.
-    """
+    """Lấy flow theo khoảng thời gian; response chạm giới hạn thì chia nhỏ."""
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
 
@@ -2766,10 +2759,7 @@ def _load_flow_range_complete(
     if request_state is None:
         request_state = _GLOBAL_REQUEST_STATE
 
-    # Một request cho cả khoảng.
-    _sleep_between_requests(
-        request_state.get("last_request")
-    )
+    _sleep_between_requests(request_state.get("last_request"))
     request_state["last_request"] = time.monotonic()
 
     raw = _call_historical_method_range(
@@ -2785,79 +2775,32 @@ def _load_flow_range_complete(
     )
 
     if normalized is not None and not normalized.empty:
-        return (
-            normalized
-            .sort_index()
-            .loc[start:end]
-            .loc[
-                lambda df: ~df.index.duplicated(
-                    keep="last"
-                )
-            ]
-        )
+        row_count = len(normalized)
+    else:
+        row_count = 0
 
-    # Response rỗng: thử đúng một lần với khoảng chia đôi.
-    # Không tiếp tục đệ quy vô hạn.
     day_span = (end - start).days + 1
 
-    if day_span <= MIN_OHLCV_CHUNK_DAYS:
+    if 0 < row_count < MAX_OHLCV_ROWS_PER_REQUEST:
+        return normalized.loc[start:end]
+
+    if row_count == 0:
         print(
             f"[VNSTOCK] {method_name}: không có dữ liệu "
-            f"{start.date()} → {end.date()}."
+            f"{start.date()} -> {end.date()}."
         )
+        # Quan trọng: không coi empty là rate-limit và không đệ quy
+        # mù để tạo thêm hàng chục request.
         return pd.DataFrame()
 
-    midpoint = start + pd.Timedelta(
-        days=(day_span // 2) - 1
-    )
-
-    if midpoint < start or midpoint >= end:
-        return pd.DataFrame()
-
-    left = _call_historical_method_range(
-        obj,
-        method_name,
-        start,
-        midpoint,
-    )
-    right = _call_historical_method_range(
-        obj,
-        method_name,
-        midpoint + pd.Timedelta(days=1),
-        end,
-    )
-
-    left = _rename_flow_columns(
-        left,
-        prefix,
-    )
-    right = _rename_flow_columns(
-        right,
-        prefix,
-    )
-
-    parts = [
-        part
-        for part in (left, right)
-        if isinstance(part, pd.DataFrame)
-        and not part.empty
-    ]
-
-    if not parts:
-        return pd.DataFrame()
-
-    result = (
-        pd.concat(parts, axis=0)
-        .sort_index()
-    )
-
-    result = result[
-        ~result.index.duplicated(
-            keep="last"
+    if row_count >= MAX_OHLCV_ROWS_PER_REQUEST:
+        print(
+            f"[VNSTOCK] {method_name}: nguồn trả {row_count} dòng "
+            f"cho khoảng {start.date()} -> {end.date()}; "
+            f"không tự đệ quy vì giới hạn row của API này chưa được xác nhận."
         )
-    ]
 
-    return result.loc[start:end]
+    return normalized.loc[start:end]
 
 
 # ============================================================
@@ -2886,13 +2829,6 @@ def load_stock_flow_history(
     ]
 
     for method_name, prefix in flow_specs:
-        print(
-            f"[RESEARCH] {normalize_symbol(symbol)}: "
-            f"đang tải {method_name} "
-            f"{pd.Timestamp(start_date).date()} → "
-            f"{pd.Timestamp(end_date).date()}..."
-        )
-
         part = _load_flow_range_complete(
             obj,
             method_name,
@@ -2901,10 +2837,8 @@ def load_stock_flow_history(
             end_date,
             request_state=request_state,
         )
-
         if part is not None and not part.empty:
             result_parts.append(part)
-
         print(
             f"[RESEARCH] {normalize_symbol(symbol)} {method_name}: "
             f"{len(part) if isinstance(part, pd.DataFrame) else 0} dòng"
@@ -3277,11 +3211,6 @@ def load_market_factor_history(
     result = None
 
     for index_symbol, prefix in indices.items():
-        print(
-            f"[RESEARCH] 3/6 Đang tải {index_symbol} "
-            f"({start.date()} → {end.date()})..."
-        )
-
         df = _load_index_range_complete(
             market,
             index_symbol,
