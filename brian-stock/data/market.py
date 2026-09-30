@@ -3620,8 +3620,8 @@ def load_multifactor_research_history(
     print(
         f"[RESEARCH] HOÀN TẤT {symbol}: "
         f"{len(result)} phiên | "
-        f"{result.index.min().date() if not result.empty else "n/a"} -> "
-        f"{result.index.max().date() if not result.empty else "n/a"}"
+        f"{result.index.min().date() if not result.empty else 'n/a'} -> "
+        f"{result.index.max().date() if not result.empty else 'n/a'}"
     )
 
     return result
