@@ -57,7 +57,7 @@ CACHE_TTL_LISTING = 6 * 60 * 60
 #
 # Guest có thể bị giới hạn request/phút thấp hơn.
 # Dùng 4 giây/request để giảm rủi ro rate limit khi chia nhỏ lịch sử.
-REQUEST_SLEEP_SECONDS = 3.0
+REQUEST_SLEEP_SECONDS = 2.0
 
 # Khoảng thời gian ban đầu cho mỗi request. Nếu nguồn trả về sát
 # giới hạn số nến, code sẽ tự chia nhỏ đệ quy để không bị cắt dữ liệu.
@@ -1971,12 +1971,20 @@ def load_vnindex_data():
         )
     ).date()
 
-    df = _request_index_ohlcv(
+    request_state = _GLOBAL_REQUEST_STATE
+
+    df = _load_index_range_complete(
         market,
         "VNINDEX",
         start,
         end,
+        request_state=request_state,
     )
+
+    if df is None or df.empty:
+        raise ValueError(
+            "Không lấy được dữ liệu VNINDEX."
+        )
 
     data = _normalize_ohlcv(
         df,
@@ -3101,14 +3109,414 @@ def load_sector_factor_history(
     return result.replace([np.inf, -np.inf], np.nan)
 
 
+
+# ============================================================
+# RESEARCH PROGRESS + COMPLETENESS VALIDATION
+# ============================================================
+
+def _research_progress_ui():
+    """
+    Tạo progress bar và vùng trạng thái cho màn hình nghiên cứu.
+    Không đặt trong st.cache_data để tiến độ luôn hiện mỗi lần chạy.
+    """
+    try:
+        progress = st.progress(
+            0,
+            text="1/6 Đang chuẩn bị nghiên cứu..."
+        )
+        status = st.empty()
+        return progress, status
+    except Exception:
+        return None, None
+
+
+def _update_research_progress(
+    progress,
+    status,
+    step,
+    message,
+):
+    text_value = f"{step}/6 {message}"
+
+    print(
+        f"[RESEARCH] {text_value}"
+    )
+
+    if progress is not None:
+        try:
+            progress.progress(
+                int(step / 6 * 100),
+                text=text_value,
+            )
+        except Exception:
+            pass
+
+    if status is not None:
+        try:
+            status.info(text_value)
+        except Exception:
+            pass
+
+
+def _date_index(index):
+    """
+    Chuẩn hóa index ngày về DatetimeIndex không timezone.
+    """
+    if index is None:
+        return pd.DatetimeIndex([])
+
+    values = pd.to_datetime(
+        index,
+        errors="coerce",
+    )
+
+    if getattr(values, "tz", None) is not None:
+        values = values.tz_localize(None)
+
+    values = pd.DatetimeIndex(
+        values
+    ).normalize()
+
+    values = values[
+        ~values.isna()
+    ]
+
+    return values[
+        ~values.duplicated()
+    ].sort_values()
+
+
+def _coverage_info(
+    df,
+    columns=None,
+):
+    """
+    Trả về các ngày thực sự có dữ liệu của một DataFrame.
+    Nếu columns được truyền, một ngày chỉ được coi là có dữ liệu
+    khi ít nhất một cột trong nhóm có giá trị.
+    """
+    if (
+        df is None
+        or not isinstance(df, pd.DataFrame)
+        or df.empty
+    ):
+        return pd.DatetimeIndex([])
+
+    work = df.copy()
+
+    idx = _date_index(
+        work.index
+    )
+
+    if columns is None:
+        return idx
+
+    valid_columns = [
+        column
+        for column in columns
+        if column in work.columns
+    ]
+
+    if not valid_columns:
+        return pd.DatetimeIndex([])
+
+    mask = (
+        work[
+            valid_columns
+        ]
+        .notna()
+        .any(axis=1)
+    )
+
+    covered = pd.DatetimeIndex(
+        pd.to_datetime(
+            work.index[
+                mask
+            ],
+            errors="coerce",
+        )
+    ).normalize()
+
+    return covered[
+        ~covered.isna()
+    ].unique().sort_values()
+
+
+def _missing_dates(
+    expected_dates,
+    actual_dates,
+):
+    expected = _date_index(
+        expected_dates
+    )
+    actual = _date_index(
+        actual_dates
+    )
+
+    return expected.difference(
+        actual
+    )
+
+
+def _format_missing_dates(
+    dates,
+    limit=12,
+):
+    if len(dates) == 0:
+        return ""
+
+    sample = [
+        str(
+            pd.Timestamp(
+                value
+            ).date()
+        )
+        for value in dates[:limit]
+    ]
+
+    suffix = (
+        f" ... +{len(dates) - limit} ngày"
+        if len(dates) > limit
+        else ""
+    )
+
+    return ", ".join(sample) + suffix
+
+
+def _validate_research_completeness(
+    symbol,
+    start,
+    end,
+    stock,
+    flow,
+    market,
+    sector,
+):
+    """
+    Kiểm tra dataset trước khi đưa vào mô hình.
+
+    Quy tắc:
+    - Dùng lịch giao dịch VNINDEX làm lịch chuẩn của thị trường.
+    - Không chấp nhận stock bị mất phiên trong khoảng mà cổ phiếu đã tồn tại.
+    - Không chấp nhận flow/foreign/proprietary mất ngày trong khoảng yêu cầu.
+    - Không chấp nhận các chỉ số thị trường thiếu ngày.
+    - Sector phải có dữ liệu peer trên từng ngày chuẩn.
+    """
+    if (
+        market is None
+        or market.empty
+        or "market_vnindex_close" not in market.columns
+    ):
+        raise ValueError(
+            "Không có đủ dữ liệu VN-Index để kiểm tra lịch giao dịch chuẩn."
+        )
+
+    expected = _coverage_info(
+        market,
+        ["market_vnindex_close"],
+    )
+
+    expected = expected[
+        (expected >= start)
+        & (expected <= end)
+    ]
+
+    if expected.empty:
+        raise ValueError(
+            "Không xác định được lịch giao dịch trong khoảng nghiên cứu."
+        )
+
+    # --------------------------------------------------------
+    # STOCK
+    # --------------------------------------------------------
+    stock_dates = _coverage_info(
+        stock
+    )
+
+    if stock_dates.empty:
+        raise ValueError(
+            f"{symbol}: không có dữ liệu cổ phiếu."
+        )
+
+    stock_first = stock_dates.min()
+    stock_last = stock_dates.max()
+
+    if stock_last < expected.max():
+        raise ValueError(
+            f"{symbol}: dữ liệu kết thúc ở {stock_last.date()}, "
+            f"nhưng yêu cầu tới {expected.max().date()}."
+        )
+
+    effective_expected_stock = expected[
+        expected >= stock_first
+    ]
+
+    missing_stock = _missing_dates(
+        effective_expected_stock,
+        stock_dates,
+    )
+
+    if len(missing_stock) > 0:
+        raise ValueError(
+            f"{symbol}: thiếu {len(missing_stock)} phiên giao dịch "
+            f"theo lịch VN-Index. Các ngày đầu: "
+            f"{_format_missing_dates(missing_stock)}"
+        )
+
+    # --------------------------------------------------------
+    # MARKET INDICES
+    # --------------------------------------------------------
+    market_specs = {
+        "VNINDEX": "market_vnindex_close",
+        "VN30": "market_vn30_close",
+        "HNXINDEX": "market_hnx_close",
+    }
+
+    market_coverage = {}
+
+    for index_name, close_column in market_specs.items():
+        if close_column not in market.columns:
+            raise ValueError(
+                f"Thiếu dữ liệu {index_name} trong bộ Market."
+            )
+
+        actual = _coverage_info(
+            market,
+            [close_column],
+        )
+
+        missing = _missing_dates(
+            expected,
+            actual,
+        )
+
+        market_coverage[
+            index_name
+        ] = {
+            "expected": len(expected),
+            "actual": len(actual),
+            "missing": len(missing),
+        }
+
+        if len(missing) > 0:
+            raise ValueError(
+                f"{index_name}: thiếu {len(missing)} phiên "
+                f"trong khoảng nghiên cứu. Ngày đầu: "
+                f"{_format_missing_dates(missing)}"
+            )
+
+    # --------------------------------------------------------
+    # FLOW / FOREIGN / PROPRIETARY
+    # --------------------------------------------------------
+    flow_specs = {
+        "dòng tiền": "flow_",
+        "khối ngoại": "foreign_",
+        "tự doanh": "proprietary_",
+    }
+
+    flow_coverage = {}
+
+    if flow is None or flow.empty:
+        raise ValueError(
+            "Không lấy được dữ liệu dòng tiền / khối ngoại / tự doanh."
+        )
+
+    for label, prefix in flow_specs.items():
+        columns = [
+            column
+            for column in flow.columns
+            if str(column).startswith(prefix)
+        ]
+
+        if not columns:
+            raise ValueError(
+                f"Không có cột dữ liệu cho {label}."
+            )
+
+        actual = _coverage_info(
+            flow,
+            columns,
+        )
+
+        missing = _missing_dates(
+            expected,
+            actual,
+        )
+
+        flow_coverage[
+            label
+        ] = {
+            "expected": len(expected),
+            "actual": len(actual),
+            "missing": len(missing),
+        }
+
+        if len(missing) > 0:
+            raise ValueError(
+                f"{label}: thiếu {len(missing)} phiên "
+                f"trong khoảng nghiên cứu. Ngày đầu: "
+                f"{_format_missing_dates(missing)}"
+            )
+
+    # --------------------------------------------------------
+    # SECTOR
+    # --------------------------------------------------------
+    if (
+        sector is None
+        or sector.empty
+        or "sector_peer_count" not in sector.columns
+    ):
+        raise ValueError(
+            "Không có đủ dữ liệu nhóm ngành để xác thực."
+        )
+
+    sector_index = _date_index(
+        sector.index
+    )
+
+    sector_count = pd.to_numeric(
+        sector[
+            "sector_peer_count"
+        ],
+        errors="coerce",
+    )
+
+    sector_available = sector_index[
+        sector_count.fillna(0).gt(0).to_numpy()
+    ]
+
+    missing_sector = _missing_dates(
+        expected,
+        sector_available,
+    )
+
+    if len(missing_sector) > 0:
+        raise ValueError(
+            f"Nhóm ngành thiếu dữ liệu ở {len(missing_sector)} phiên. "
+            f"Ngày đầu: {_format_missing_dates(missing_sector)}"
+        )
+
+    # --------------------------------------------------------
+    # FINAL REPORT
+    # --------------------------------------------------------
+    report = {
+        "expected_trading_days": len(expected),
+        "stock_days": len(stock_dates),
+        "stock_first": str(stock_first.date()),
+        "stock_last": str(stock_last.date()),
+        "market": market_coverage,
+        "flow": flow_coverage,
+        "sector_days": len(sector_available),
+    }
+
+    return report
+
+
+
 # ============================================================
 # MULTIFACTOR RESEARCH DATASET
 # ============================================================
 
-@st.cache_data(
-    ttl=CACHE_TTL_RESEARCH,
-    show_spinner=False,
-)
 def load_multifactor_research_history(
     symbol,
     start_date,
@@ -3145,12 +3553,17 @@ def load_multifactor_research_history(
             "Ngày bắt đầu phải nhỏ hơn ngày kết thúc."
         )
 
+    progress, status = _research_progress_ui()
+
     # ========================================================
     # STOCK
     # ========================================================
 
-    print(
-        f"[RESEARCH] 1/4 Giá cổ phiếu {symbol}: {start.date()} -> {end.date()}"
+    _update_research_progress(
+        progress,
+        status,
+        1,
+        f"Đang tải giá cổ phiếu {symbol} ({start.date()} → {end.date()})..."
     )
 
     stock_raw = _load_stock_raw(
@@ -3168,6 +3581,7 @@ def load_multifactor_research_history(
         f"[RESEARCH] Giá cổ phiếu hoàn tất: {len(stock_raw)} phiên."
     )
 
+
     # ========================================================
     # STOCK META
     # ========================================================
@@ -3180,7 +3594,12 @@ def load_multifactor_research_history(
     # FLOWS
     # ========================================================
 
-    print("[RESEARCH] 2/4 Dòng tiền / khối ngoại / tự doanh...")
+    _update_research_progress(
+        progress,
+        status,
+        2,
+        "Đang tải dòng tiền, khối ngoại và tự doanh..."
+    )
 
     flow = load_stock_flow_history(
         symbol,
@@ -3192,7 +3611,12 @@ def load_multifactor_research_history(
     # MARKET
     # ========================================================
 
-    print("[RESEARCH] 3/4 VNINDEX / VN30 / HNX...")
+    _update_research_progress(
+        progress,
+        status,
+        3,
+        "Đang tải VN-Index, VN30 và HNX..."
+    )
 
     market = load_market_factor_history(
         start,
@@ -3203,7 +3627,12 @@ def load_multifactor_research_history(
     # SECTOR
     # ========================================================
 
-    print("[RESEARCH] 4/4 Nhóm ngành và cổ phiếu đồng ngành...")
+    _update_research_progress(
+        progress,
+        status,
+        4,
+        "Đang tải dữ liệu nhóm ngành và các cổ phiếu cùng ngành..."
+    )
 
     sector = load_sector_factor_history(
         symbol,
@@ -3211,8 +3640,27 @@ def load_multifactor_research_history(
         end,
     )
 
+    _update_research_progress(
+        progress,
+        status,
+        5,
+        "Kiểm tra độ đầy đủ của toàn bộ dữ liệu 3 năm..."
+    )
+
+    completeness = _validate_research_completeness(
+        symbol,
+        start,
+        end,
+        stock,
+        flow,
+        market,
+        sector,
+    )
+
     print(
-        f"[RESEARCH] Merge dữ liệu: stock={len(stock)} | flow={len(flow)} | market={len(market)} | sector={len(sector)}"
+        f"[RESEARCH] Kiểm tra đủ dữ liệu: "
+        f"{completeness['expected_trading_days']} phiên chuẩn | "
+        f"{completeness['stock_days']} phiên cổ phiếu."
     )
 
     result = stock.copy()
@@ -3617,12 +4065,57 @@ def load_multifactor_research_history(
         np.nan,
     )
 
+    _update_research_progress(
+        progress,
+        status,
+        6,
+        "Hoàn tất ghép dataset và tạo biến mục tiêu..."
+    )
+
+    start_label = (
+        result.index.min().date()
+        if not result.empty
+        else "n/a"
+    )
+    end_label = (
+        result.index.max().date()
+        if not result.empty
+        else "n/a"
+    )
+
     print(
         f"[RESEARCH] HOÀN TẤT {symbol}: "
         f"{len(result)} phiên | "
-        f"{result.index.min().date() if not result.empty else 'n/a'} -> "
-        f"{result.index.max().date() if not result.empty else 'n/a'}"
+        f"{start_label} -> {end_label}"
     )
+
+    if progress is not None:
+        try:
+            progress.progress(
+                100,
+                text=(
+                    f"6/6 Hoàn tất: {len(result)} phiên | "
+                    f"{start_label} → {end_label}"
+                ),
+            )
+        except Exception:
+            pass
+
+    if status is not None:
+        try:
+            status.success(
+                (
+                    f"Đã hoàn tất nghiên cứu {symbol}: "
+                    f"{len(result)} phiên, "
+                    f"{start_label} → {end_label}."
+                )
+            )
+        except Exception:
+            pass
+
+    result.attrs[
+        "completeness"
+    ] = completeness
 
     return result
 
@@ -3631,10 +4124,6 @@ def load_multifactor_research_history(
 # RESEARCH HISTORY COMPATIBILITY
 # ============================================================
 
-@st.cache_data(
-    ttl=CACHE_TTL_RESEARCH,
-    show_spinner=False,
-)
 def load_research_history(
     symbol,
     start_date,
