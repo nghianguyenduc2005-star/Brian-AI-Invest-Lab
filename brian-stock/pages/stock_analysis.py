@@ -499,6 +499,11 @@ def add_research_extras(df):
 # ============================================================
 
 def prepare_xy(df, features, target_col):
+    """Chuẩn bị X/y mà KHÔNG dùng thông tin của test để điền thiếu hoặc lọc variance.
+
+    Median imputation và loại biến variance=0 được thực hiện sau khi chia train/test,
+    chỉ dựa trên TRAIN. Đây là điểm quan trọng để tránh data leakage.
+    """
     if df is None or df.empty or target_col not in df.columns:
         return None
 
@@ -514,24 +519,59 @@ def prepare_xy(df, features, target_col):
 
     for col in X.columns:
         X[col] = pd.to_numeric(X[col], errors="coerce")
-        median = X[col].median()
-        X[col] = X[col].fillna(0.0 if pd.isna(median) else median)
 
+    # Chỉ loại các dòng không có target. Không impute X ở đây vì
+    # median phải được học từ TRAIN và áp dụng sang TEST.
     valid = y.notna() & np.isfinite(y)
     X = X.loc[valid]
     y = y.loc[valid]
 
-    # Loại variance=0 cho matrix model nhưng không xóa khỏi dataset.
-    usable = []
-    for col in X.columns:
-        variance = float(X[col].var(ddof=0)) if len(X) else 0.0
-        if np.isfinite(variance) and variance > 0:
-            usable.append(col)
-
-    if not usable:
+    if X.empty:
         return None
 
-    return X[usable].astype(float), y.astype(float)
+    return X.astype(float), y.astype(float)
+
+
+def prepare_train_test_features(X_train_raw, X_test_raw):
+    """Impute và lọc feature chỉ dựa trên TRAIN, sau đó áp dụng sang TEST."""
+    if X_train_raw is None or X_train_raw.empty:
+        return pd.DataFrame(), pd.DataFrame(), {}
+
+    train = X_train_raw.copy()
+    test = X_test_raw.copy() if X_test_raw is not None else pd.DataFrame(index=train.index)
+
+    train = train.replace([np.inf, -np.inf], np.nan)
+    test = test.replace([np.inf, -np.inf], np.nan)
+
+    usable = []
+    train_fill_values = {}
+
+    for col in train.columns:
+        train_col = pd.to_numeric(train[col], errors="coerce")
+        test_col = pd.to_numeric(test[col], errors="coerce") if col in test.columns else pd.Series(np.nan, index=test.index)
+
+        # Nếu TRAIN hoàn toàn không có dữ liệu thì không cho biến này vào model.
+        if train_col.notna().sum() == 0:
+            continue
+
+        median = train_col.median()
+        fill_value = 0.0 if pd.isna(median) else float(median)
+        train_col = train_col.fillna(fill_value)
+        test_col = test_col.fillna(fill_value)
+
+        variance = float(train_col.var(ddof=0)) if len(train_col) else 0.0
+        if not np.isfinite(variance) or variance <= 0:
+            continue
+
+        train[col] = train_col.astype(float)
+        test[col] = test_col.astype(float)
+        train_fill_values[col] = fill_value
+        usable.append(col)
+
+    if not usable:
+        return pd.DataFrame(), pd.DataFrame(), {}
+
+    return train[usable], test[usable], train_fill_values
 
 # ============================================================
 # CORRELATION ALL FEATURES
@@ -948,16 +988,39 @@ def execute_one_horizon(df, all_features, horizon):
     if split < 30 or len(X_all) - split < 10:
         return None
 
-    # ALL FEATURES -> correlation, nhưng chỉ feature subset -> model.
-    selected = select_model_features(X_all, y, MAX_MODEL_FEATURES)
-    X = X_all[selected].copy()
-
-    X_train = X.iloc[:split].copy()
-    X_test = X.iloc[split:].copy()
+    # ------------------------------------------------------------
+    # CHIA TRAIN / TEST TRƯỚC KHI CHỌN FEATURE
+    # ------------------------------------------------------------
+    # Tuyệt đối không dùng TEST để chọn biến, tính median hoặc lọc
+    # variance. Nếu không, kết quả out-of-sample sẽ bị data leakage.
+    X_train_all = X_all.iloc[:split].copy()
+    X_test_all = X_all.iloc[split:].copy()
     y_train = y.iloc[:split].copy()
     y_test = y.iloc[split:].copy()
 
-    # Correlation vẫn dùng TOÀN BỘ biến của dataset.
+    # Chỉ TRAIN được phép quyết định feature nào đưa vào model.
+    selected = select_model_features(
+        X_train_all,
+        y_train,
+        MAX_MODEL_FEATURES,
+    )
+    if not selected:
+        return None
+
+    X_train_selected = X_train_all[selected].copy()
+    X_test_selected = X_test_all[selected].copy()
+
+    # Median imputation + lọc variance cũng chỉ fit trên TRAIN.
+    X_train, X_test, train_fill_values = prepare_train_test_features(
+        X_train_selected,
+        X_test_selected,
+    )
+
+    if X_train.empty or X_test.empty:
+        return None
+
+    # Correlation full-sample vẫn được giữ để phục vụ phần khám phá mô tả.
+    # Nó không được dùng để huấn luyện / chọn feature cho TEST.
     correlations = correlation_table(X_all, y)
 
     ols = run_safe_ols(X_train, y_train)
@@ -972,7 +1035,7 @@ def execute_one_horizon(df, all_features, horizon):
         best_model = fitted.get(best_name)
 
     permutation = run_permutation(best_model, X_test, y_test) if best_model is not None else pd.DataFrame()
-    tree = run_tree_importance(best_model, list(X.columns)) if best_model is not None else pd.DataFrame()
+    tree = run_tree_importance(best_model, list(X_train.columns)) if best_model is not None else pd.DataFrame()
 
     ranking = build_factor_ranking(correlations, ols_table, permutation, tree)
     groups = group_summary(ranking)
@@ -1004,11 +1067,11 @@ def execute_one_horizon(df, all_features, horizon):
 
     if best_model is not None:
         try:
-            latest = df[selected].copy()
+            latest = df[list(X_train.columns)].copy()
             for col in latest.columns:
                 latest[col] = pd.to_numeric(latest[col], errors="coerce")
-                med = latest[col].median()
-                latest[col] = latest[col].fillna(0.0 if pd.isna(med) else med)
+                latest[col] = latest[col].fillna(train_fill_values.get(col, 0.0))
+            latest = latest[X_train.columns]
             predicted_return = float(best_model.predict(latest.iloc[[-1]])[0])
             if current_price is not None:
                 predicted_price = current_price * (1 + predicted_return)
@@ -1027,7 +1090,7 @@ def execute_one_horizon(df, all_features, horizon):
         "train": len(X_train),
         "test": len(X_test),
         "all_features": list(X_all.columns),
-        "model_features": list(X.columns),
+        "model_features": list(X_train.columns),
         "ols_features": ols_features,
         "correlations": correlations,
         "ols": ols,
