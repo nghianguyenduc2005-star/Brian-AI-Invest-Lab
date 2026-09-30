@@ -1281,6 +1281,102 @@ def _validate_research_completeness(symbol, start, end, stock, market, sector):
 
     return report
 
+# ============================================================
+# RESEARCH STOCK LOADER — YFINANCE
+# ============================================================
+
+def _load_research_stock_yfinance(symbol, start_date, end_date, progress_callback=None):
+    """Tải riêng dữ liệu nghiên cứu bằng Yahoo Finance, không đi qua VNStock."""
+    try:
+        import yfinance as yf
+    except Exception as error:
+        raise RuntimeError(f"Không import được yfinance: {error}") from error
+
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
+    ticker = normalize_symbol(symbol) + ".VN"
+
+    if start > end:
+        raise ValueError("Khoảng ngày nghiên cứu không hợp lệ.")
+
+    message = (
+        f"Đang tải dữ liệu {normalize_symbol(symbol)} "
+        f"({start.date()} → {end.date()}) từ Yahoo Finance..."
+    )
+    print(f"[RESEARCH][YF] {message}")
+    if progress_callback:
+        progress_callback(message)
+
+    try:
+        raw = yf.download(
+            ticker,
+            start=start.strftime("%Y-%m-%d"),
+            end=(end + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+            timeout=15,
+        )
+    except Exception as error:
+        raise RuntimeError(f"Yahoo Finance lỗi với {ticker}: {error}") from error
+
+    if raw is None or raw.empty:
+        raise ValueError(
+            f"Yahoo Finance trả 0 dòng cho {ticker} "
+            f"trong {start.date()} → {end.date()}."
+        )
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        flat=[]
+        for col in raw.columns:
+            parts=[str(x) for x in col if str(x) not in {"", "None"}]
+            chosen=next((x for x in parts if x in {"Open","High","Low","Close","Adj Close","Volume"}), parts[0] if parts else str(col))
+            flat.append(chosen)
+        raw.columns=flat
+
+    raw = raw.copy()
+    raw.index = pd.to_datetime(raw.index, errors="coerce")
+    raw = raw[~raw.index.isna()].copy()
+    if getattr(raw.index, "tz", None) is not None:
+        raw.index = raw.index.tz_localize(None)
+    raw.index = raw.index.normalize()
+    raw = raw.loc[(raw.index >= start) & (raw.index <= end)]
+
+    rename={}
+    for col in raw.columns:
+        key=_normalize_column_name(col)
+        if key=="open": rename[col]="Open"
+        elif key=="high": rename[col]="High"
+        elif key=="low": rename[col]="Low"
+        elif key=="close": rename[col]="Close"
+        elif key in {"adj_close","adjclose"}: rename[col]="Adj Close"
+        elif key=="volume": rename[col]="Volume"
+    raw=raw.rename(columns=rename)
+
+    required=["Open","High","Low","Close","Volume"]
+    missing=[c for c in required if c not in raw.columns]
+    if missing:
+        raise ValueError(f"Yahoo Finance thiếu cột {missing} cho {ticker}.")
+
+    for col in required:
+        raw[col]=pd.to_numeric(raw[col], errors="coerce")
+
+    raw=raw.dropna(subset=["Open","High","Low","Close"])
+    raw.loc[raw["Volume"]<0,"Volume"]=np.nan
+    raw=raw[~raw.index.duplicated(keep="last")]
+    if raw.empty:
+        raise ValueError(f"Không còn dữ liệu OHLC hợp lệ cho {ticker}.")
+
+    result=raw[["Open","High","Low","Close","Volume"]].copy()
+    result["Value"]=result["Close"]*result["Volume"]
+
+    print(
+        f"[RESEARCH][YF] {normalize_symbol(symbol)}: {len(result)} phiên | "
+        f"{result.index.min().date()} → {result.index.max().date()}"
+    )
+    return result
+
 
 # ============================================================
 # MULTIFACTOR RESEARCH DATASET
@@ -1288,175 +1384,79 @@ def _validate_research_completeness(symbol, start, end, stock, market, sector):
 
 def load_multifactor_research_history(symbol, start_date, end_date):
     """
-    Pipeline nghiên cứu mới:
-      1) OHLCV cổ phiếu + technical factors
-      2) VNINDEX/VN30/HNX (nếu có)
-      3) Peer ngành (nếu lấy được)
-      4) Merge + target + kiểm tra
-
-    QUAN TRỌNG:
-    - Không gọi trade_history.
-    - Không gọi foreign_flow.
-    - Không gọi proprietary_flow.
-    - Không dùng flow để chặn dataset.
+    Research pipeline ổn định: chỉ tải OHLCV cổ phiếu bằng Yahoo Finance,
+    sau đó tạo technical factors và target. Không gọi VNStock trong pipeline này.
     """
     symbol = normalize_symbol(symbol)
     start = pd.Timestamp(start_date).normalize()
     end = pd.Timestamp(end_date).normalize()
-
     if start > end:
         raise ValueError("Ngày bắt đầu phải nhỏ hơn ngày kết thúc.")
 
     progress, status = _research_progress_ui()
 
-    # --------------------------------------------------------
-    # 1. STOCK
-    # --------------------------------------------------------
     _update_research_progress(
-        progress,
-        status,
-        1,
-        f"Đang tải giá cổ phiếu {symbol} ({start.date()} → {end.date()})... "
-        f"({'API key' if VNSTOCK_API_KEY_AVAILABLE else 'Guest'})",
+        progress, status, 1,
+        f"Đang tải {symbol} ({start.date()} → {end.date()}) từ Yahoo Finance...",
     )
-
-    stock_raw = _load_stock_raw(
-        symbol,
-        start,
-        end,
-        progress_callback=lambda message: _update_research_progress(
-            progress,
-            status,
-            1,
-            message,
-        ),
+    stock_raw = _load_research_stock_yfinance(
+        symbol, start, end,
+        progress_callback=lambda message: _update_research_progress(progress, status, 1, message),
     )
     stock = add_indicators(stock_raw, la_co_phieu=True)
     print(f"[RESEARCH] Giá cổ phiếu hoàn tất: {len(stock)} phiên.")
 
-    # --------------------------------------------------------
-    # 2. MARKET
-    # --------------------------------------------------------
     _update_research_progress(
-        progress,
-        status,
-        2,
-        "Đang tải VN-Index, VN30 và HNX...",
+        progress, status, 2,
+        "Đang xây dựng các biến kỹ thuật...",
     )
-    market = load_market_factor_history(start, end)
-
-    # --------------------------------------------------------
-    # 3. SECTOR
-    # --------------------------------------------------------
-    _update_research_progress(
-        progress,
-        status,
-        3,
-        "Đang tải dữ liệu nhóm ngành và cổ phiếu cùng ngành...",
-    )
-    sector = load_sector_factor_history(symbol, start, end)
-
-    # --------------------------------------------------------
-    # 4. MERGE / TARGET
-    # --------------------------------------------------------
-    _update_research_progress(
-        progress,
-        status,
-        4,
-        "Ghép dataset, tạo biến mục tiêu và kiểm tra dữ liệu...",
-    )
-
-    metadata = _get_stock_metadata(symbol)
-    completeness = _validate_research_completeness(
-        symbol,
-        start,
-        end,
-        stock,
-        market,
-        sector,
-    )
-
     result = stock.copy()
 
-    if isinstance(market, pd.DataFrame) and not market.empty:
-        market = market[~market.index.duplicated(keep="last")]
-        result = result.join(market, how="left")
-
-    if isinstance(sector, pd.DataFrame) and not sector.empty:
-        sector_cols = [column for column in sector.columns if str(column).startswith("sector_")]
-        if sector_cols:
-            sector = sector[~sector.index.duplicated(keep="last")]
-            result = result.join(sector[sector_cols], how="left")
-
-    # Relative performance vs market.
-    if "market_vnindex_return" in result.columns:
-        result["stock_minus_market_1d"] = result["Return"] - result["market_vnindex_return"]
-    if "market_vnindex_momentum20" in result.columns:
-        result["stock_minus_market_momentum20"] = result["Momentum20"] - result["market_vnindex_momentum20"]
-    if "sector_return" in result.columns:
-        result["stock_minus_sector_1d"] = result["Return"] - result["sector_return"]
-    if "sector_momentum20" in result.columns:
-        result["stock_minus_sector_momentum20"] = result["Momentum20"] - result["sector_momentum20"]
-
-    # Market breadth.
-    market_return_columns = [
-        column
-        for column in result.columns
-        if str(column).startswith("market_") and str(column).endswith("_return")
-    ]
-    if market_return_columns:
-        result["market_positive_index_count"] = result[market_return_columns].gt(0).sum(axis=1)
-        result["market_negative_index_count"] = result[market_return_columns].lt(0).sum(axis=1)
-        result["market_average_return"] = result[market_return_columns].mean(axis=1)
-
-    # Targets: giữ tương thích với ML hiện tại.
-    close = result["Close"]
-    for horizon, periods in {"1D": 1, "5D": 5, "20D": 20}.items():
+    _update_research_progress(
+        progress, status, 3,
+        "Đang tạo biến mục tiêu 1D / 5D / 20D...",
+    )
+    close = pd.to_numeric(result["Close"], errors="coerce")
+    for horizon, periods in {"1D":1, "5D":5, "20D":20}.items():
         result[f"Target_{horizon}"] = close.shift(-periods) / close - 1
         result[f"Target_{horizon}_Pct"] = result[f"Target_{horizon}"] * 100
 
+    completeness = _validate_research_completeness(
+        symbol, start, end, result, pd.DataFrame(), pd.DataFrame()
+    )
+
+    _update_research_progress(
+        progress, status, 4,
+        "Hoàn tất dataset nghiên cứu.",
+    )
+
     result.attrs["symbol"] = symbol
     result.attrs["display_symbol"] = display_symbol(symbol)
-    result.attrs["source"] = "Vnstock multifactor (không flow API)"
+    result.attrs["source"] = "Yahoo Finance research"
     result.attrs["research_start"] = str(start.date())
     result.attrs["research_end"] = str(end.date())
-    result.attrs["sector"] = metadata.get("sector", "")
-    result.attrs["icb_code"] = metadata.get("icb_code", "")
-    result.attrs["icb_code4"] = metadata.get("icb_code4", "")
-    result.attrs["sector_peers"] = sector.attrs.get("peers_requested", []) if not sector.empty else []
-    result.attrs["sector_peers_loaded"] = sector.attrs.get("peers_loaded", 0) if not sector.empty else 0
+    result.attrs["sector"] = ""
+    result.attrs["icb_code"] = ""
+    result.attrs["icb_code4"] = ""
+    result.attrs["sector_peers"] = []
+    result.attrs["sector_peers_loaded"] = 0
     result.attrs["completeness"] = completeness
-
     result = result.replace([np.inf, -np.inf], np.nan)
 
-    if not result.empty:
-        start_label = result.index.min().date()
-        end_label = result.index.max().date()
-    else:
-        start_label = "n/a"
-        end_label = "n/a"
-
-    print(
-        f"[RESEARCH] HOÀN TẤT {symbol}: {len(result)} phiên | "
-        f"{start_label} → {end_label}"
-    )
+    start_label = result.index.min().date() if not result.empty else "n/a"
+    end_label = result.index.max().date() if not result.empty else "n/a"
+    print(f"[RESEARCH] HOÀN TẤT {symbol}: {len(result)} phiên | {start_label} → {end_label}")
 
     if progress is not None:
         try:
-            progress.progress(
-                100,
-                text=f"4/4 Hoàn tất: {len(result)} phiên | {start_label} → {end_label}",
-            )
+            progress.progress(100, text=f"4/4 Hoàn tất: {len(result)} phiên | {start_label} → {end_label}")
         except Exception:
             pass
     if status is not None:
         try:
-            status.success(
-                f"Đã hoàn tất nghiên cứu {symbol}: {len(result)} phiên, {start_label} → {end_label}."
-            )
+            status.success(f"Đã hoàn tất nghiên cứu {symbol}: {len(result)} phiên.")
         except Exception:
             pass
-
     return result
 
 
