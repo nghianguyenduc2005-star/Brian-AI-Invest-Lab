@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import time
 from datetime import datetime, timedelta
@@ -8,6 +9,32 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+
+# ============================================================
+# VNSTOCK API KEY / AUTH
+# ============================================================
+
+def _configure_vnstock_api_key():
+    """Ưu tiên Streamlit Secrets, sau đó tới biến môi trường."""
+    key = os.environ.get("VNSTOCK_API_KEY", "").strip()
+
+    if not key:
+        try:
+            key = str(
+                st.secrets.get("VNSTOCK_API_KEY", "")
+            ).strip()
+        except Exception:
+            key = ""
+
+    if key:
+        os.environ["VNSTOCK_API_KEY"] = key
+        return True
+
+    return False
+
+
+VNSTOCK_API_KEY_AVAILABLE = _configure_vnstock_api_key()
 
 
 # ============================================================
@@ -54,10 +81,10 @@ CACHE_TTL_FLOW = 900
 CACHE_TTL_LISTING = 6 * 60 * 60
 
 # Giữ khoảng cách giữa request để tránh rate limit.
-#
-# Guest có thể bị giới hạn request/phút thấp hơn.
-# Dùng 4 giây/request để giảm rủi ro rate limit khi chia nhỏ lịch sử.
-REQUEST_SLEEP_SECONDS = 2.0
+# Guest hiện bị giới hạn thấp hơn Community có API key.
+REQUEST_SLEEP_SECONDS = (
+    1.25 if VNSTOCK_API_KEY_AVAILABLE else 3.25
+)
 
 # Khoảng thời gian ban đầu cho mỗi request. Nếu nguồn trả về sát
 # giới hạn số nến, code sẽ tự chia nhỏ đệ quy để không bị cắt dữ liệu.
@@ -76,6 +103,51 @@ RETRY_BACKOFF_SECONDS = 3.0
 _GLOBAL_REQUEST_STATE = {"last_request": None}
 
 
+def _extract_rate_limit_wait_seconds(error):
+    """Cố gắng đọc thời gian chờ do VNStock trả về."""
+    text = str(error or "")
+    patterns = [
+        r"Chờ\s*(\d+)\s*giây",
+        r"Wait[^0-9]{0,30}(\d+)\s*(?:s|sec|secs|seconds|giây)",
+        r"retry[^0-9]{0,30}(\d+)\s*(?:s|sec|secs|seconds|giây)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            try:
+                return max(1, int(match.group(1)))
+            except Exception:
+                pass
+    return None
+
+
+def _sleep_after_rate_limit(error):
+    wait_seconds = _extract_rate_limit_wait_seconds(error)
+    if wait_seconds is None:
+        wait_seconds = 5 if VNSTOCK_API_KEY_AVAILABLE else 12
+    # thêm 1 giây để tránh vừa chạm ngưỡng cửa sổ rate limit
+    wait_seconds += 1
+    print(
+        f"[VNSTOCK] Rate limit: chờ {wait_seconds} giây trước khi thử lại."
+    )
+    time.sleep(wait_seconds)
+
+
+def _is_rate_limit_error(error):
+    text = str(error or "").lower()
+    return any(
+        marker in text
+        for marker in [
+            "rate limit",
+            "rate_limit",
+            "too many requests",
+            "maximum api request",
+            "requests/minute",
+            "requests/phút",
+        ]
+    )
+
+
 # ============================================================
 # CACHE RESOURCE
 # ============================================================
@@ -84,9 +156,20 @@ _GLOBAL_REQUEST_STATE = {"last_request": None}
     show_spinner=False,
 )
 def _create_market():
+    # Secrets có thể được nạp sau khi module import trong một số môi trường;
+    # kiểm tra lại ngay trước khi tạo Market.
+    global VNSTOCK_API_KEY_AVAILABLE
+    VNSTOCK_API_KEY_AVAILABLE = _configure_vnstock_api_key()
+
     if not VNSTOCK_AVAILABLE or Market is None:
         raise RuntimeError(
             "Không tìm thấy vnstock Market."
+        )
+
+    if not VNSTOCK_API_KEY_AVAILABLE:
+        print(
+            "[VNSTOCK] Không tìm thấy VNSTOCK_API_KEY. "
+            "Ứng dụng đang chạy với hạn mức Guest."
         )
 
     try:
@@ -1452,8 +1535,16 @@ def _sleep_between_requests(
         - previous_request_time
     )
 
+    # Tính lại hạn mức theo trạng thái API key hiện tại.
+    # Điều này giúp Streamlit nhận Secret mới ngay sau khi restart.
+    target_delay = (
+        1.25
+        if VNSTOCK_API_KEY_AVAILABLE
+        else 3.25
+    )
+
     remaining = (
-        REQUEST_SLEEP_SECONDS
+        target_delay
         - elapsed
     )
 
@@ -1475,47 +1566,31 @@ def _request_equity_ohlcv(
 ):
     last_error = None
 
-    for attempt in range(
-        1,
-        MAX_OHLCV_RETRIES + 1,
-    ):
+    for attempt in range(1, MAX_OHLCV_RETRIES + 1):
         try:
             return (
                 market
                 .equity(
-                    normalize_symbol(
-                        symbol
-                    )
+                    normalize_symbol(symbol)
                 )
                 .ohlcv(
-                    start=pd.Timestamp(
-                        start_date
-                    ).strftime(
-                        "%Y-%m-%d"
-                    ),
+                    start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
                     end=(
-                        pd.Timestamp(
-                            end_date
-                        )
-                        + pd.Timedelta(
-                            days=1
-                        )
-                    ).strftime(
-                        "%Y-%m-%d"
-                    ),
+                        pd.Timestamp(end_date)
+                        + pd.Timedelta(days=1)
+                    ).strftime("%Y-%m-%d"),
                     interval="1D",
                 )
             )
-
         except Exception as error:
             last_error = error
+            if _is_rate_limit_error(error):
+                _sleep_after_rate_limit(error)
+            elif attempt < MAX_OHLCV_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
             if attempt >= MAX_OHLCV_RETRIES:
                 raise
-
-            time.sleep(
-                RETRY_BACKOFF_SECONDS * attempt
-            )
 
     if last_error is not None:
         raise last_error
@@ -1668,30 +1743,36 @@ def _request_index_ohlcv(
     start_date,
     end_date,
 ):
-    return (
-        market
-        .index(
-            index_symbol
-        )
-        .ohlcv(
-            start=pd.Timestamp(
-                start_date
-            ).strftime(
-                "%Y-%m-%d"
-            ),
-            end=(
-                pd.Timestamp(
-                    end_date
+    last_error = None
+
+    for attempt in range(1, MAX_OHLCV_RETRIES + 1):
+        try:
+            return (
+                market
+                .index(index_symbol)
+                .ohlcv(
+                    start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
+                    end=(
+                        pd.Timestamp(end_date)
+                        + pd.Timedelta(days=1)
+                    ).strftime("%Y-%m-%d"),
+                    interval="1D",
                 )
-                + pd.Timedelta(
-                    days=1
-                )
-            ).strftime(
-                "%Y-%m-%d"
-            ),
-            interval="1D",
-        )
-    )
+            )
+        except Exception as error:
+            last_error = error
+            if _is_rate_limit_error(error):
+                _sleep_after_rate_limit(error)
+            elif attempt < MAX_OHLCV_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
+            if attempt >= MAX_OHLCV_RETRIES:
+                raise
+
+    if last_error is not None:
+        raise last_error
+
+    return pd.DataFrame()
 
 
 def _load_index_range_complete(
@@ -1805,92 +1886,195 @@ def _load_stock_raw(
     symbol,
     start_date,
     end_date,
+    progress_callback=None,
 ):
+    """
+    Lấy OHLCV đầy đủ trong khoảng yêu cầu.
+
+    Chiến lược:
+    1. Thử đúng MỘT request cho toàn bộ khoảng thời gian trước.
+       Nếu nguồn trả đủ dữ liệu thì dùng ngay, tránh 10+ request.
+    2. Nếu response có dấu hiệu bị giới hạn/cắt, mới chuyển sang
+       phân đoạn 120 ngày và tự chia nhỏ khi cần.
+    3. Không tự ý bỏ dữ liệu; cuối pipeline vẫn có bước kiểm tra
+       độ đầy đủ theo lịch VN-Index.
+    """
 
     market = _create_market()
 
-    start = pd.Timestamp(
-        start_date
-    ).normalize()
+    start = pd.Timestamp(start_date).normalize()
+    end = pd.Timestamp(end_date).normalize()
 
-    end = pd.Timestamp(
-        end_date
-    ).normalize()
+    if start > end:
+        raise ValueError(
+            f"Khoảng ngày không hợp lệ: {start.date()} → {end.date()}."
+        )
 
+    symbol_norm = normalize_symbol(symbol)
+
+    if progress_callback:
+        progress_callback(
+            f"Đang tải toàn bộ lịch sử {symbol_norm} "
+            f"({start.date()} → {end.date()})..."
+        )
+
+    # --------------------------------------------------------
+    # FAST PATH: một request cho toàn bộ khoảng
+    # --------------------------------------------------------
+    request_state = {"last_request": None}
+
+    _sleep_between_requests(
+        request_state.get("last_request")
+    )
+    request_state["last_request"] = time.monotonic()
+
+    direct = pd.DataFrame()
+    try:
+        direct = _request_equity_ohlcv(
+            market,
+            symbol_norm,
+            start,
+            end,
+        )
+    except Exception as error:
+        print(
+            f"[VNSTOCK] Fast path {symbol_norm} lỗi: {error}. "
+            "Chuyển sang phân đoạn."
+        )
+
+    direct_normalized = pd.DataFrame()
+    if direct is not None and not direct.empty:
+        try:
+            direct_normalized = _normalize_ohlcv(
+                direct,
+                stock=True,
+            )
+        except Exception:
+            direct_normalized = pd.DataFrame()
+
+    # Nếu request toàn khoảng trả về nhiều hơn ngưỡng giới hạn
+    # an toàn, hoặc phủ gần như toàn bộ khoảng yêu cầu, dùng ngay.
+    # Nếu chỉ trả đúng/tiệm cận 100 dòng thì rất có thể đã bị cắt.
+    if not direct_normalized.empty:
+        direct_first = direct_normalized.index.min()
+        direct_last = direct_normalized.index.max()
+        first_gap_days = (direct_first - start).days
+        requested_days = (end - start).days + 1
+
+        direct_is_likely_complete = (
+            len(direct_normalized) >= MAX_OHLCV_ROWS_PER_REQUEST
+            and first_gap_days <= 5
+            and direct_last >= end - pd.Timedelta(days=5)
+        )
+
+        # Với khoảng rất dài, chỉ cần response > 100 dòng đã là dấu
+        # hiệu mạnh rằng nguồn đã không áp giới hạn 100 nến cho request.
+        if len(direct_normalized) > MAX_OHLCV_ROWS_PER_REQUEST:
+            direct_is_likely_complete = True
+
+        if (
+            requested_days <= 120
+            and direct_last >= end - pd.Timedelta(days=5)
+        ):
+            direct_is_likely_complete = True
+
+        if direct_is_likely_complete:
+            raw = direct_normalized.loc[start:end].copy()
+            raw = raw[~raw.index.duplicated(keep="last")]
+
+            if progress_callback:
+                progress_callback(
+                    f"Đã nhận {len(raw)} phiên {symbol_norm} "
+                    f"trong 1 request."
+                )
+
+            print(
+                f"[VNSTOCK] FAST {symbol_norm}: "
+                f"{len(raw)} phiên | "
+                f"{raw.index.min().date()} → {raw.index.max().date()}"
+            )
+            return raw
+
+        print(
+            f"[VNSTOCK] FAST {symbol_norm}: chỉ nhận "
+            f"{len(direct_normalized)} dòng | "
+            f"{direct_first.date()} → {direct_last.date()}. "
+            "Có khả năng bị cắt; chuyển sang phân đoạn."
+        )
+
+    # --------------------------------------------------------
+    # FALLBACK: phân đoạn theo thời gian
+    # --------------------------------------------------------
     chunks = []
-
     cursor = start
-
-    request_state = _GLOBAL_REQUEST_STATE
+    total_days = max(
+        1,
+        (end - start).days + 1,
+    )
+    chunk_number = 0
+    estimated_chunks = int(
+        np.ceil(
+            total_days / RESEARCH_CHUNK_DAYS
+        )
+    )
 
     while cursor <= end:
+        chunk_number += 1
 
         chunk_end = min(
-            cursor
-            + pd.Timedelta(
-                days=(
-                    RESEARCH_CHUNK_DAYS
-                    - 1
-                )
-            ),
+            cursor + pd.Timedelta(days=RESEARCH_CHUNK_DAYS - 1),
             end,
         )
 
+        if progress_callback:
+            progress_callback(
+                f"Đang tải {symbol_norm}: đoạn "
+                f"{chunk_number}/{estimated_chunks} "
+                f"({cursor.date()} → {chunk_end.date()})..."
+            )
+
         df_chunk = _load_equity_range_complete(
             market,
-            symbol,
+            symbol_norm,
             cursor,
             chunk_end,
             request_state=request_state,
         )
 
-        if (
-            df_chunk is not None
-            and not df_chunk.empty
-        ):
-            chunks.append(
-                df_chunk
-            )
+        if df_chunk is not None and not df_chunk.empty:
+            chunks.append(df_chunk)
 
-        cursor = (
-            chunk_end
-            + pd.Timedelta(
-                days=1
-            )
-        )
+        cursor = chunk_end + pd.Timedelta(days=1)
 
     if not chunks:
         raise ValueError(
-            f"Không có dữ liệu giá {symbol}."
+            f"Không có dữ liệu giá {symbol_norm}."
         )
 
-    raw = pd.concat(
-        chunks,
-        axis=0,
-    )
-
-    raw = _normalize_ohlcv(
-        raw,
-        stock=True,
-    )
-
+    raw = pd.concat(chunks, axis=0)
+    raw = _normalize_ohlcv(raw, stock=True)
     raw = raw.loc[start:end]
-    raw = raw[
-        ~raw.index.duplicated(
-            keep="last"
-        )
-    ]
+    raw = raw[~raw.index.duplicated(keep="last")]
+
     if raw.empty:
         raise ValueError(
-            f"Không có dữ liệu hợp lệ cho {symbol} "
+            f"Không có dữ liệu hợp lệ cho {symbol_norm} "
             f"trong khoảng {start.date()} → {end.date()}."
         )
+
+    if progress_callback:
+        progress_callback(
+            f"Đã tải {len(raw)} phiên {symbol_norm} "
+            f"sau {chunk_number} đoạn."
+        )
+
     print(
-        f"[VNSTOCK] {normalize_symbol(symbol)}: "
+        f"[VNSTOCK] CHUNKED {symbol_norm}: "
         f"{len(raw)} phiên | "
         f"{raw.index.min().date()} → {raw.index.max().date()} "
         f"| yêu cầu {start.date()} → {end.date()}"
     )
+
     return raw
 
 
@@ -2470,6 +2654,8 @@ def _call_historical_method_range(
         )
         return pd.DataFrame()
     except Exception as error:
+        if _is_rate_limit_error(error):
+            _sleep_after_rate_limit(error)
         print(
             f"[VNSTOCK] {method_name}: lỗi request "
             f"{pd.Timestamp(start_date).date()} -> {pd.Timestamp(end_date).date()}: {error}"
@@ -3563,13 +3749,22 @@ def load_multifactor_research_history(
         progress,
         status,
         1,
-        f"Đang tải giá cổ phiếu {symbol} ({start.date()} → {end.date()})..."
+        f"Đang tải giá cổ phiếu {symbol} ({start.date()} → {end.date()})... "
+        f"({'API key' if VNSTOCK_API_KEY_AVAILABLE else 'Guest'})"
     )
 
     stock_raw = _load_stock_raw(
         symbol,
         start,
         end,
+        progress_callback=(
+            lambda message: _update_research_progress(
+                progress,
+                status,
+                1,
+                message,
+            )
+        ),
     )
 
     stock = add_indicators(
