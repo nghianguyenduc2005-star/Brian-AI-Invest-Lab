@@ -57,11 +57,11 @@ CACHE_TTL_LISTING = 6 * 60 * 60
 #
 # Guest có thể bị giới hạn request/phút thấp hơn.
 # Dùng 2 giây/request để an toàn.
-REQUEST_SLEEP_SECONDS = 2.0
+REQUEST_SLEEP_SECONDS = 6.0
 
 # Lịch sử chính có thể lấy theo chunk.
 # 120 ngày lịch ~ khoảng 80-85 phiên giao dịch.
-RESEARCH_CHUNK_DAYS = 120
+RESEARCH_CHUNK_DAYS = 365
 
 
 # ============================================================
